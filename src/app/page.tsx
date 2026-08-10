@@ -1700,31 +1700,18 @@ export default function Home() {
         {/* ======== HOME VIEW ======== */}
         {activeBottomNav === 'Home' && (
           <>
-            {/* Carousel / Banner */}
-            {promotions.length > 0 && (
-              <div className="px-2.5 pt-2.5">
-                <div className="relative rounded-lg overflow-hidden bg-gradient-to-r from-blue-700 to-blue-500 aspect-[2.5/1]">
-                  <img
-                    src={promotions[carouselIndex]?.imageUrl}
-                    alt={promotions[carouselIndex]?.label}
-                    className="w-full h-full object-cover"
-                  />
-                  {promotions.length > 1 && (
-                    <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex gap-1.5">
-                      {promotions.map((_, idx) => (
-                        <button
-                          key={idx}
-                          onClick={() => setCarouselIndex(idx)}
-                          className={`w-2 h-2 rounded-full transition-all ${
-                            idx === carouselIndex ? 'bg-white scale-125' : 'bg-white/50'
-                          }`}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
+            {/* VYRON 3D Banner */}
+            <div className="px-2.5 pt-2.5">
+              <div className="relative rounded-xl overflow-hidden bg-[#0a0a1a] border border-white/5 shadow-lg shadow-[#6C63FF]/10">
+                <img
+                  src="/vyron_banner_3d.svg"
+                  alt="VYRON — AI Fantasy Cricket Platform"
+                  className="w-full h-auto"
+                />
+                {/* Subtle animated shimmer overlay */}
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/[0.03] to-transparent" />
               </div>
-            )}
+            </div>
 
             {/* Upcoming Matches Section */}
             <div className="flex items-center justify-between px-4 py-3">
