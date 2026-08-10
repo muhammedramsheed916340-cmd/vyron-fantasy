@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/admin-auth';
 
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
-
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -15,8 +13,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Server-side password verification — NEVER expose the password
-    if (password !== ADMIN_PASSWORD) {
+    // Server-side password verification — read at request time to always get latest value
+    const adminPassword = process.env.ADMIN_PASSWORD;
+    if (!adminPassword || password !== adminPassword) {
       return NextResponse.json(
         { status: 'error', message: 'Access denied' },
         { status: 401 }
