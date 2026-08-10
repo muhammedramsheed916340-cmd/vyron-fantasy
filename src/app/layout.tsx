@@ -14,11 +14,11 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Team Generation - Dream11 Team Generator",
-  description: "Dream11 Team Generator software also known as Team generation software is the india's best software to create Grand League winning teams in Dream11. This TG software is developed by believer01 youtube channel.",
-  keywords: ["Dream11", "Team Generation", "Grand League", "Fantasy Cricket", "TG Software", "Believer01"],
+  title: "VYRON — AI Fantasy Cricket Platform",
+  description: "VYRON is an AI-powered Fantasy Cricket Team Generator that creates optimized teams for Grand League, Small League, and H2H contests on Dream11 and My11Circle.",
+  keywords: ["VYRON", "Dream11", "Fantasy Cricket", "Team Generator", "AI", "Grand League", "My11Circle"],
   icons: {
-    icon: "/favicon.ico",
+    icon: "/vyron_icon.svg",
   },
 };
 

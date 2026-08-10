@@ -561,7 +561,67 @@ export function generateExtraTeams(input: ExtraTeamGenInput): GeneratedTeam[] {
   const isH2H = category === 'H2H';
   const isSL = category === 'SL';
 
-  for (let t = 0; t < count; t++) {
+  // Pre-compute all valid target role distributions that are compatible with fixed players
+  // This avoids wasting attempts on patterns that can never work
+  const categoryPatterns: number[][] = isH2H
+    ? [] // H2H uses dynamic generation below
+    : isSL
+    ? [] // SL uses dynamic generation below
+    : [
+        [1, 3, 2, 5], [1, 4, 1, 5], [1, 3, 3, 4], [1, 4, 2, 4],
+        [2, 3, 2, 4], [1, 5, 1, 4], [2, 3, 1, 5], [1, 4, 3, 3],
+        [2, 4, 1, 4], [1, 3, 1, 6], [2, 2, 3, 4], [1, 5, 2, 3],
+      ];
+
+  // Build list of valid target distributions: [WK, BAT, AR, BOWL]
+  const validDistributions: number[][] = [];
+  for (let wk = MIN_WK; wk <= MAX_WK; wk++) {
+    for (let bat = MIN_BAT; bat <= MAX_BAT; bat++) {
+      for (let ar = MIN_AR; ar <= MAX_AR; ar++) {
+        const bowl = CRICKET_TEAM_SIZE - wk - bat - ar;
+        if (bowl < MIN_BOWL || bowl > MAX_BOWL) continue;
+        // Check compatibility with fixed players
+        const nWK = Math.max(0, wk - fixedWKCount);
+        const nBat = Math.max(0, bat - fixedBatCount);
+        const nAR = Math.max(0, ar - fixedARCount);
+        const nBowl = Math.max(0, bowl - fixedBowlCount);
+        if (nWK + nBat + nAR + nBowl !== neededPlayers) continue;
+        // Check we have enough remaining players for each role
+        if (remWK.length < nWK || remBat.length < nBat || remAR.length < nAR || remBowl.length < nBowl) continue;
+        // For Mega GL / SL / H2H: prefer category-specific patterns but include all valid ones
+        validDistributions.push([wk, bat, ar, bowl]);
+      }
+    }
+  }
+
+  // Sort: prefer category-specific patterns first, then others
+  if (categoryPatterns.length > 0) {
+    const patternSet = new Set(categoryPatterns.map(p => p.join(',')));
+    validDistributions.sort((a, b) => {
+      const aInCat = patternSet.has(a.join(',')) ? 0 : 1;
+      const bInCat = patternSet.has(b.join(',')) ? 0 : 1;
+      return aInCat - bInCat;
+    });
+  }
+
+  if (validDistributions.length === 0) {
+    return teams;
+  }
+
+  // Team signature function for uniqueness check across generated teams
+  // Uses sorted player IDs + C/VC IDs to create a unique fingerprint
+  const teamSignatures = new Set<string>();
+  const makeTeamSignature = (players: TGPlayer[], c: TGPlayer, vc: TGPlayer): string => {
+    const playerIds = players.map(p => p.pl_id).sort((a, b) => a - b).join(',');
+    return `${playerIds}|C${c.pl_id}|VC${vc.pl_id}`;
+  };
+
+  // Generation loop with retry: keep trying until we have `count` unique teams
+  // or we exhaust the maximum total attempts
+  const MAX_TOTAL_ATTEMPTS = count * 500; // generous budget
+  let totalAttempts = 0;
+
+  for (let t = 0; t < count && totalAttempts < MAX_TOTAL_ATTEMPTS; t++) {
     let attempts = 0;
     let team: TGPlayer[] | null = null;
     let teamC: TGPlayer | null = null;
@@ -569,47 +629,27 @@ export function generateExtraTeams(input: ExtraTeamGenInput): GeneratedTeam[] {
 
     while (!team && attempts < 500) {
       attempts++;
+      totalAttempts++;
       const sr = seededRandom(seed + t * 1000 + attempts);
 
-      // We need `neededPlayers` more players (3)
-      // Determine target role counts for the full 11-player team
-      let targetWK, targetBat, targetAR, targetBowl;
+      // Pick a valid target distribution
+      let targetWK: number, targetBat: number, targetAR: number, targetBowl: number;
 
-      if (isH2H) {
-        targetWK = MIN_WK + (sr() > 0.5 ? 1 : 0);
-        targetAR = MIN_AR + (sr() > 0.6 ? 1 : 0);
-        targetBat = Math.max(MIN_BAT, 5 - targetWK + (sr() > 0.5 ? 1 : 0));
-        targetBowl = CRICKET_TEAM_SIZE - targetWK - targetBat - targetAR;
-      } else if (isSL) {
-        targetWK = 1 + (sr() > 0.7 ? 1 : 0);
-        targetAR = 2 + (sr() > 0.5 ? 1 : 0);
-        targetBat = 3 + (sr() > 0.5 ? 1 : 0);
-        targetBowl = CRICKET_TEAM_SIZE - targetWK - targetBat - targetAR;
+      if (validDistributions.length === 1) {
+        [targetWK, targetBat, targetAR, targetBowl] = validDistributions[0];
       } else {
-        const patterns = [
-          [1, 3, 2, 5], [1, 4, 1, 5], [1, 3, 3, 4], [1, 4, 2, 4],
-          [2, 3, 2, 4], [1, 5, 1, 4], [2, 3, 1, 5], [1, 4, 3, 3],
-          [2, 4, 1, 4], [1, 3, 1, 6], [2, 2, 3, 4], [1, 5, 2, 3],
-        ];
-        const pattern = patterns[Math.floor(sr() * patterns.length)];
-        [targetWK, targetBat, targetAR, targetBowl] = pattern;
+        // Bias towards category-preferred patterns (first half of sorted list)
+        const idx = sr() < 0.7
+          ? Math.floor(sr() * Math.ceil(validDistributions.length / 2)) // 70% chance from preferred half
+          : Math.floor(sr() * validDistributions.length); // 30% from any
+        [targetWK, targetBat, targetAR, targetBowl] = validDistributions[Math.min(idx, validDistributions.length - 1)];
       }
-
-      // Validate total counts
-      if (targetWK < MIN_WK || targetWK > MAX_WK) continue;
-      if (targetBat < MIN_BAT || targetBat > MAX_BAT) continue;
-      if (targetAR < MIN_AR || targetAR > MAX_AR) continue;
-      if (targetBowl < MIN_BOWL || targetBowl > MAX_BOWL) continue;
-      if (targetWK + targetBat + targetAR + targetBowl !== CRICKET_TEAM_SIZE) continue;
 
       // How many more of each role do we need?
       const needWK = Math.max(0, targetWK - fixedWKCount);
       const needBat = Math.max(0, targetBat - fixedBatCount);
       const needAR = Math.max(0, targetAR - fixedARCount);
       const needBowl = Math.max(0, targetBowl - fixedBowlCount);
-
-      // Total needed must equal neededPlayers (3)
-      if (needWK + needBat + needAR + needBowl !== neededPlayers) continue;
 
       // Check if we have enough remaining players for each role
       if (remWK.length < needWK || remBat.length < needBat ||
@@ -685,18 +725,109 @@ export function generateExtraTeams(input: ExtraTeamGenInput): GeneratedTeam[] {
         }
       }
 
+      // Uniqueness check: skip if this team signature already exists
+      const signature = makeTeamSignature(fullTeam, combo.c, combo.vc);
+      if (teamSignatures.has(signature)) continue;
+
       team = fullTeam;
       teamC = combo.c;
       teamVC = combo.vc;
+      teamSignatures.add(signature);
     }
 
     if (team && teamC && teamVC) {
       teams.push({
-        id: t + 1,
+        id: teams.length + 1,
         captain: teamC,
         viceCaptain: teamVC,
         players: team,
       });
+    } else {
+      // If we failed to generate a unique team for this slot,
+      // try extra attempts with different seeds before giving up
+      let extraAttempts = 0;
+      const MAX_EXTRA = 200;
+      while (teams.length < count && extraAttempts < MAX_EXTRA && totalAttempts < MAX_TOTAL_ATTEMPTS) {
+        extraAttempts++;
+        totalAttempts++;
+        const extraSeed = seed + count * 1000 + extraAttempts * 37;
+        const sr = seededRandom(extraSeed);
+
+        // Pick distribution
+        let targetWK: number, targetBat: number, targetAR: number, targetBowl: number;
+        if (validDistributions.length === 1) {
+          [targetWK, targetBat, targetAR, targetBowl] = validDistributions[0];
+        } else {
+          const idx = Math.floor(sr() * validDistributions.length);
+          [targetWK, targetBat, targetAR, targetBowl] = validDistributions[idx];
+        }
+
+        const needWK = Math.max(0, targetWK - fixedWKCount);
+        const needBat = Math.max(0, targetBat - fixedBatCount);
+        const needAR = Math.max(0, targetAR - fixedARCount);
+        const needBowl = Math.max(0, targetBowl - fixedBowlCount);
+
+        if (remWK.length < needWK || remBat.length < needBat ||
+            remAR.length < needAR || remBowl.length < needBowl) continue;
+
+        const sortFn = (a: TGPlayer, b: TGPlayer) => a.selected_by - b.selected_by;
+        const pickedWK = shuffleArray([...remWK].sort(sortFn), sr).slice(0, needWK);
+        const pickedBat = shuffleArray([...remBat].sort(sortFn), sr).slice(0, needBat);
+        const pickedAR = shuffleArray([...remAR].sort(sortFn), sr).slice(0, needAR);
+        const pickedBowl = shuffleArray([...remBowl].sort(sortFn), sr).slice(0, needBowl);
+
+        if (pickedWK.length < needWK || pickedBat.length < needBat ||
+            pickedAR.length < needAR || pickedBowl.length < needBowl) continue;
+
+        const remaining = [...pickedWK, ...pickedBat, ...pickedAR, ...pickedBowl];
+        const fullTeam = [...fixedPlayers, ...remaining];
+
+        const uniqueIds = new Set(fullTeam.map(p => p.pl_id));
+        if (uniqueIds.size !== fullTeam.length) continue;
+
+        const totalCredits = fullTeam.reduce((sum, p) => sum + p.credits, 0);
+        if (totalCredits > MAX_CREDITS) continue;
+
+        const leftCount = fullTeam.filter(p => p.team_name === leftTeamName).length;
+        const rightCount = fullTeam.filter(p => p.team_name === rightTeamName).length;
+        if (leftCount > MAX_FROM_ONE_TEAM || rightCount > MAX_FROM_ONE_TEAM) continue;
+        if (leftCount < 1 || rightCount < 1) continue;
+
+        // C/VC selection
+        const comboIndex = extraAttempts % cVCCombos.length;
+        let combo = cVCCombos[comboIndex];
+        const teamPlayerIds = new Set(fullTeam.map(p => p.pl_id));
+        if (!teamPlayerIds.has(combo.c.pl_id) || !teamPlayerIds.has(combo.vc.pl_id)) {
+          let foundValidCombo = false;
+          for (let ci = 0; ci < cVCCombos.length; ci++) {
+            const tryCombo = cVCCombos[(comboIndex + ci) % cVCCombos.length];
+            if (teamPlayerIds.has(tryCombo.c.pl_id) && teamPlayerIds.has(tryCombo.vc.pl_id)) {
+              combo = tryCombo;
+              foundValidCombo = true;
+              break;
+            }
+          }
+          if (!foundValidCombo) {
+            const sorted = [...fullTeam].sort((a, b) =>
+              (b.points * 0.4 + b.selected_by * 0.3 + b.captain_percentage * 0.3) -
+              (a.points * 0.4 + a.selected_by * 0.3 + a.captain_percentage * 0.3)
+            );
+            combo = { c: sorted[0], vc: sorted.length > 1 ? sorted[1] : sorted[0] };
+          }
+        }
+
+        const signature = makeTeamSignature(fullTeam, combo.c, combo.vc);
+        if (teamSignatures.has(signature)) continue;
+        teamSignatures.add(signature);
+
+        teams.push({
+          id: teams.length + 1,
+          captain: combo.c,
+          viceCaptain: combo.vc,
+          players: fullTeam,
+        });
+        break; // Successfully added a team, move on
+      }
     }
   }
 

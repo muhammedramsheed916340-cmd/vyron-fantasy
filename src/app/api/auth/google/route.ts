@@ -34,10 +34,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         status: 'success',
         data: {
-          token: 'tg_local_' + Date.now(),
+          token: 'vyron_local_' + Date.now(),
           user: {
-            name: 'TG User',
-            email: 'user@teamgeneration.in',
+            name: 'VYRON User',
+            email: 'user@vyron.app',
             picture: '',
             role: 'user',
             hasMobileNumber: false,

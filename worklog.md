@@ -54,3 +54,37 @@ Stage Summary:
 - Replace Team transfer now fully functional - fetches existing teams, lets user select which to replace, and passes IDs to the API
 - No more TODO stub error
 - Proper UX with loading states, empty states, selection limits, and disabled button when nothing selected
+---
+Task ID: 1
+Agent: Main Agent
+Task: Fix Extra Generation 20-team bug + Full VYRON brand replacement
+
+Work Log:
+- Analyzed generateExtraTeams() in tg-api.ts - found no uniqueness enforcement between teams
+- Added team signature-based deduplication (makeTeamSignature using sorted player IDs + C/VC IDs)
+- Added retry logic with extra attempts when unique team generation fails for a slot
+- Added total attempt budget (count * 500) to prevent infinite loops
+- Updated handleGenerateExtraTeams in page.tsx to capture requestedCount and validate generated vs requested
+- Added partial generation warning toast when teams.length < requestedCount
+- Created VYRON brand logos: vyron_logo.svg, vyron_logo_dark.svg, vyron_icon.svg
+- Replaced all old brand references: Team Generation → VYRON, Believer01 → removed, TG Software → VYRON
+- Removed all social media links (YouTube, Telegram), old contact info, CEO Bobby, owner.jpg
+- Updated ContactUsContent to show VYRON Support only
+- Updated AboutUsContent with VYRON logo and AI-powered description
+- Updated Privacy, Terms, Disclaimer content with VYRON branding
+- Changed primary color from #5b4b8a → #6C63FF (VYRON electric indigo)
+- Changed secondary color from #5e35b1 → #00D4AA (VYRON teal)
+- Changed header to dark futuristic bg-[#0f0f23]
+- Changed sidebar to dark theme bg-[#0f0f23]
+- Updated layout.tsx metadata: title, description, keywords, favicon
+- Updated package.json name to "vyron", version to "1.0.0"
+- Updated auth fallback data: TG User → VYRON User, email → user@vyron.app
+- Verified Select All/Deselect All buttons already exist in Replace Team section
+- Build verified successfully
+- Dev server verified: VYRON branding visible in HTML output
+
+Stage Summary:
+- Extra Generation bug fixed: uniqueness enforcement + retry logic ensures requested team count
+- Full VYRON rebrand complete: all user-facing text, logos, colors, metadata updated
+- Zero remaining user-visible old brand references (only internal encryption key and code comments remain)
+- App builds and runs successfully with VYRON identity

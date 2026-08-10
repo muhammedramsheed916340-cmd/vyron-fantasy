@@ -123,8 +123,7 @@ const SIDEBAR_ITEMS = [
   { name: 'Terms And Conditions', icon: FileText, type: 'modal' as const, modalKey: 'terms' },
   { name: 'Disclaimer', icon: AlertTriangle, type: 'modal' as const, modalKey: 'disclaimer' },
   { name: 'contact us', icon: Mail, type: 'modal' as const, modalKey: 'contact' },
-  { name: 'follow us on youtube', icon: Youtube, type: 'link' as const, url: 'https://www.youtube.com/c/believer01' },
-  { name: 'about us', icon: Info, type: 'modal' as const, modalKey: 'about' },
+  { name: 'About VYRON', icon: Info, type: 'modal' as const, modalKey: 'about' },
 ]
 
 // Team count options
@@ -238,7 +237,7 @@ function MatchCard({ match, onSave, isSaved, onOpen }: { match: Match; onSave: (
           </Button>
           <Button
             size="sm"
-            className="h-7 w-7 p-0 bg-[#5e35b1] hover:bg-[#4527a0] text-white rounded"
+            className="h-7 w-7 p-0 bg-[#00D4AA] hover:bg-[#00B894] text-white rounded"
             onClick={(e) => { e.stopPropagation(); onOpen(match) }}
           >
             <List className="w-3.5 h-3.5" />
@@ -315,11 +314,11 @@ function GeneratedTeamCard({ team, leftTeamName, rightTeamName, teamIndex }: {
         onClick={() => setExpanded(!expanded)}
       >
         <div className="flex items-center gap-2">
-          <span className="text-xs font-bold text-[#5b4b8a]">Team {teamIndex}</span>
+          <span className="text-xs font-bold text-[#6C63FF]">Team {teamIndex}</span>
           <Badge className="bg-[#00bfa5] text-white text-[9px] border-0 px-1.5">
             C: {team.captain.name}
           </Badge>
-          <Badge className="bg-[#5e35b1] text-white text-[9px] border-0 px-1.5">
+          <Badge className="bg-[#00D4AA] text-white text-[9px] border-0 px-1.5">
             VC: {team.viceCaptain.name}
           </Badge>
         </div>
@@ -336,7 +335,7 @@ function GeneratedTeamCard({ team, leftTeamName, rightTeamName, teamIndex }: {
           {/* Players by team */}
           <div className="grid grid-cols-2 divide-x divide-gray-100">
             <div className="p-2">
-              <p className="text-[10px] font-bold text-[#5b4b8a] mb-1">{leftTeamName} ({leftPlayers.length})</p>
+              <p className="text-[10px] font-bold text-[#6C63FF] mb-1">{leftTeamName} ({leftPlayers.length})</p>
               {leftPlayers.map(p => (
                 <PlayerRow
                   key={p.pl_id}
@@ -347,7 +346,7 @@ function GeneratedTeamCard({ team, leftTeamName, rightTeamName, teamIndex }: {
               ))}
             </div>
             <div className="p-2">
-              <p className="text-[10px] font-bold text-[#5e35b1] mb-1">{rightTeamName} ({rightPlayers.length})</p>
+              <p className="text-[10px] font-bold text-[#00D4AA] mb-1">{rightTeamName} ({rightPlayers.length})</p>
               {rightPlayers.map(p => (
                 <PlayerRow
                   key={p.pl_id}
@@ -368,7 +367,7 @@ function GeneratedTeamCard({ team, leftTeamName, rightTeamName, teamIndex }: {
 function HowToGenerateContent() {
   return (
     <div className="space-y-4 text-sm text-gray-700">
-      <h3 className="text-lg font-bold text-[#5b4b8a]">How to Generate Teams?</h3>
+      <h3 className="text-lg font-bold text-[#6C63FF]">How to Generate Teams?</h3>
       <ol className="list-decimal pl-5 space-y-2">
         <li>Select a match from the &quot;Upcoming Matches&quot; list on the home page.</li>
         <li>Click on the match card to open the team generation page.</li>
@@ -380,7 +379,7 @@ function HowToGenerateContent() {
         <li>Login to <strong>Dream11</strong> or <strong>My11Circle</strong> to transfer teams directly.</li>
       </ol>
       <div className="bg-blue-50 p-3 rounded-lg border border-blue-200">
-        <p className="text-blue-800 font-medium">💡 Tip: Watch the tutorial videos on our YouTube channel for detailed guidance!</p>
+        <p className="text-blue-800 font-medium">💡 Tip: Use Extra Generation mode for advanced team creation with fixed players and captain options!</p>
       </div>
     </div>
   )
@@ -389,7 +388,7 @@ function HowToGenerateContent() {
 function BestTipsContent() {
   return (
     <div className="space-y-4 text-sm text-gray-700">
-      <h3 className="text-lg font-bold text-[#5b4b8a]">Best Tips for Dream11</h3>
+      <h3 className="text-lg font-bold text-[#6C63FF]">Best Tips for Dream11</h3>
       <div className="space-y-3">
         <div className="bg-green-50 p-3 rounded-lg border border-green-200">
           <h4 className="font-semibold text-green-800 mb-1">🎯 Captain & Vice Captain Selection</h4>
@@ -405,7 +404,7 @@ function BestTipsContent() {
         </div>
         <div className="bg-amber-50 p-3 rounded-lg border border-amber-200">
           <h4 className="font-semibold text-amber-800 mb-1">🏆 Grand League Strategy</h4>
-          <p>Create multiple teams with different combinations. Use TG Software to generate optimized teams automatically.</p>
+          <p>Create multiple teams with different combinations. Use VYRON to generate optimized teams automatically.</p>
         </div>
         <div className="bg-red-50 p-3 rounded-lg border border-red-200">
           <h4 className="font-semibold text-red-800 mb-1">⚡ Differential Picks</h4>
@@ -419,9 +418,9 @@ function BestTipsContent() {
 function PrivacyPolicyContent() {
   return (
     <div className="space-y-3 text-sm text-gray-700">
-      <h3 className="text-lg font-bold text-[#5b4b8a]">Privacy Policy</h3>
-      <p className="font-semibold">Last updated: January 2021</p>
-      <p>Team Generation (&quot;we&quot;, &quot;us&quot;, or &quot;our&quot;) operates the teamgeneration.in website. This page informs you of our policies regarding the collection, use, and disclosure of personal information when you use our Service.</p>
+      <h3 className="text-lg font-bold text-[#6C63FF]">Privacy Policy</h3>
+      <p className="font-semibold">Last updated: January 2025</p>
+      <p>VYRON (&quot;we&quot;, &quot;us&quot;, or &quot;our&quot;) operates the VYRON platform. This page informs you of our policies regarding the collection, use, and disclosure of personal information when you use our Service.</p>
       <h4 className="font-semibold text-gray-900">Information We Collect</h4>
       <p>We collect information that you provide directly to us, including:</p>
       <ul className="list-disc pl-5 space-y-1">
@@ -442,19 +441,19 @@ function PrivacyPolicyContent() {
 function TermsAndConditionsContent() {
   return (
     <div className="space-y-3 text-sm text-gray-700">
-      <h3 className="text-lg font-bold text-[#5b4b8a]">Terms And Conditions</h3>
-      <p className="font-semibold">Last updated: January 2021</p>
-      <p>By accessing and using Team Generation software (teamgeneration.in), you agree to be bound by these Terms and Conditions.</p>
+      <h3 className="text-lg font-bold text-[#6C63FF]">Terms And Conditions</h3>
+      <p className="font-semibold">Last updated: January 2025</p>
+      <p>By accessing and using VYRON software, you agree to be bound by these Terms and Conditions.</p>
       <h4 className="font-semibold text-gray-900">1. Acceptance of Terms</h4>
       <p>By using this service, you acknowledge that you have read and agree to these terms. If you do not agree, please do not use the service.</p>
       <h4 className="font-semibold text-gray-900">2. Service Description</h4>
-      <p>Team Generation is a fantasy sports team generator tool that helps create optimized teams for platforms like Dream11. The software provides team suggestions based on algorithms and analysis.</p>
+      <p>VYRON is an AI-powered fantasy sports team generator that helps create optimized teams for platforms like Dream11. The software provides team suggestions based on algorithms and analysis.</p>
       <h4 className="font-semibold text-gray-900">3. Disclaimer</h4>
       <p>The teams generated by this software are suggestions only. We do not guarantee any winnings or results. Fantasy sports involve risk, and users should play responsibly.</p>
       <h4 className="font-semibold text-gray-900">4. User Responsibilities</h4>
       <p>Users are responsible for their own decisions and actions while using the generated teams. Users must comply with the terms of the respective fantasy sports platforms.</p>
       <h4 className="font-semibold text-gray-900">5. Intellectual Property</h4>
-      <p>All content, software, and materials on this platform are owned by Team Generation / Believer01 and are protected by intellectual property laws.</p>
+      <p>All content, software, and materials on this platform are owned by VYRON and are protected by intellectual property laws.</p>
     </div>
   )
 }
@@ -462,12 +461,12 @@ function TermsAndConditionsContent() {
 function DisclaimerContent() {
   return (
     <div className="space-y-3 text-sm text-gray-700">
-      <h3 className="text-lg font-bold text-[#5b4b8a]">Disclaimer</h3>
-      <p>The information provided by Team Generation (&quot;we&quot;, &quot;us&quot;, or &quot;our&quot;) on teamgeneration.in is for general informational purposes only.</p>
+      <h3 className="text-lg font-bold text-[#6C63FF]">Disclaimer</h3>
+      <p>The information provided by VYRON (&quot;we&quot;, &quot;us&quot;, or &quot;our&quot;) is for general informational purposes only.</p>
       <div className="bg-amber-50 p-3 rounded-lg border border-amber-200">
         <p className="text-amber-800 font-medium">⚠️ Important Disclaimer:</p>
         <ul className="list-disc pl-5 mt-2 space-y-1 text-amber-700">
-          <li>Team Generation is NOT affiliated with Dream11 or any other fantasy sports platform.</li>
+          <li>VYRON is NOT affiliated with Dream11 or any other fantasy sports platform.</li>
           <li>The teams generated are suggestions only and do not guarantee any winnings.</li>
           <li>Fantasy sports involve financial risk. Play at your own risk and responsibility.</li>
           <li>We are not responsible for any financial losses incurred while using our suggestions.</li>
@@ -482,28 +481,14 @@ function DisclaimerContent() {
 function ContactUsContent() {
   return (
     <div className="space-y-4 text-sm text-gray-700">
-      <h3 className="text-lg font-bold text-[#5b4b8a]">Contact Us</h3>
-      <p>If you have any questions, suggestions, or need support, feel free to reach out to us through the following channels:</p>
+      <h3 className="text-lg font-bold text-[#6C63FF]">VYRON Support</h3>
+      <p>If you have any questions, suggestions, or need support, feel free to reach out to us:</p>
       <div className="space-y-3">
         <div className="flex items-center gap-3 bg-gray-50 p-3 rounded-lg">
-          <Youtube className="w-5 h-5 text-red-600" />
+          <Mail className="w-5 h-5 text-[#6C63FF]" />
           <div>
-            <p className="font-semibold text-gray-900">YouTube Channel</p>
-            <a href="https://www.youtube.com/c/believer01" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">youtube.com/c/believer01</a>
-          </div>
-        </div>
-        <div className="flex items-center gap-3 bg-gray-50 p-3 rounded-lg">
-          <ExternalLink className="w-5 h-5 text-blue-600" />
-          <div>
-            <p className="font-semibold text-gray-900">Telegram Group</p>
-            <a href="https://t.me/TG_believer01" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">t.me/TG_believer01</a>
-          </div>
-        </div>
-        <div className="flex items-center gap-3 bg-gray-50 p-3 rounded-lg">
-          <Mail className="w-5 h-5 text-green-600" />
-          <div>
-            <p className="font-semibold text-gray-900">Email</p>
-            <p>For business inquiries and support, reach out via our YouTube channel.</p>
+            <p className="font-semibold text-gray-900">VYRON</p>
+            <p className="text-gray-600">AI Fantasy Cricket Platform</p>
           </div>
         </div>
       </div>
@@ -514,26 +499,21 @@ function ContactUsContent() {
 function AboutUsContent() {
   return (
     <div className="space-y-4 text-sm text-gray-700">
-      <h3 className="text-lg font-bold text-[#5b4b8a]">About Us</h3>
+      <h3 className="text-lg font-bold text-[#6C63FF]">About VYRON</h3>
       <div className="flex items-center gap-3 mb-4">
-        <img src="/owner.jpg" alt="CEO Bobby" className="w-16 h-16 rounded-full object-cover border-2 border-[#5b4b8a]" />
-        <div>
-          <p className="font-bold text-gray-900">CEO Bobby</p>
-          <p className="text-xs text-gray-500">Founder & Developer</p>
-        </div>
+        <img src="/vyron_logo.svg" alt="VYRON" className="h-12" />
       </div>
-      <p>Team Generation (TG) is India&apos;s best Dream11 Team Generator software developed by the <strong>Believer01</strong> YouTube channel.</p>
-      <p>Our software uses advanced algorithms and data analysis to help fantasy sports players create optimized teams for Grand League (GL), Small League (SL), and Head-to-Head (H2H) contests on Dream11 and other fantasy platforms.</p>
+      <p>VYRON is an advanced AI-powered Fantasy Cricket Team Generator that uses intelligent algorithms and data analysis to create optimized teams for Grand League (GL), Small League (SL), and Head-to-Head (H2H) contests.</p>
       <h4 className="font-semibold text-gray-900">What We Offer:</h4>
       <ul className="list-disc pl-5 space-y-1">
-        <li>Automatic team generation for Cricket, Football, Basketball, and Kabaddi</li>
+        <li>AI-optimized team generation for Cricket, Football, Basketball, and Kabaddi</li>
         <li>Multiple team creation for Grand League contests</li>
         <li>Direct transfer to Dream11 &amp; My11Circle</li>
-        <li>Expert predictions and analysis</li>
-        <li>Prime team suggestions</li>
+        <li>Extra Generation with fixed players and captain options</li>
+        <li>Auto and Manual mode for team customization</li>
       </ul>
-      <div className="bg-[#5b4b8a]/5 p-3 rounded-lg border border-[#5b4b8a]/20">
-        <p className="text-[#5b4b8a] font-medium">🏆 Trusted by thousands of Dream11 players across India</p>
+      <div className="bg-[#6C63FF]/5 p-3 rounded-lg border border-[#6C63FF]/20">
+        <p className="text-[#6C63FF] font-medium">AI-Powered Fantasy Cricket Team Generation</p>
       </div>
     </div>
   )
@@ -701,7 +681,7 @@ export default function Home() {
   // Handle match card click - open match detail
   const handleOpenMatch = async (match: Match) => {
     setSelectedMatch(match)
-    setSelectedCategory(null)
+    setSelectedCategory(match.categories[0] || null)
     setSelectedTeamCount(20)
     setGeneratedTeams([])
     setShowPlayerList(false)
@@ -819,6 +799,9 @@ export default function Home() {
       return
     }
 
+    // Capture the requested count for validation after generation
+    const requestedCount = selectedTeamCount
+
     setGenerating(true)
     setGeneratedTeams([])
 
@@ -830,7 +813,7 @@ export default function Home() {
         leftPlayers: matchDetail.left_team_players,
         rightPlayers: matchDetail.right_team_players,
         category: selectedCategory,
-        count: selectedTeamCount,
+        count: requestedCount,
         seed: Date.now(),
       })
 
@@ -839,6 +822,8 @@ export default function Home() {
 
       if (teams.length === 0) {
         toast({ title: 'Could not generate valid teams with these fixed players. Try different combinations.', variant: 'destructive' })
+      } else if (teams.length < requestedCount) {
+        toast({ title: `${teams.length} of ${requestedCount} extra teams generated (limited unique combinations)`, variant: 'destructive' })
       } else {
         toast({ title: `${teams.length} extra teams generated!` })
       }
@@ -1081,7 +1066,7 @@ export default function Home() {
           setFantasyAccounts(prev => {
             const updated = { ...prev, [loginPlatform!]: account }
             // Also save to localStorage for persistence
-            localStorage.setItem('tg_fantasy_accounts', JSON.stringify(updated))
+            localStorage.setItem('vyron_fantasy_accounts', JSON.stringify(updated))
             return updated
           })
         }
@@ -1199,7 +1184,7 @@ export default function Home() {
         // Auth token is invalid/expired — clear it and prompt re-login
         setFantasyAccounts(prev => {
           const updated = { ...prev, [transferPlatform!]: null }
-          localStorage.setItem('tg_fantasy_accounts', JSON.stringify(updated))
+          localStorage.setItem('vyron_fantasy_accounts', JSON.stringify(updated))
           return updated
         })
         setTransferProgress({ current: 0, total: 0, status: 'error' })
@@ -1389,40 +1374,40 @@ export default function Home() {
         const { token, user } = data.data
         setAuthToken(token)
         setUserProfile({
-          name: user.name || 'TG User',
-          email: user.email || 'user@teamgeneration.in',
+          name: user.name || 'VYRON User',
+          email: user.email || 'user@vyron.app',
           picture: user.picture || '',
         })
         localStorage.setItem('user_token', token)
         localStorage.setItem('user_data', JSON.stringify(user))
-        toast({ title: `Welcome, ${user.name || 'TG User'}!` })
+        toast({ title: `Welcome, ${user.name || 'VYRON User'}!` })
       } else {
         // Fallback: set local auth directly
-        const fakeToken = 'tg_local_' + Date.now()
-        const userData = { name: 'TG User', email: 'user@teamgeneration.in', role: 'user' }
+        const fakeToken = 'vyron_local_' + Date.now()
+        const userData = { name: 'VYRON User', email: 'user@vyron.app', role: 'user' }
         setAuthToken(fakeToken)
         setUserProfile({
-          name: 'TG User',
-          email: 'user@teamgeneration.in',
+          name: 'VYRON User',
+          email: 'user@vyron.app',
           picture: '',
         })
         localStorage.setItem('user_token', fakeToken)
         localStorage.setItem('user_data', JSON.stringify(userData))
-        toast({ title: 'Welcome, TG User!' })
+        toast({ title: 'Welcome, VYRON User!' })
       }
     } catch {
       // Fallback: set local auth directly
-      const fakeToken = 'tg_local_' + Date.now()
-      const userData = { name: 'TG User', email: 'user@teamgeneration.in', role: 'user' }
+      const fakeToken = 'vyron_local_' + Date.now()
+      const userData = { name: 'VYRON User', email: 'user@vyron.app', role: 'user' }
       setAuthToken(fakeToken)
       setUserProfile({
-        name: 'TG User',
-        email: 'user@teamgeneration.in',
+        name: 'VYRON User',
+        email: 'user@vyron.app',
         picture: '',
       })
       localStorage.setItem('user_token', fakeToken)
       localStorage.setItem('user_data', JSON.stringify(userData))
-      toast({ title: 'Welcome, TG User!' })
+      toast({ title: 'Welcome, VYRON User!' })
     } finally {
       setOtpVerifying(false)
     }
@@ -1452,7 +1437,7 @@ export default function Home() {
   // Load stored fantasy accounts on mount
   useEffect(() => {
     try {
-      const stored = localStorage.getItem('tg_fantasy_accounts')
+      const stored = localStorage.getItem('vyron_fantasy_accounts')
       if (stored) {
         const parsed = JSON.parse(stored)
         setFantasyAccounts(parsed)
@@ -1466,7 +1451,7 @@ export default function Home() {
   return (
     <div className="min-h-screen flex flex-col bg-[#f4f6f9]">
       {/* ============ TOP HEADER ============ */}
-      <header className="bg-[#5b4b8a] text-white flex items-center justify-between px-3 h-[56px] sticky top-0 z-50">
+      <header className="bg-[#0f0f23] text-white flex items-center justify-between px-3 h-[56px] sticky top-0 z-50">
         <button
           onClick={() => setSidebarOpen(true)}
           className="p-1.5 hover:bg-white/10 rounded-md transition-colors"
@@ -1478,9 +1463,9 @@ export default function Home() {
         <div className="flex flex-col items-center">
           <div className="flex items-center gap-1.5">
             <Trophy className="w-5 h-5 text-yellow-400" />
-            <span className="font-bold text-[15px]">Team Generation</span>
+            <span className="font-bold text-[15px]">VYRON</span>
           </div>
-          <span className="text-[9px] opacity-80 -mt-0.5">Associated with Believer01</span>
+          <span className="text-[9px] opacity-80 -mt-0.5">AI Fantasy Cricket Platform</span>
         </div>
 
         <button
@@ -1502,14 +1487,14 @@ export default function Home() {
                 onClick={() => setActiveSport(sport.key)}
                 className={`flex-1 flex flex-col items-center py-2.5 text-xs transition-colors relative ${
                   activeSport === sport.key
-                    ? 'text-[#5b4b8a] font-semibold'
+                    ? 'text-[#6C63FF] font-semibold'
                     : 'text-gray-500 hover:text-gray-700'
                 }`}
               >
                 <span className="text-lg mb-0.5">{sport.icon}</span>
                 <span>{sport.name}</span>
                 {activeSport === sport.key && (
-                  <div className="absolute bottom-0 left-[20%] right-[20%] h-[3px] bg-[#5b4b8a] rounded-t-full" />
+                  <div className="absolute bottom-0 left-[20%] right-[20%] h-[3px] bg-[#6C63FF] rounded-t-full" />
                 )}
               </button>
             ))}
@@ -1551,7 +1536,7 @@ export default function Home() {
 
             {/* Upcoming Matches Section */}
             <div className="flex items-center justify-between px-4 py-3">
-              <h2 className="text-base font-semibold text-[#5b4b8a]">Upcoming Matches</h2>
+              <h2 className="text-base font-semibold text-[#6C63FF]">Upcoming Matches</h2>
               <Button
                 size="sm"
                 className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs h-7 px-3"
@@ -1606,7 +1591,7 @@ export default function Home() {
         {activeBottomNav === 'My matches' && (
           <>
             <div className="flex items-center justify-between px-4 py-3">
-              <h2 className="text-base font-semibold text-[#5b4b8a]">My Saved Matches</h2>
+              <h2 className="text-base font-semibold text-[#6C63FF]">My Saved Matches</h2>
               <span className="text-xs text-gray-500">{savedMatchList.length} match{savedMatchList.length !== 1 ? 'es' : ''}</span>
             </div>
 
@@ -1630,7 +1615,7 @@ export default function Home() {
                 <p className="text-lg font-semibold text-gray-700 mb-1">No saved matches</p>
                 <p className="text-sm text-gray-500 mb-6 text-center">Save matches from the home page to see them here</p>
                 <Button
-                  className="bg-[#5b4b8a] hover:bg-[#4a3c73] text-white"
+                  className="bg-[#6C63FF] hover:bg-[#5B54E0] text-white"
                   onClick={() => setActiveBottomNav('Home')}
                 >
                   <HomeIcon className="w-4 h-4 mr-2" />
@@ -1645,7 +1630,7 @@ export default function Home() {
         {activeBottomNav === 'Research' && (
           <>
             <div className="px-4 py-3">
-              <h2 className="text-base font-semibold text-[#5b4b8a]">Match Research</h2>
+              <h2 className="text-base font-semibold text-[#6C63FF]">Match Research</h2>
               <p className="text-xs text-gray-500 mt-0.5">Analyze lineups, fantasy platforms & more</p>
             </div>
 
@@ -1731,7 +1716,7 @@ export default function Home() {
               {userProfile ? (
                 <>
                   <div className="flex items-center gap-4 mb-4">
-                    <div className="w-16 h-16 rounded-full bg-gradient-to-br from-[#5b4b8a] to-[#7c6bb5] flex items-center justify-center text-white text-2xl font-bold shadow-md overflow-hidden">
+                    <div className="w-16 h-16 rounded-full bg-gradient-to-br from-[#6C63FF] to-[#7c6bb5] flex items-center justify-center text-white text-2xl font-bold shadow-md overflow-hidden">
                       {userProfile.picture ? (
                         <img src={userProfile.picture} alt={userProfile.name} className="w-full h-full object-cover" />
                       ) : (
@@ -1745,7 +1730,7 @@ export default function Home() {
                     </div>
                   </div>
                   <div className="flex items-center gap-3 bg-gray-50 rounded-lg p-3 mb-2">
-                    <BookmarkCheck className="w-5 h-5 text-[#5b4b8a]" />
+                    <BookmarkCheck className="w-5 h-5 text-[#6C63FF]" />
                     <div>
                       <p className="text-sm font-medium text-gray-900">{savedMatchList.length} Saved Match{savedMatchList.length !== 1 ? 'es' : ''}</p>
                       <p className="text-xs text-gray-500">Across all sports</p>
@@ -1782,7 +1767,7 @@ export default function Home() {
               ) : (
                 <>
                   <div className="flex items-center gap-4 mb-4">
-                    <div className="w-16 h-16 rounded-full bg-gradient-to-br from-[#5b4b8a] to-[#7c6bb5] flex items-center justify-center text-white text-2xl font-bold shadow-md">
+                    <div className="w-16 h-16 rounded-full bg-gradient-to-br from-[#6C63FF] to-[#7c6bb5] flex items-center justify-center text-white text-2xl font-bold shadow-md">
                       ?
                     </div>
                     <div>
@@ -1849,7 +1834,7 @@ export default function Home() {
                 onClick={() => setActiveModal('about')}
                 className="w-full flex items-center gap-3 px-4 py-3.5 text-sm text-gray-800 hover:bg-gray-50 transition-colors border-b border-gray-100 text-left"
               >
-                <Info className="w-5 h-5 text-[#5b4b8a]" />
+                <Info className="w-5 h-5 text-[#6C63FF]" />
                 <span className="flex-1">About Us</span>
                 <ChevronRight className="w-4 h-4 text-gray-400" />
               </button>
@@ -1857,7 +1842,7 @@ export default function Home() {
                 onClick={() => setActiveModal('contact')}
                 className="w-full flex items-center gap-3 px-4 py-3.5 text-sm text-gray-800 hover:bg-gray-50 transition-colors border-b border-gray-100 text-left"
               >
-                <Mail className="w-5 h-5 text-[#5b4b8a]" />
+                <Mail className="w-5 h-5 text-[#6C63FF]" />
                 <span className="flex-1">Contact Us</span>
                 <ChevronRight className="w-4 h-4 text-gray-400" />
               </button>
@@ -1865,7 +1850,7 @@ export default function Home() {
                 onClick={() => setActiveModal('privacy')}
                 className="w-full flex items-center gap-3 px-4 py-3.5 text-sm text-gray-800 hover:bg-gray-50 transition-colors border-b border-gray-100 text-left"
               >
-                <Shield className="w-5 h-5 text-[#5b4b8a]" />
+                <Shield className="w-5 h-5 text-[#6C63FF]" />
                 <span className="flex-1">Privacy Policy</span>
                 <ChevronRight className="w-4 h-4 text-gray-400" />
               </button>
@@ -1873,7 +1858,7 @@ export default function Home() {
                 onClick={() => setActiveModal('terms')}
                 className="w-full flex items-center gap-3 px-4 py-3.5 text-sm text-gray-800 hover:bg-gray-50 transition-colors border-b border-gray-100 text-left"
               >
-                <FileText className="w-5 h-5 text-[#5b4b8a]" />
+                <FileText className="w-5 h-5 text-[#6C63FF]" />
                 <span className="flex-1">Terms & Conditions</span>
                 <ChevronRight className="w-4 h-4 text-gray-400" />
               </button>
@@ -1881,27 +1866,18 @@ export default function Home() {
                 onClick={() => setActiveModal('disclaimer')}
                 className="w-full flex items-center gap-3 px-4 py-3.5 text-sm text-gray-800 hover:bg-gray-50 transition-colors border-b border-gray-100 text-left"
               >
-                <AlertTriangle className="w-5 h-5 text-[#5b4b8a]" />
+                <AlertTriangle className="w-5 h-5 text-[#6C63FF]" />
                 <span className="flex-1">Disclaimer</span>
                 <ChevronRight className="w-4 h-4 text-gray-400" />
               </button>
-              <a
-                href="https://www.youtube.com/c/believer01"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="w-full flex items-center gap-3 px-4 py-3.5 text-sm text-gray-800 hover:bg-gray-50 transition-colors text-left"
-              >
-                <Youtube className="w-5 h-5 text-red-600" />
-                <span className="flex-1">Follow us on YouTube</span>
-                <ExternalLink className="w-4 h-4 text-gray-400" />
-              </a>
+
             </div>
 
-            {/* TG Logo & Version info */}
+            {/* VYRON Logo & Version info */}
             <div className="flex flex-col items-center py-6">
-              <img src="/tg_dark_logo.png" alt="TG Logo" className="h-12 mb-3 opacity-70" />
-              <p className="text-xs text-gray-400 font-medium">Team Generation v2.1.0</p>
-              <p className="text-[10px] text-gray-400">© 2021 Believer01. All rights reserved.</p>
+              <img src="/vyron_logo_dark.svg" alt="VYRON" className="h-12 mb-3" />
+              <p className="text-xs text-gray-400 font-medium">VYRON v1.0.0</p>
+              <p className="text-[10px] text-gray-400">© 2025 VYRON. All rights reserved.</p>
             </div>
           </div>
         )}
@@ -1918,13 +1894,13 @@ export default function Home() {
                 key={item.name}
                 onClick={() => setActiveBottomNav(item.name)}
                 className={`flex-1 flex flex-col items-center py-2 text-[11px] relative transition-colors ${
-                  isActive ? 'text-[#5b4b8a] font-semibold' : 'text-gray-500'
+                  isActive ? 'text-[#6C63FF] font-semibold' : 'text-gray-500'
                 }`}
               >
                 <Icon className="w-5 h-5 mb-0.5" />
                 <span>{item.name}</span>
                 {isActive && (
-                  <div className="absolute top-0 left-[20%] right-[20%] h-[3px] bg-[#5b4b8a] rounded-b-full" />
+                  <div className="absolute top-0 left-[20%] right-[20%] h-[3px] bg-[#6C63FF] rounded-b-full" />
                 )}
               </button>
             )
@@ -1934,11 +1910,11 @@ export default function Home() {
 
       {/* ============ SIDEBAR ============ */}
       <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
-        <SheetContent side="left" className="w-[280px] p-0 bg-[#5b4b8a] text-white border-0">
+        <SheetContent side="left" className="w-[280px] p-0 bg-[#0f0f23] text-white border-0">
           <SheetTitle className="sr-only">Navigation Menu</SheetTitle>
           <div className="flex flex-col h-full">
             <div className="flex items-center justify-between px-3 h-[56px] border-b border-white/20">
-              <img src="/tg_dark_logo.png" alt="TG Logo" className="h-10" />
+              <img src="/vyron_logo_dark.svg" alt="VYRON" className="h-10" />
               <button
                 onClick={() => setSidebarOpen(false)}
                 className="p-1 hover:bg-white/10 rounded-md"
@@ -1976,21 +1952,12 @@ export default function Home() {
 
             <div className="border-t border-white/20 p-4">
               <p className="text-xs opacity-70 mb-2">developed by</p>
-              <a
-                href="https://www.youtube.com/c/Believer01"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-2 mb-2 hover:opacity-80"
-              >
-                <img src="/tg_dark_logo.png" alt="Believer01" className="h-8" />
-              </a>
-              <div className="flex items-center gap-2 mb-1">
-                <img src="/owner.jpg" alt="CEO Bobby" className="w-8 h-8 rounded-full object-cover border border-white/30" />
-                <div>
-                  <p className="text-xs opacity-70">All Rights Reserved</p>
-                  <p className="text-xs opacity-70">©2021 Believer01</p>
-                  <p className="text-xs font-semibold">CEO Bobby</p>
-                </div>
+              <div className="flex items-center gap-2 mb-2">
+                <img src="/vyron_logo_dark.svg" alt="VYRON" className="h-8" />
+              </div>
+              <div>
+                <p className="text-xs opacity-70">All Rights Reserved</p>
+                <p className="text-xs opacity-70">©2025 VYRON</p>
               </div>
             </div>
           </div>
@@ -2000,7 +1967,7 @@ export default function Home() {
       {/* ============ MATCH DETAIL DIALOG (Full Team Generation) ============ */}
       <Dialog open={selectedMatch !== null} onOpenChange={(open) => { if (!open) { setSelectedMatch(null); setMatchDetail(null); setGeneratedTeams([]) } }}>
         <DialogContent className="max-w-[96vw] max-h-[90vh] overflow-y-auto p-0 rounded-xl">
-          <DialogTitle className="sr-only">Match Detail - Team Generation</DialogTitle>
+          <DialogTitle className="sr-only">Match Detail - VYRON</DialogTitle>
           {selectedMatch && (
             <div className="p-4">
               {/* Close button */}
@@ -2013,7 +1980,7 @@ export default function Home() {
 
               {/* Series name */}
               <div className="flex items-center gap-1.5 mb-2">
-                <Star className="w-4 h-4 text-[#5b4b8a]" />
+                <Star className="w-4 h-4 text-[#6C63FF]" />
                 <span className="text-sm text-gray-600 font-medium">{selectedMatch.series_name}</span>
               </div>
 
@@ -2023,7 +1990,7 @@ export default function Home() {
                   <img src={selectedMatch.left_team_image} alt={selectedMatch.left_team_name} className="w-10 h-10 rounded-full object-cover bg-gray-200" />
                   <span className="font-extrabold text-[15px]">{selectedMatch.left_team_name}</span>
                 </div>
-                <span className="text-xs font-bold text-[#5b4b8a] px-2">VS</span>
+                <span className="text-xs font-bold text-[#6C63FF] px-2">VS</span>
                 <div className="flex items-center gap-2 flex-1 justify-end">
                   <span className="font-extrabold text-[15px]">{selectedMatch.right_team_name}</span>
                   <img src={selectedMatch.right_team_image} alt={selectedMatch.right_team_name} className="w-10 h-10 rounded-full object-cover bg-gray-200" />
@@ -2031,8 +1998,8 @@ export default function Home() {
               </div>
 
               {/* Countdown Timer */}
-              <div className="flex items-center justify-center gap-2 mb-3 bg-[#5b4b8a]/5 rounded-lg p-2.5">
-                <Clock className="w-4 h-4 text-[#5b4b8a]" />
+              <div className="flex items-center justify-center gap-2 mb-3 bg-[#6C63FF]/5 rounded-lg p-2.5">
+                <Clock className="w-4 h-4 text-[#6C63FF]" />
                 <span className="text-xs text-gray-600 font-medium">Starts in:</span>
                 <CountdownTimer matchTime={selectedMatch.match_time} />
               </div>
@@ -2070,7 +2037,7 @@ export default function Home() {
               {/* Loading state for player data */}
               {matchDetailLoading && (
                 <div className="flex flex-col items-center justify-center py-8">
-                  <Loader2 className="w-8 h-8 text-[#5b4b8a] animate-spin mb-3" />
+                  <Loader2 className="w-8 h-8 text-[#6C63FF] animate-spin mb-3" />
                   <p className="text-sm text-gray-600">Loading player data...</p>
                 </div>
               )}
@@ -2084,7 +2051,7 @@ export default function Home() {
                     className="w-full flex items-center justify-between mb-3 bg-white border border-gray-200 rounded-lg p-2.5 hover:bg-gray-50"
                   >
                     <div className="flex items-center gap-2">
-                      <Users className="w-4 h-4 text-[#5b4b8a]" />
+                      <Users className="w-4 h-4 text-[#6C63FF]" />
                       <span className="text-sm font-semibold text-gray-700">
                         Players ({matchDetail.left_team_players.length + matchDetail.right_team_players.length})
                       </span>
@@ -2104,7 +2071,7 @@ export default function Home() {
                       </div>
                       {/* Left team players */}
                       <div className="border-b border-gray-200">
-                        <div className="px-2 py-1 bg-[#5b4b8a]/5 text-[10px] font-bold text-[#5b4b8a]">
+                        <div className="px-2 py-1 bg-[#6C63FF]/5 text-[10px] font-bold text-[#6C63FF]">
                           {matchDetail.left_team_name} ({matchDetail.left_team_players.length})
                         </div>
                         {matchDetail.left_team_players.map(p => (
@@ -2113,7 +2080,7 @@ export default function Home() {
                       </div>
                       {/* Right team players */}
                       <div>
-                        <div className="px-2 py-1 bg-[#5e35b1]/5 text-[10px] font-bold text-[#5e35b1]">
+                        <div className="px-2 py-1 bg-[#00D4AA]/5 text-[10px] font-bold text-[#00D4AA]">
                           {matchDetail.right_team_name} ({matchDetail.right_team_players.length})
                         </div>
                         {matchDetail.right_team_players.map(p => (
@@ -2131,12 +2098,12 @@ export default function Home() {
                         onClick={() => { setGenMode('normal'); setGeneratedTeams([]) }}
                         className={`flex-1 py-2.5 rounded-lg text-sm font-semibold transition-all border-2 ${
                           genMode === 'normal'
-                            ? 'bg-[#5b4b8a] text-white border-[#5b4b8a] shadow-md'
+                            ? 'bg-[#6C63FF] text-white border-[#6C63FF] shadow-md'
                             : 'bg-white text-gray-700 border-gray-200 hover:border-gray-300'
                         }`}
                       >
                         <Zap className="w-4 h-4 inline mr-1.5 -mt-0.5" />
-                        Team Generation
+                        Normal Generation
                       </button>
                       <button
                         onClick={() => { setGenMode('extra'); setGeneratedTeams([]) }}
@@ -2189,8 +2156,8 @@ export default function Home() {
                               onClick={() => { setSelectedTeamCount(count); setGeneratedTeams([]) }}
                               className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border ${
                                 selectedTeamCount === count
-                                  ? 'bg-[#5b4b8a] text-white border-[#5b4b8a] shadow-sm'
-                                  : 'bg-white text-gray-600 border-gray-200 hover:border-[#5b4b8a]/30 hover:text-[#5b4b8a]'
+                                  ? 'bg-[#6C63FF] text-white border-[#6C63FF] shadow-sm'
+                                  : 'bg-white text-gray-600 border-gray-200 hover:border-[#6C63FF]/30 hover:text-[#6C63FF]'
                               }`}
                             >
                               {count}
@@ -2201,7 +2168,7 @@ export default function Home() {
 
                       {/* Generate Teams Button */}
                       <Button
-                        className="w-full bg-[#5b4b8a] hover:bg-[#4a3c73] text-white h-12 text-sm font-semibold mb-3"
+                        className="w-full bg-[#6C63FF] hover:bg-[#5B54E0] text-white h-12 text-sm font-semibold mb-3"
                         disabled={!selectedCategory || generating}
                         onClick={handleGenerateTeams}
                       >
@@ -2284,8 +2251,8 @@ export default function Home() {
                                 }}
                                 className={`relative rounded-lg border-2 p-1.5 text-left transition-all min-h-[56px] ${
                                   player
-                                    ? 'border-[#5b4b8a] bg-[#5b4b8a]/5'
-                                    : 'border-dashed border-gray-300 bg-white hover:border-[#5b4b8a]/40'
+                                    ? 'border-[#6C63FF] bg-[#6C63FF]/5'
+                                    : 'border-dashed border-gray-300 bg-white hover:border-[#6C63FF]/40'
                                 }`}
                               >
                                 {player ? (
@@ -2295,15 +2262,18 @@ export default function Home() {
                                       <p className="text-[9px] font-semibold truncate leading-tight">{player.name}</p>
                                       <p className={`text-[8px] px-0.5 rounded leading-tight ${roleColor(player.role)}`}>{getRoleShort(player.role)}</p>
                                     </div>
-                                    <button
+                                    <span
+                                      role="button"
+                                      tabIndex={0}
+                                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); handleExtraRemoveFix(slot) } }}
                                       onClick={(e) => {
                                         e.stopPropagation()
                                         handleExtraRemoveFix(slot)
                                       }}
-                                      className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-red-500 text-white rounded-full text-[8px] flex items-center justify-center"
+                                      className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-red-500 text-white rounded-full text-[8px] flex items-center justify-center cursor-pointer"
                                     >
                                       ×
-                                    </button>
+                                    </span>
                                   </div>
                                 ) : (
                                   <div className="flex flex-col items-center justify-center h-full">
@@ -2364,15 +2334,18 @@ export default function Home() {
                                       <p className="text-[9px] font-semibold truncate leading-tight">{player.name}</p>
                                       <p className={`text-[8px] px-0.5 rounded leading-tight ${roleColor(player.role)}`}>{getRoleShort(player.role)}</p>
                                     </div>
-                                    <button
+                                    <span
+                                      role="button"
+                                      tabIndex={0}
+                                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); handleExtraRemoveC(slot) } }}
                                       onClick={(e) => {
                                         e.stopPropagation()
                                         handleExtraRemoveC(slot)
                                       }}
-                                      className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-red-500 text-white rounded-full text-[8px] flex items-center justify-center"
+                                      className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-red-500 text-white rounded-full text-[8px] flex items-center justify-center cursor-pointer"
                                     >
                                       ×
-                                    </button>
+                                    </span>
                                   </div>
                                 ) : (
                                   <div className="flex flex-col items-center justify-center h-full">
@@ -2427,15 +2400,18 @@ export default function Home() {
                                       <p className="text-[9px] font-semibold truncate leading-tight">{player.name}</p>
                                       <p className={`text-[8px] px-0.5 rounded leading-tight ${roleColor(player.role)}`}>{getRoleShort(player.role)}</p>
                                     </div>
-                                    <button
+                                    <span
+                                      role="button"
+                                      tabIndex={0}
+                                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); handleExtraRemoveVC(slot) } }}
                                       onClick={(e) => {
                                         e.stopPropagation()
                                         handleExtraRemoveVC(slot)
                                       }}
-                                      className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-red-500 text-white rounded-full text-[8px] flex items-center justify-center"
+                                      className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-red-500 text-white rounded-full text-[8px] flex items-center justify-center cursor-pointer"
                                     >
                                       ×
-                                    </button>
+                                    </span>
                                   </div>
                                 ) : (
                                   <div className="flex flex-col items-center justify-center h-full">
@@ -2642,7 +2618,7 @@ export default function Home() {
                     <div className="flex gap-2 flex-wrap">
                       {selectedMatch.fantasy_list.map((fp) => (
                         <div key={fp} className="flex items-center gap-1.5 bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5">
-                          <Globe className="w-3.5 h-3.5 text-[#5b4b8a]" />
+                          <Globe className="w-3.5 h-3.5 text-[#6C63FF]" />
                           <span className="text-xs font-medium text-gray-700 capitalize">{fp}</span>
                         </div>
                       ))}
@@ -2744,12 +2720,12 @@ export default function Home() {
                       placeholder="Enter mobile number"
                       value={mobileNumber}
                       onChange={(e) => setMobileNumber(e.target.value.replace(/\D/g, '').slice(0, 10))}
-                      className="flex-1 h-11 px-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#5b4b8a] focus:border-transparent"
+                      className="flex-1 h-11 px-3 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#6C63FF] focus:border-transparent"
                       maxLength={10}
                     />
                   </div>
                   <Button
-                    className="w-full bg-[#5b4b8a] hover:bg-[#4a3c73] text-white h-11 text-sm font-semibold"
+                    className="w-full bg-[#6C63FF] hover:bg-[#5B54E0] text-white h-11 text-sm font-semibold"
                     disabled={mobileNumber.length !== 10 || otpVerifying}
                     onClick={handleSendOTP}
                   >
@@ -2767,11 +2743,11 @@ export default function Home() {
                     placeholder="Enter 6-digit OTP"
                     value={otp}
                     onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                    className="w-full h-11 px-3 border border-gray-200 rounded-lg text-sm text-center tracking-[0.3em] focus:outline-none focus:ring-2 focus:ring-[#5b4b8a] focus:border-transparent"
+                    className="w-full h-11 px-3 border border-gray-200 rounded-lg text-sm text-center tracking-[0.3em] focus:outline-none focus:ring-2 focus:ring-[#6C63FF] focus:border-transparent"
                     maxLength={6}
                   />
                   <Button
-                    className="w-full bg-[#5b4b8a] hover:bg-[#4a3c73] text-white h-11 text-sm font-semibold"
+                    className="w-full bg-[#6C63FF] hover:bg-[#5B54E0] text-white h-11 text-sm font-semibold"
                     disabled={otp.length < 4 || otpVerifying}
                     onClick={handleVerifyOTP}
                   >
@@ -2780,7 +2756,7 @@ export default function Home() {
                   </Button>
                   <button
                     onClick={() => { setOtpSent(false); setOtp('') }}
-                    className="w-full text-xs text-[#5b4b8a] hover:underline"
+                    className="w-full text-xs text-[#6C63FF] hover:underline"
                   >
                     Change mobile number
                   </button>
@@ -2840,7 +2816,7 @@ export default function Home() {
                     setLoginPlatform(transferPlatform)
                     setShowLoginDialog(true)
                   }}
-                  className="mt-2 text-sm text-[#5b4b8a] font-semibold hover:underline flex items-center gap-1"
+                  className="mt-2 text-sm text-[#6C63FF] font-semibold hover:underline flex items-center gap-1"
                 >
                   <Phone className="w-3.5 h-3.5" />
                   Link via OTP →
@@ -2866,22 +2842,22 @@ export default function Home() {
                 disabled={transferring}
                 className={`w-full text-left rounded-xl border-2 p-3.5 transition-all ${
                   transferOption === 'new'
-                    ? 'border-[#5b4b8a] bg-[#5b4b8a]/5 shadow-sm'
+                    ? 'border-[#6C63FF] bg-[#6C63FF]/5 shadow-sm'
                     : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50'
                 } ${transferring ? 'opacity-60 pointer-events-none' : ''}`}
               >
                 <div className="flex items-start gap-3">
                   <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
-                    transferOption === 'new' ? 'bg-[#5b4b8a] text-white' : 'bg-gray-100 text-gray-500'
+                    transferOption === 'new' ? 'bg-[#6C63FF] text-white' : 'bg-gray-100 text-gray-500'
                   }`}>
                     <Plus className="w-5 h-5" />
                   </div>
                   <div>
-                    <p className={`font-semibold text-sm ${transferOption === 'new' ? 'text-[#5b4b8a]' : 'text-gray-900'}`}>New Team</p>
+                    <p className={`font-semibold text-sm ${transferOption === 'new' ? 'text-[#6C63FF]' : 'text-gray-900'}`}>New Team</p>
                     <p className="text-xs text-gray-500 mt-0.5">Create {generatedTeams.length} new team{generatedTeams.length > 1 ? 's' : ''} on {transferPlatform === 'dream11' ? 'Dream11' : 'My11Circle'}</p>
                   </div>
                   {transferOption === 'new' && (
-                    <CheckCircle2 className="w-5 h-5 text-[#5b4b8a] shrink-0 ml-auto" />
+                    <CheckCircle2 className="w-5 h-5 text-[#6C63FF] shrink-0 ml-auto" />
                   )}
                 </div>
               </button>
@@ -2953,7 +2929,7 @@ export default function Home() {
                   <button
                     onClick={fetchExistingTeams}
                     disabled={existingTeamsLoading || !fantasyAccounts[transferPlatform!]?.authToken}
-                    className="text-xs text-[#5b4b8a] font-medium hover:underline disabled:opacity-50"
+                    className="text-xs text-[#6C63FF] font-medium hover:underline disabled:opacity-50"
                   >
                     {existingTeamsLoading ? 'Loading...' : 'Refresh list'}
                   </button>
@@ -2965,7 +2941,7 @@ export default function Home() {
                   </div>
                 ) : existingTeamsLoading ? (
                   <div className="flex items-center justify-center py-4">
-                    <Loader2 className="w-5 h-5 animate-spin text-[#5b4b8a]" />
+                    <Loader2 className="w-5 h-5 animate-spin text-[#6C63FF]" />
                     <span className="ml-2 text-sm text-gray-500">Loading existing teams...</span>
                   </div>
                 ) : existingTeams.length === 0 ? (
@@ -2977,6 +2953,27 @@ export default function Home() {
                   <>
                     <div className="bg-blue-50 border border-blue-200 rounded-lg p-2 text-xs text-blue-700">
                       Select up to {Math.min(generatedTeams.length, existingTeams.length)} existing team{Math.min(generatedTeams.length, existingTeams.length) > 1 ? 's' : ''} to replace with your generated teams
+                    </div>
+                    {/* Select All / Deselect All buttons */}
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          const maxSelectable = Math.min(generatedTeams.length, existingTeams.length)
+                          const allIds = existingTeams.slice(0, maxSelectable).map(t => t.id)
+                          setSelectedReplaceIds(new Set(allIds))
+                        }}
+                        disabled={selectedReplaceIds.size === Math.min(generatedTeams.length, existingTeams.length)}
+                        className="flex-1 py-1.5 rounded-lg text-xs font-semibold border-2 border-[#f44336]/30 bg-[#f44336]/5 text-[#f44336] hover:bg-[#f44336]/10 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        Select All ({Math.min(generatedTeams.length, existingTeams.length)})
+                      </button>
+                      <button
+                        onClick={() => setSelectedReplaceIds(new Set())}
+                        disabled={selectedReplaceIds.size === 0}
+                        className="flex-1 py-1.5 rounded-lg text-xs font-semibold border-2 border-gray-200 bg-white text-gray-500 hover:bg-gray-50 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        Deselect All
+                      </button>
                     </div>
                     <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
                       {existingTeams.map((team) => {
@@ -3070,14 +3067,14 @@ export default function Home() {
             {transferProgress.status === 'transferring' && (
               <div className="space-y-3">
                 {/* Overall progress bar */}
-                <div className="bg-[#5b4b8a]/5 border border-[#5b4b8a]/20 rounded-lg p-3">
+                <div className="bg-[#6C63FF]/5 border border-[#6C63FF]/20 rounded-lg p-3">
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-semibold text-[#5b4b8a]">Transferring teams...</span>
-                    <span className="text-sm font-bold text-[#5b4b8a]">{transferProgress.current}/{transferProgress.total}</span>
+                    <span className="text-sm font-semibold text-[#6C63FF]">Transferring teams...</span>
+                    <span className="text-sm font-bold text-[#6C63FF]">{transferProgress.current}/{transferProgress.total}</span>
                   </div>
                   <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
                     <div
-                      className="bg-[#5b4b8a] h-3 rounded-full transition-all duration-300 ease-out"
+                      className="bg-[#6C63FF] h-3 rounded-full transition-all duration-300 ease-out"
                       style={{ width: `${(transferProgress.current / transferProgress.total) * 100}%` }}
                     />
                   </div>
@@ -3095,7 +3092,7 @@ export default function Home() {
                         <div className="w-3.5 h-3.5 rounded-full bg-gray-200 shrink-0" />
                       )}
                       {result.status === 'processing' && (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin text-[#5b4b8a] shrink-0" />
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-[#6C63FF] shrink-0" />
                       )}
                       {result.status === 'success' && (
                         <CheckCircle2 className="w-3.5 h-3.5 text-green-500 shrink-0" />
@@ -3106,7 +3103,7 @@ export default function Home() {
                       <span className={`font-medium ${
                         result.status === 'success' ? 'text-green-600' :
                         result.status === 'fail' ? 'text-red-500' :
-                        result.status === 'processing' ? 'text-[#5b4b8a]' :
+                        result.status === 'processing' ? 'text-[#6C63FF]' :
                         'text-gray-400'
                       }`}>
                         Team {result.teamNumber}
@@ -3178,7 +3175,7 @@ export default function Home() {
                 </div>
 
                 <Button
-                  className="w-full bg-[#5b4b8a] hover:bg-[#4a3c73] text-white h-10 text-sm font-semibold"
+                  className="w-full bg-[#6C63FF] hover:bg-[#5B54E0] text-white h-10 text-sm font-semibold"
                   onClick={() => {
                     setShowTransferDialog(false)
                     setTransferProgress({ current: 0, total: 0, status: 'idle' })
@@ -3223,7 +3220,7 @@ export default function Home() {
             {/* Transfer Button (shown before transfer starts) */}
             {transferProgress.status === 'idle' && (
               <Button
-                className="w-full bg-[#5b4b8a] hover:bg-[#4a3c73] text-white h-12 text-sm font-semibold"
+                className="w-full bg-[#6C63FF] hover:bg-[#5B54E0] text-white h-12 text-sm font-semibold"
                 disabled={transferring || !fantasyAccounts[transferPlatform!]?.authToken || (transferOption === 'replace' && selectedReplaceIds.size === 0)}
                 onClick={handleTransfer}
               >
@@ -3257,7 +3254,7 @@ export default function Home() {
               <div className="flex items-center gap-2">
                 {extraPlayerPickerOpen === 'fix' && (
                   <>
-                    <Users className="w-5 h-5 text-[#5b4b8a]" />
+                    <Users className="w-5 h-5 text-[#6C63FF]" />
                     <div>
                       <h3 className="text-sm font-bold text-gray-900">Select Fix Player {extraPlayerPickerSlot + 1}</h3>
                       <p className="text-xs text-gray-500">{extraFixedPlayers.length}/8 selected</p>
@@ -3297,7 +3294,7 @@ export default function Home() {
               <div className="border border-gray-200 rounded-lg overflow-hidden">
                 {/* Left team players */}
                 <div className="border-b border-gray-200">
-                  <div className="px-2 py-1.5 bg-[#5b4b8a]/5 text-[10px] font-bold text-[#5b4b8a]">
+                  <div className="px-2 py-1.5 bg-[#6C63FF]/5 text-[10px] font-bold text-[#6C63FF]">
                     {matchDetail.left_team_name}
                   </div>
                   {matchDetail.left_team_players.map(player => {
@@ -3359,7 +3356,7 @@ export default function Home() {
                         }}
                         disabled={isUsed}
                         className={`w-full flex items-center gap-2 py-1.5 px-2 border-b border-gray-50 last:border-0 text-xs transition-colors ${
-                          isUsed ? 'opacity-40 cursor-not-allowed bg-gray-50' : 'hover:bg-[#5b4b8a]/5 cursor-pointer'
+                          isUsed ? 'opacity-40 cursor-not-allowed bg-gray-50' : 'hover:bg-[#6C63FF]/5 cursor-pointer'
                         }`}
                       >
                         <div className="w-6 h-6 rounded-full overflow-hidden bg-gray-100 flex-shrink-0">
@@ -3384,7 +3381,7 @@ export default function Home() {
                 </div>
                 {/* Right team players */}
                 <div>
-                  <div className="px-2 py-1.5 bg-[#5e35b1]/5 text-[10px] font-bold text-[#5e35b1]">
+                  <div className="px-2 py-1.5 bg-[#00D4AA]/5 text-[10px] font-bold text-[#00D4AA]">
                     {matchDetail.right_team_name}
                   </div>
                   {matchDetail.right_team_players.map(player => {
@@ -3442,7 +3439,7 @@ export default function Home() {
                         }}
                         disabled={isUsed}
                         className={`w-full flex items-center gap-2 py-1.5 px-2 border-b border-gray-50 last:border-0 text-xs transition-colors ${
-                          isUsed ? 'opacity-40 cursor-not-allowed bg-gray-50' : 'hover:bg-[#5e35b1]/5 cursor-pointer'
+                          isUsed ? 'opacity-40 cursor-not-allowed bg-gray-50' : 'hover:bg-[#00D4AA]/5 cursor-pointer'
                         }`}
                       >
                         <div className="w-6 h-6 rounded-full overflow-hidden bg-gray-100 flex-shrink-0">
