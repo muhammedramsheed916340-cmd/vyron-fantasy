@@ -608,6 +608,17 @@ export default function Home() {
   const [transferSuccessCount, setTransferSuccessCount] = useState(0)
   const [transferFailCount, setTransferFailCount] = useState(0)
 
+  // Existing teams on platform (for Replace mode)
+  interface ExistingTeam {
+    id: string | number
+    name: string
+    captain?: string
+    players?: number
+  }
+  const [existingTeams, setExistingTeams] = useState<ExistingTeam[]>([])
+  const [existingTeamsLoading, setExistingTeamsLoading] = useState(false)
+  const [selectedReplaceIds, setSelectedReplaceIds] = useState<Set<string | number>>(new Set())
+
   // Extra Team Generation state
   const [genMode, setGenMode] = useState<'normal' | 'extra'>('normal')
   const [extraSubMode, setExtraSubMode] = useState<'manual' | 'auto'>('manual')
@@ -1099,6 +1110,48 @@ export default function Home() {
     }
   }
 
+  // Fetch existing teams from the platform for Replace mode
+  const fetchExistingTeams = async () => {
+    if (!transferPlatform || !selectedMatch?.id) return
+    const account = fantasyAccounts[transferPlatform]
+    if (!account?.authToken) return
+
+    setExistingTeamsLoading(true)
+    setExistingTeams([])
+    setSelectedReplaceIds(new Set())
+
+    try {
+      const res = await fetch('/api/fantasy/list-of-teams', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fantasyApp: transferPlatform,
+          matchId: selectedMatch.id,
+          authToken: account.authToken,
+        }),
+      })
+      const data = await res.json()
+
+      if (data.status === 'success' && data.data?.teamsList) {
+        const teams: ExistingTeam[] = data.data.teamsList.map((t: Record<string, unknown>, idx: number) => ({
+          id: (t.id as string | number) || (t._id as string | number) || idx + 1,
+          name: (t.name as string) || `Team ${idx + 1}`,
+          captain: (t.captain as string) || undefined,
+          players: (t.players as number) || (t.player_count as number) || undefined,
+        }))
+        setExistingTeams(teams)
+      } else {
+        setExistingTeams([])
+        toast({ title: data.message || 'Could not load existing teams', variant: 'destructive' })
+      }
+    } catch {
+      setExistingTeams([])
+      toast({ title: 'Failed to load existing teams', variant: 'destructive' })
+    } finally {
+      setExistingTeamsLoading(false)
+    }
+  }
+
   // Handle team transfer - real per-team API calls, no clipboard, no window.open
   const handleTransfer = async () => {
     if (!transferPlatform || generatedTeams.length === 0) return
@@ -1115,6 +1168,14 @@ export default function Home() {
         variant: 'destructive'
       })
       return
+    }
+
+    // For replace mode, validate that enough existing teams are selected
+    if (transferOption === 'replace') {
+      if (selectedReplaceIds.size === 0) {
+        toast({ title: 'Select at least one existing team to replace', variant: 'destructive' })
+        return
+      }
     }
 
     // Pre-transfer: Verify the auth token is still valid by calling list-of-teams
@@ -1171,8 +1232,11 @@ export default function Home() {
     // Determine transfer type
     const transferType = transferOption === 'replace' ? 'edit' : 'new'
 
+    // In replace mode, only process as many teams as we have selected to replace
+    const teamsToProcess = transferOption === 'replace' ? Math.min(selectedReplaceIds.size, generatedTeams.length) : generatedTeams.length
+
     // Initialize per-team results
-    const initialResults: TransferTeamResult[] = generatedTeams.map((_, idx) => ({
+    const initialResults: TransferTeamResult[] = Array.from({ length: teamsToProcess }, (_, idx) => ({
       teamNumber: idx + 1,
       status: 'pending' as const,
     }))
@@ -1192,7 +1256,7 @@ export default function Home() {
     }
 
     // Process teams sequentially with rate limiting
-    for (let i = 0; i < generatedTeams.length; i++) {
+    for (let i = 0; i < teamsToProcess; i++) {
       const team = generatedTeams[i]
 
       // Mark this team as processing
@@ -1247,18 +1311,19 @@ export default function Home() {
           payload.my11circleChallenge = account.my11circleChallenge
         }
 
-        // For edit/replace mode, would need the existing team ID
-        // This would need to come from the user selecting which team to replace
-        // For now, we only support "new" and treat "existing" as new too
+        // For edit/replace mode, attach the existing team ID to replace
         if (transferType === 'edit') {
-          // TODO: In a full implementation, the user would select which existing team to replace
-          // For now, we can't do edit without knowing the existing team ID
-          failCount++
-          setTransferFailCount(failCount)
-          setTransferResults(prev => prev.map((r, idx) =>
-            idx === i ? { ...r, status: 'fail' as const, message: 'Replace mode requires selecting an existing team ID' } : r
-          ))
-          continue
+          // Map generated team index to the selected existing team to replace
+          const replaceIdsArr = Array.from(selectedReplaceIds)
+          if (i >= replaceIdsArr.length) {
+            failCount++
+            setTransferFailCount(failCount)
+            setTransferResults(prev => prev.map((r, idx) =>
+              idx === i ? { ...r, status: 'fail' as const, message: 'No existing team selected to replace' } : r
+            ))
+            continue
+          }
+          payload.id = replaceIdsArr[i]
         }
 
         const res = await fetch('/api/fantasy/transfer', {
@@ -1290,7 +1355,7 @@ export default function Home() {
       }
 
       // Rate limit: wait between team transfers (skip after last team)
-      if (i < generatedTeams.length - 1 && delay > 0) {
+      if (i < teamsToProcess - 1 && delay > 0) {
         await new Promise(r => setTimeout(r, delay))
       }
     }
@@ -2735,6 +2800,8 @@ export default function Home() {
             setTransferResults([])
             setTransferSuccessCount(0)
             setTransferFailCount(0)
+            setExistingTeams([])
+            setSelectedReplaceIds(new Set())
           }
         }
       }}>
@@ -2847,7 +2914,13 @@ export default function Home() {
 
               {/* Replace Team Option */}
               <button
-                onClick={() => setTransferOption('replace')}
+                onClick={() => {
+                  setTransferOption('replace')
+                  // Auto-fetch existing teams when replace is selected
+                  if (fantasyAccounts[transferPlatform!]?.authToken && existingTeams.length === 0) {
+                    fetchExistingTeams()
+                  }
+                }}
                 disabled={transferring}
                 className={`w-full text-left rounded-xl border-2 p-3.5 transition-all ${
                   transferOption === 'replace'
@@ -2872,12 +2945,103 @@ export default function Home() {
               </button>
             </div>
 
+            {/* Replace Team: Existing Teams Selection UI */}
+            {transferOption === 'replace' && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Select Teams to Replace</p>
+                  <button
+                    onClick={fetchExistingTeams}
+                    disabled={existingTeamsLoading || !fantasyAccounts[transferPlatform!]?.authToken}
+                    className="text-xs text-[#5b4b8a] font-medium hover:underline disabled:opacity-50"
+                  >
+                    {existingTeamsLoading ? 'Loading...' : 'Refresh list'}
+                  </button>
+                </div>
+
+                {!fantasyAccounts[transferPlatform!]?.authToken ? (
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 text-xs text-amber-800">
+                    Link your {transferPlatform === 'dream11' ? 'Dream11' : 'My11Circle'} account first to see existing teams
+                  </div>
+                ) : existingTeamsLoading ? (
+                  <div className="flex items-center justify-center py-4">
+                    <Loader2 className="w-5 h-5 animate-spin text-[#5b4b8a]" />
+                    <span className="ml-2 text-sm text-gray-500">Loading existing teams...</span>
+                  </div>
+                ) : existingTeams.length === 0 ? (
+                  <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-center">
+                    <p className="text-sm text-gray-500">No existing teams found for this match</p>
+                    <p className="text-xs text-gray-400 mt-1">Create teams first using &quot;New Team&quot; mode</p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-2 text-xs text-blue-700">
+                      Select up to {Math.min(generatedTeams.length, existingTeams.length)} existing team{Math.min(generatedTeams.length, existingTeams.length) > 1 ? 's' : ''} to replace with your generated teams
+                    </div>
+                    <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
+                      {existingTeams.map((team) => {
+                        const isSelected = selectedReplaceIds.has(team.id)
+                        const maxSelectable = Math.min(generatedTeams.length, existingTeams.length)
+                        return (
+                          <button
+                            key={team.id}
+                            onClick={() => {
+                              setSelectedReplaceIds(prev => {
+                                const next = new Set(prev)
+                                if (next.has(team.id)) {
+                                  next.delete(team.id)
+                                } else if (next.size < maxSelectable) {
+                                  next.add(team.id)
+                                }
+                                return next
+                              })
+                            }}
+                            className={`w-full text-left rounded-lg border-2 p-2.5 transition-all ${
+                              isSelected
+                                ? 'border-[#f44336] bg-[#f44336]/5'
+                                : selectedReplaceIds.size >= maxSelectable
+                                  ? 'border-gray-200 bg-white opacity-50 cursor-not-allowed'
+                                  : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2">
+                              <div className={`w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 ${
+                                isSelected ? 'border-[#f44336] bg-[#f44336]' : 'border-gray-300'
+                              }`}>
+                                {isSelected && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium text-gray-900 truncate">{team.name}</p>
+                                <div className="flex items-center gap-2 text-xs text-gray-500">
+                                  {team.captain && <span>C: {team.captain}</span>}
+                                  {team.players && <span>{team.players} players</span>}
+                                  <span className="text-gray-400">ID: {team.id}</span>
+                                </div>
+                              </div>
+                            </div>
+                          </button>
+                        )
+                      })}
+                    </div>
+                    {selectedReplaceIds.size > 0 && (
+                      <div className="bg-[#f44336]/5 border border-[#f44336]/20 rounded-lg p-2 text-xs">
+                        <span className="text-[#f44336] font-semibold">{selectedReplaceIds.size}</span> of {Math.min(generatedTeams.length, existingTeams.length)} teams selected —
+                        each selected team will be replaced by a generated team
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
             {/* Transfer summary before start */}
             {transferProgress.status === 'idle' && (
               <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-gray-600">Teams</span>
-                  <span className="font-semibold text-gray-900">{generatedTeams.length}</span>
+                  <span className="font-semibold text-gray-900">
+                    {transferOption === 'replace' ? Math.min(selectedReplaceIds.size, generatedTeams.length) : generatedTeams.length}
+                  </span>
                 </div>
                 <div className="flex items-center justify-between text-sm mt-1">
                   <span className="text-gray-600">Mode</span>
@@ -2885,6 +3049,12 @@ export default function Home() {
                     {transferOption === 'new' ? 'New Team' : transferOption === 'existing' ? 'Existing Team' : 'Replace Team'}
                   </span>
                 </div>
+                {transferOption === 'replace' && selectedReplaceIds.size > 0 && (
+                  <div className="flex items-center justify-between text-sm mt-1">
+                    <span className="text-gray-600">Replacing</span>
+                    <span className="font-semibold text-[#f44336]">{selectedReplaceIds.size} existing team{selectedReplaceIds.size > 1 ? 's' : ''}</span>
+                  </div>
+                )}
                 <div className="flex items-center justify-between text-sm mt-1">
                   <span className="text-gray-600">Platform</span>
                   <span className="font-semibold text-gray-900">{transferPlatform === 'dream11' ? 'Dream11' : 'My11Circle'}</span>
@@ -3054,11 +3224,14 @@ export default function Home() {
             {transferProgress.status === 'idle' && (
               <Button
                 className="w-full bg-[#5b4b8a] hover:bg-[#4a3c73] text-white h-12 text-sm font-semibold"
-                disabled={transferring || !fantasyAccounts[transferPlatform!]?.authToken}
+                disabled={transferring || !fantasyAccounts[transferPlatform!]?.authToken || (transferOption === 'replace' && selectedReplaceIds.size === 0)}
                 onClick={handleTransfer}
               >
                 <Share2 className="w-4 h-4 mr-2" />
-                Transfer {generatedTeams.length} Team{generatedTeams.length > 1 ? 's' : ''} ({transferOption === 'new' ? 'New' : transferOption === 'existing' ? 'Existing' : 'Replace'})
+                {transferOption === 'replace'
+                  ? `Replace ${selectedReplaceIds.size} Team${selectedReplaceIds.size !== 1 ? 's' : ''}`
+                  : `Transfer ${generatedTeams.length} Team${generatedTeams.length > 1 ? 's' : ''} (${transferOption === 'new' ? 'New' : 'Existing'})`
+                }
               </Button>
             )}
           </div>
