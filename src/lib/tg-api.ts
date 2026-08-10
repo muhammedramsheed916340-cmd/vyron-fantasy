@@ -31,6 +31,269 @@ export function getRoleShort(role: number): string {
   }
 }
 
+// ============ Lineup Utilities ============
+
+/**
+ * Determine lineup mode based on player data.
+ * AFTER LINEUP: any player has playing === 1 (confirmed in Playing XI)
+ * BEFORE LINEUP: no player is confirmed yet
+ */
+export function getLineupMode(players: TGPlayer[]): 'before' | 'after' {
+  const hasConfirmedPlaying = players.some(p => p.playing === 1);
+  return hasConfirmedPlaying ? 'after' : 'before';
+}
+
+/**
+ * Filter players based on lineup mode.
+ * BEFORE LINEUP: all players are eligible (no one confirmed OUT yet).
+ * AFTER LINEUP: ONLY players with playing === 1 are eligible.
+ */
+export function getEligiblePlayers(
+  allPlayers: TGPlayer[],
+  avoidPlayerIds: Set<number> = new Set(),
+): TGPlayer[] {
+  const mode = getLineupMode(allPlayers);
+
+  return allPlayers.filter(p => {
+    // Avoid players are always excluded
+    if (avoidPlayerIds.has(p.pl_id)) return false;
+
+    if (mode === 'after') {
+      // AFTER LINEUP: ONLY confirmed Playing XI players
+      return p.playing === 1;
+    }
+
+    // BEFORE LINEUP: all players eligible
+    return true;
+  });
+}
+
+/**
+ * Check if a specific player is eligible based on lineup mode.
+ */
+export function isPlayerEligible(
+  player: TGPlayer,
+  allPlayers: TGPlayer[],
+  avoidPlayerIds: Set<number> = new Set(),
+): { eligible: boolean; reason?: string } {
+  if (avoidPlayerIds.has(player.pl_id)) {
+    return { eligible: false, reason: 'AVOID' };
+  }
+
+  const mode = getLineupMode(allPlayers);
+
+  if (mode === 'after' && player.playing !== 1) {
+    return { eligible: false, reason: 'OUT / NOT IN PLAYING XI' };
+  }
+
+  return { eligible: true };
+}
+
+/**
+ * Validate a team for lineup eligibility.
+ * Returns list of invalid players with reasons.
+ */
+export function validateTeamForLineup(
+  team: GeneratedTeam,
+  allPlayers: TGPlayer[],
+  avoidPlayerIds: Set<number> = new Set(),
+): { valid: boolean; invalidPlayers: { player: TGPlayer; reason: string }[] } {
+  const mode = getLineupMode(allPlayers);
+  const invalidPlayers: { player: TGPlayer; reason: string }[] = [];
+
+  for (const player of team.players) {
+    if (avoidPlayerIds.has(player.pl_id)) {
+      invalidPlayers.push({ player, reason: 'AVOID' });
+      continue;
+    }
+
+    if (mode === 'after' && player.playing !== 1) {
+      invalidPlayers.push({ player, reason: 'OUT / NOT IN PLAYING XI' });
+    }
+  }
+
+  return { valid: invalidPlayers.length === 0, invalidPlayers };
+}
+
+// ============ Combination Utilities ============
+
+export interface RoleCombination {
+  wk: number;
+  bat: number;
+  ar: number;
+  bowl: number;
+}
+
+export type CombinationMode = 'manual' | 'auto';
+
+/**
+ * Get all valid role combinations for an 11-player cricket team.
+ */
+export function getAllValidCombinations(): RoleCombination[] {
+  const combos: RoleCombination[] = [];
+  for (let wk = MIN_WK; wk <= MAX_WK; wk++) {
+    for (let bat = MIN_BAT; bat <= MAX_BAT; bat++) {
+      for (let ar = MIN_AR; ar <= MAX_AR; ar++) {
+        const bowl = CRICKET_TEAM_SIZE - wk - bat - ar;
+        if (bowl < MIN_BOWL || bowl > MAX_BOWL) continue;
+        combos.push({ wk, bat, ar, bowl });
+      }
+    }
+  }
+  return combos;
+}
+
+/**
+ * Check if a role combination is compatible with a set of fixed players.
+ */
+export function isCombinationCompatibleWithFixed(
+  combo: RoleCombination,
+  fixedPlayers: TGPlayer[],
+): boolean {
+  const fixedWK = fixedPlayers.filter(p => p.role === PLAYER_ROLES.WICKET_KEEPER).length;
+  const fixedBat = fixedPlayers.filter(p => p.role === PLAYER_ROLES.BATSMAN).length;
+  const fixedAR = fixedPlayers.filter(p => p.role === PLAYER_ROLES.ALL_ROUNDER).length;
+  const fixedBowl = fixedPlayers.filter(p => p.role === PLAYER_ROLES.BOWLER).length;
+
+  // Fixed players must not exceed combination totals
+  if (fixedWK > combo.wk) return false;
+  if (fixedBat > combo.bat) return false;
+  if (fixedAR > combo.ar) return false;
+  if (fixedBowl > combo.bowl) return false;
+
+  // Remaining slots must be fillable
+  const remainingPlayers = CRICKET_TEAM_SIZE - fixedPlayers.length;
+  const neededWK = combo.wk - fixedWK;
+  const neededBat = combo.bat - fixedBat;
+  const neededAR = combo.ar - fixedAR;
+  const neededBowl = combo.bowl - fixedBowl;
+
+  return (neededWK + neededBat + neededAR + neededBowl) === remainingPlayers;
+}
+
+/**
+ * Get combinations compatible with fixed players and available player pool.
+ */
+export function getCompatibleCombinations(
+  fixedPlayers: TGPlayer[],
+  eligiblePlayers: TGPlayer[],
+): RoleCombination[] {
+  const all = getAllValidCombinations();
+  const fixedIds = new Set(fixedPlayers.map(p => p.pl_id));
+  const remaining = eligiblePlayers.filter(p => !fixedIds.has(p.pl_id));
+
+  const remWK = remaining.filter(p => p.role === PLAYER_ROLES.WICKET_KEEPER).length;
+  const remBat = remaining.filter(p => p.role === PLAYER_ROLES.BATSMAN).length;
+  const remAR = remaining.filter(p => p.role === PLAYER_ROLES.ALL_ROUNDER).length;
+  const remBowl = remaining.filter(p => p.role === PLAYER_ROLES.BOWLER).length;
+
+  return all.filter(combo => {
+    if (!isCombinationCompatibleWithFixed(combo, fixedPlayers)) return false;
+
+    const fixedWK = fixedPlayers.filter(p => p.role === PLAYER_ROLES.WICKET_KEEPER).length;
+    const fixedBat = fixedPlayers.filter(p => p.role === PLAYER_ROLES.BATSMAN).length;
+    const fixedAR = fixedPlayers.filter(p => p.role === PLAYER_ROLES.ALL_ROUNDER).length;
+    const fixedBowl = fixedPlayers.filter(p => p.role === PLAYER_ROLES.BOWLER).length;
+
+    if (remWK < combo.wk - fixedWK) return false;
+    if (remBat < combo.bat - fixedBat) return false;
+    if (remAR < combo.ar - fixedAR) return false;
+    if (remBowl < combo.bowl - fixedBowl) return false;
+
+    return true;
+  });
+}
+
+/**
+ * Auto-select the best combination based on player pool and category.
+ * For multiple teams, rotates combinations intelligently.
+ */
+export function autoSelectCombination(
+  eligiblePlayers: TGPlayer[],
+  category: string,
+  fixedPlayers: TGPlayer[] = [],
+  teamIndex: number = 0,
+): RoleCombination {
+  const compatible = getCompatibleCombinations(fixedPlayers, eligiblePlayers);
+
+  if (compatible.length === 0) {
+    return { wk: 1, bat: 4, ar: 2, bowl: 4 };
+  }
+
+  // Category-preferred patterns
+  const preferredPatterns: RoleCombination[] =
+    category === 'H2H'
+      ? [{ wk: 1, bat: 5, ar: 2, bowl: 3 }, { wk: 1, bat: 4, ar: 2, bowl: 4 }, { wk: 1, bat: 3, ar: 3, bowl: 4 }]
+      : category === 'SL'
+      ? [{ wk: 1, bat: 4, ar: 2, bowl: 4 }, { wk: 1, bat: 3, ar: 3, bowl: 4 }, { wk: 2, bat: 3, ar: 2, bowl: 4 }]
+      : [ // Mega GL
+        { wk: 1, bat: 3, ar: 2, bowl: 5 }, { wk: 1, bat: 4, ar: 1, bowl: 5 },
+        { wk: 1, bat: 3, ar: 3, bowl: 4 }, { wk: 1, bat: 4, ar: 2, bowl: 4 },
+        { wk: 2, bat: 3, ar: 2, bowl: 4 }, { wk: 1, bat: 5, ar: 1, bowl: 4 },
+        { wk: 2, bat: 3, ar: 1, bowl: 5 }, { wk: 1, bat: 4, ar: 3, bowl: 3 },
+        { wk: 2, bat: 4, ar: 1, bowl: 4 }, { wk: 1, bat: 3, ar: 1, bowl: 6 },
+        { wk: 2, bat: 2, ar: 3, bowl: 4 }, { wk: 1, bat: 5, ar: 2, bowl: 3 },
+      ];
+
+  const preferredCompatible = preferredPatterns.filter(p =>
+    compatible.some(c => c.wk === p.wk && c.bat === p.bat && c.ar === p.ar && c.bowl === p.bowl)
+  );
+
+  const pool = preferredCompatible.length > 0 ? preferredCompatible : compatible;
+  const index = teamIndex % pool.length;
+
+  return pool[index];
+}
+
+/**
+ * Validate a manual combination against available players.
+ */
+export function validateCombination(
+  combo: RoleCombination,
+  eligiblePlayers: TGPlayer[],
+  fixedPlayers: TGPlayer[] = [],
+): { valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+
+  if (combo.wk + combo.bat + combo.ar + combo.bowl !== CRICKET_TEAM_SIZE) {
+    errors.push(`Total players must be 11 (got ${combo.wk + combo.bat + combo.ar + combo.bowl})`);
+  }
+
+  if (combo.wk < MIN_WK || combo.wk > MAX_WK) errors.push(`WK must be ${MIN_WK}-${MAX_WK}`);
+  if (combo.bat < MIN_BAT || combo.bat > MAX_BAT) errors.push(`BAT must be ${MIN_BAT}-${MAX_BAT}`);
+  if (combo.ar < MIN_AR || combo.ar > MAX_AR) errors.push(`AR must be ${MIN_AR}-${MAX_AR}`);
+  if (combo.bowl < MIN_BOWL || combo.bowl > MAX_BOWL) errors.push(`BOWL must be ${MIN_BOWL}-${MAX_BOWL}`);
+
+  if (fixedPlayers.length > 0 && !isCombinationCompatibleWithFixed(combo, fixedPlayers)) {
+    errors.push('Combination is not compatible with selected fixed players');
+  }
+
+  const fixedIds = new Set(fixedPlayers.map(p => p.pl_id));
+  const remaining = eligiblePlayers.filter(p => !fixedIds.has(p.pl_id));
+
+  const fixedWK = fixedPlayers.filter(p => p.role === PLAYER_ROLES.WICKET_KEEPER).length;
+  const fixedBat = fixedPlayers.filter(p => p.role === PLAYER_ROLES.BATSMAN).length;
+  const fixedAR = fixedPlayers.filter(p => p.role === PLAYER_ROLES.ALL_ROUNDER).length;
+  const fixedBowl = fixedPlayers.filter(p => p.role === PLAYER_ROLES.BOWLER).length;
+
+  const needWK = Math.max(0, combo.wk - fixedWK);
+  const needBat = Math.max(0, combo.bat - fixedBat);
+  const needAR = Math.max(0, combo.ar - fixedAR);
+  const needBowl = Math.max(0, combo.bowl - fixedBowl);
+
+  const availWK = remaining.filter(p => p.role === PLAYER_ROLES.WICKET_KEEPER).length;
+  const availBat = remaining.filter(p => p.role === PLAYER_ROLES.BATSMAN).length;
+  const availAR = remaining.filter(p => p.role === PLAYER_ROLES.ALL_ROUNDER).length;
+  const availBowl = remaining.filter(p => p.role === PLAYER_ROLES.BOWLER).length;
+
+  if (availWK < needWK) errors.push(`Need ${needWK} WK but only ${availWK} available`);
+  if (availBat < needBat) errors.push(`Need ${needBat} BAT but only ${availBat} available`);
+  if (availAR < needAR) errors.push(`Need ${needAR} AR but only ${availAR} available`);
+  if (availBowl < needBowl) errors.push(`Need ${needBowl} BOWL but only ${availBowl} available`);
+
+  return { valid: errors.length === 0, errors };
+}
+
 export interface TGPlayer {
   name: string;
   image: string;
@@ -315,17 +578,17 @@ export interface GeneratedTeam {
 }
 
 // Cricket team constraints
-const CRICKET_TEAM_SIZE = 11;
-const MIN_WK = 1;
-const MAX_WK = 4;
-const MIN_BAT = 3;
-const MAX_BAT = 6;
-const MIN_AR = 1;
-const MAX_AR = 4;
-const MIN_BOWL = 3;
-const MAX_BOWL = 6;
-const MAX_CREDITS = 100;
-const MAX_FROM_ONE_TEAM = 7;
+export const CRICKET_TEAM_SIZE = 11;
+export const MIN_WK = 1;
+export const MAX_WK = 4;
+export const MIN_BAT = 3;
+export const MAX_BAT = 6;
+export const MIN_AR = 1;
+export const MAX_AR = 4;
+export const MIN_BOWL = 3;
+export const MAX_BOWL = 6;
+export const MAX_CREDITS = 100;
+export const MAX_FROM_ONE_TEAM = 7;
 
 function seededRandom(seed: number): () => number {
   let s = seed;
@@ -349,11 +612,19 @@ export function generateTeams(
   rightPlayers: TGPlayer[],
   category: string,
   count: number,
-  seed: number = Date.now()
+  seed: number = Date.now(),
+  avoidPlayerIds: Set<number> = new Set(),
+  combination: RoleCombination | null = null,
 ): GeneratedTeam[] {
-  const allPlayers = [...leftPlayers, ...rightPlayers];
+  // Apply lineup-aware filtering: AFTER LINEUP only playing=1, BEFORE LINEUP all
+  const allPlayersRaw = [...leftPlayers, ...rightPlayers];
+  const allPlayers = getEligiblePlayers(allPlayersRaw, avoidPlayerIds);
   const leftTeamName = leftPlayers[0]?.team_name || 'A';
   const rightTeamName = rightPlayers[0]?.team_name || 'B';
+
+  // After filtering, rebuild left/right pools for team distribution checks
+  const eligibleLeft = allPlayers.filter(p => p.team_name === leftTeamName);
+  const eligibleRight = allPlayers.filter(p => p.team_name === rightTeamName);
 
   // Separate by role
   const wk = allPlayers.filter(p => p.role === PLAYER_ROLES.WICKET_KEEPER);
@@ -376,10 +647,16 @@ export function generateTeams(
       attempts++;
       const sr = seededRandom(seed + t * 1000 + attempts);
 
-      // Determine role counts based on category
+      // Determine role counts based on category or explicit combination
       let wkCount, batCount, arCount, bowlCount;
 
-      if (isH2H) {
+      if (combination) {
+        // Use explicit combination (manual or auto-selected)
+        wkCount = combination.wk;
+        batCount = combination.bat;
+        arCount = combination.ar;
+        bowlCount = combination.bowl;
+      } else if (isH2H) {
         // H2H: More conservative, popular players
         wkCount = MIN_WK + (sr() > 0.5 ? 1 : 0);
         arCount = MIN_AR + (sr() > 0.6 ? 1 : 0);
@@ -496,6 +773,8 @@ export interface ExtraTeamGenInput {
   category: string;              // 'Mega GL' | 'SL' | 'H2H'
   count: number;                 // Number of teams to generate
   seed?: number;
+  avoidPlayerIds?: Set<number>;  // Players to avoid
+  combination?: RoleCombination | null; // Explicit role combination
 }
 
 export function generateExtraTeams(input: ExtraTeamGenInput): GeneratedTeam[] {
@@ -508,9 +787,13 @@ export function generateExtraTeams(input: ExtraTeamGenInput): GeneratedTeam[] {
     category,
     count,
     seed = Date.now(),
+    avoidPlayerIds = new Set(),
+    combination = null,
   } = input;
 
-  const allPlayers = [...leftPlayers, ...rightPlayers];
+  // Apply lineup-aware filtering to the full player pool
+  const allPlayersRaw = [...leftPlayers, ...rightPlayers];
+  const allPlayers = getEligiblePlayers(allPlayersRaw, avoidPlayerIds);
   const leftTeamName = leftPlayers[0]?.team_name || 'A';
   const rightTeamName = rightPlayers[0]?.team_name || 'B';
 
@@ -632,10 +915,16 @@ export function generateExtraTeams(input: ExtraTeamGenInput): GeneratedTeam[] {
       totalAttempts++;
       const sr = seededRandom(seed + t * 1000 + attempts);
 
-      // Pick a valid target distribution
+      // Pick a valid target distribution (or use explicit combination)
       let targetWK: number, targetBat: number, targetAR: number, targetBowl: number;
 
-      if (validDistributions.length === 1) {
+      if (combination) {
+        // Use explicit combination
+        targetWK = combination.wk;
+        targetBat = combination.bat;
+        targetAR = combination.ar;
+        targetBowl = combination.bowl;
+      } else if (validDistributions.length === 1) {
         [targetWK, targetBat, targetAR, targetBowl] = validDistributions[0];
       } else {
         // Bias towards category-preferred patterns (first half of sorted list)
@@ -753,9 +1042,14 @@ export function generateExtraTeams(input: ExtraTeamGenInput): GeneratedTeam[] {
         const extraSeed = seed + count * 1000 + extraAttempts * 37;
         const sr = seededRandom(extraSeed);
 
-        // Pick distribution
+        // Pick distribution (or use explicit combination)
         let targetWK: number, targetBat: number, targetAR: number, targetBowl: number;
-        if (validDistributions.length === 1) {
+        if (combination) {
+          targetWK = combination.wk;
+          targetBat = combination.bat;
+          targetAR = combination.ar;
+          targetBowl = combination.bowl;
+        } else if (validDistributions.length === 1) {
           [targetWK, targetBat, targetAR, targetBowl] = validDistributions[0];
         } else {
           const idx = Math.floor(sr() * validDistributions.length);
@@ -862,19 +1156,12 @@ export function autoSelectExtraPlayers(
   rightPlayers: TGPlayer[],
   avoidPlayerIds: Set<number> = new Set(),
 ): AutoSelectResult {
-  const allPlayers = [...leftPlayers, ...rightPlayers];
+  const allPlayersRaw = [...leftPlayers, ...rightPlayers];
   const leftTeamName = leftPlayers[0]?.team_name || 'A';
   const rightTeamName = rightPlayers[0]?.team_name || 'B';
 
-  // Filter out avoided players and unconfirmed players when lineup is out
-  const eligible = allPlayers.filter(p => {
-    if (avoidPlayerIds.has(p.pl_id)) return false;
-    if (p.playing === 0) {
-      const hasConfirmed = allPlayers.some(ap => ap.playing === 1);
-      if (hasConfirmed) return false;
-    }
-    return true;
-  });
+  // Use lineup-aware eligibility filter
+  const eligible = getEligiblePlayers(allPlayersRaw, avoidPlayerIds);
 
   const eligibleLeft = eligible.filter(p => p.team_name === leftTeamName);
   const eligibleRight = eligible.filter(p => p.team_name === rightTeamName);

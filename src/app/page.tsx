@@ -44,7 +44,7 @@ import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { useToast } from '@/hooks/use-toast'
-import { TGPlayer, GeneratedTeam, generateTeams, generateExtraTeams, autoSelectExtraPlayers, autoReplacePlayer, ExtraTeamGenInput, getRoleName, getRoleShort, PLAYER_ROLES } from '@/lib/tg-api'
+import { TGPlayer, GeneratedTeam, generateTeams, generateExtraTeams, autoSelectExtraPlayers, autoReplacePlayer, ExtraTeamGenInput, getRoleName, getRoleShort, PLAYER_ROLES, getLineupMode, getEligiblePlayers, isPlayerEligible, validateTeamForLineup, RoleCombination, CombinationMode, getAllValidCombinations, getCompatibleCombinations, autoSelectCombination, validateCombination, isCombinationCompatibleWithFixed, MIN_WK, MAX_WK, MIN_BAT, MAX_BAT, MIN_AR, MAX_AR, MIN_BOWL, MAX_BOWL } from '@/lib/tg-api'
 
 // Types
 interface Match {
@@ -276,6 +276,7 @@ function PlayerRow({ player, isCaptain, isViceCaptain, teamName }: {
           <span className="font-semibold truncate">{player.name}</span>
           {isCaptain && <Crown className="w-3 h-3 text-yellow-500 flex-shrink-0" />}
           {isViceCaptain && <Crown className="w-3 h-3 text-gray-400 flex-shrink-0" />}
+          {player.playing === 1 && <span className="text-[7px] bg-green-100 text-green-700 px-0.5 rounded font-bold">PLAYING</span>}
         </div>
         <div className="flex items-center gap-1 mt-0.5">
           <span className={`text-[9px] px-1 py-0 rounded border ${roleColor(player.role)}`}>
@@ -610,6 +611,17 @@ export default function Home() {
   const [extraPlayerPickerSlot, setExtraPlayerPickerSlot] = useState<number>(0) // which slot is being picked
   const [extraAutoLastUpdated, setExtraAutoLastUpdated] = useState<string>('')
 
+  // Combination Mode state
+  const [combinationMode, setCombinationMode] = useState<CombinationMode>('auto')
+  const [manualCombination, setManualCombination] = useState<RoleCombination>({ wk: 1, bat: 4, ar: 2, bowl: 4 })
+  const [combinationErrors, setCombinationErrors] = useState<string[]>([])
+
+  // Lineup-aware team validation state
+  const [invalidTeams, setInvalidTeams] = useState<Map<number, { player: TGPlayer; reason: string }[]>>(new Map())
+
+  // Avoid players for normal mode
+  const [normalAvoidPlayers, setNormalAvoidPlayers] = useState<TGPlayer[]>([])
+
   const generatedTeamsRef = useRef<HTMLDivElement>(null)
   const { toast } = useToast()
 
@@ -714,8 +726,32 @@ export default function Home() {
   const handleGenerateTeams = () => {
     if (!matchDetail || !selectedCategory) return
 
+    const allPlayers = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
+    const avoidIds = new Set(normalAvoidPlayers.map(p => p.pl_id))
+
+    // Determine combination to use
+    let activeCombination: RoleCombination | null = null
+    if (combinationMode === 'manual') {
+      // Validate manual combination
+      const eligible = getEligiblePlayers(allPlayers, avoidIds)
+      const validation = validateCombination(manualCombination, eligible, [])
+      if (!validation.valid) {
+        setCombinationErrors(validation.errors)
+        toast({ title: `Invalid combination: ${validation.errors[0]}`, variant: 'destructive' })
+        return
+      }
+      setCombinationErrors([])
+      activeCombination = manualCombination
+    } else {
+      // Auto combination - will be determined per-team inside generateTeams via rotation
+      // We pass null to let the existing category-based logic handle it,
+      // but with lineup-aware filtering active
+      activeCombination = null
+    }
+
     setGenerating(true)
     setGeneratedTeams([])
+    setInvalidTeams(new Map())
 
     // Use setTimeout to show loading state
     setTimeout(() => {
@@ -724,11 +760,28 @@ export default function Home() {
         matchDetail.right_team_players,
         selectedCategory,
         selectedTeamCount,
-        Date.now()
+        Date.now(),
+        avoidIds,
+        activeCombination,
       )
       setGeneratedTeams(teams)
+
+      // Validate each team for lineup eligibility
+      const newInvalidTeams = new Map<number, { player: TGPlayer; reason: string }[]>()
+      for (let i = 0; i < teams.length; i++) {
+        const validation = validateTeamForLineup(teams[i], allPlayers, avoidIds)
+        if (!validation.valid) {
+          newInvalidTeams.set(i, validation.invalidPlayers)
+        }
+      }
+      setInvalidTeams(newInvalidTeams)
+
       setGenerating(false)
-      toast({ title: `${teams.length} teams generated successfully!` })
+      if (newInvalidTeams.size > 0) {
+        toast({ title: `${teams.length} teams generated, but ${newInvalidTeams.size} have invalid players after lineup check`, variant: 'destructive' })
+      } else {
+        toast({ title: `${teams.length} teams generated successfully!` })
+      }
 
       // Scroll to teams
       setTimeout(() => {
@@ -801,9 +854,26 @@ export default function Home() {
 
     // Capture the requested count for validation after generation
     const requestedCount = selectedTeamCount
+    const allPlayers = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
+    const avoidIds = new Set(extraAvoidPlayers.map(p => p.pl_id))
+
+    // Determine combination to use for extra generation
+    let activeCombination: RoleCombination | null = null
+    if (combinationMode === 'manual') {
+      const eligible = getEligiblePlayers(allPlayers, avoidIds)
+      const validation = validateCombination(manualCombination, eligible, extraFixedPlayers)
+      if (!validation.valid) {
+        setCombinationErrors(validation.errors)
+        toast({ title: `Invalid combination: ${validation.errors[0]}`, variant: 'destructive' })
+        return
+      }
+      setCombinationErrors([])
+      activeCombination = manualCombination
+    }
 
     setGenerating(true)
     setGeneratedTeams([])
+    setInvalidTeams(new Map())
 
     setTimeout(() => {
       const teams = generateExtraTeams({
@@ -815,9 +885,22 @@ export default function Home() {
         category: selectedCategory,
         count: requestedCount,
         seed: Date.now(),
+        avoidPlayerIds: avoidIds,
+        combination: activeCombination,
       })
 
       setGeneratedTeams(teams)
+
+      // Validate each team for lineup eligibility
+      const newInvalidTeams = new Map<number, { player: TGPlayer; reason: string }[]>()
+      for (let i = 0; i < teams.length; i++) {
+        const validation = validateTeamForLineup(teams[i], allPlayers, avoidIds)
+        if (!validation.valid) {
+          newInvalidTeams.set(i, validation.invalidPlayers)
+        }
+      }
+      setInvalidTeams(newInvalidTeams)
+
       setGenerating(false)
 
       if (teams.length === 0) {
@@ -986,6 +1069,90 @@ export default function Home() {
       handleAutoSelectExtra()
     }
   }, [genMode, extraSubMode, matchDetail, handleAutoSelectExtra])
+
+  // Auto lineup detection & revalidation effect
+  // When matchDetail updates (e.g., lineup becomes confirmed), revalidate all selected players
+  useEffect(() => {
+    if (!matchDetail) return
+
+    const allPlayers = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
+    const lineupMode = getLineupMode(allPlayers)
+
+    if (lineupMode === 'after' && genMode === 'extra') {
+      // AFTER LINEUP: Revalidate FIX, C, VC selections
+      let needsRevalidation = false
+
+      // Check fixed players
+      for (const fp of extraFixedPlayers) {
+        const check = isPlayerEligible(fp, allPlayers, new Set(extraAvoidPlayers.map(p => p.pl_id)))
+        if (!check.eligible) {
+          needsRevalidation = true
+          break
+        }
+      }
+
+      // Check captain options
+      if (!needsRevalidation) {
+        for (const c of extraCaptainOptions) {
+          const check = isPlayerEligible(c, allPlayers, new Set(extraAvoidPlayers.map(p => p.pl_id)))
+          if (!check.eligible) {
+            needsRevalidation = true
+            break
+          }
+        }
+      }
+
+      // Check VC options
+      if (!needsRevalidation) {
+        for (const vc of extraViceCaptainOptions) {
+          const check = isPlayerEligible(vc, allPlayers, new Set(extraAvoidPlayers.map(p => p.pl_id)))
+          if (!check.eligible) {
+            needsRevalidation = true
+            break
+          }
+        }
+      }
+
+      if (needsRevalidation) {
+        if (extraSubMode === 'auto') {
+          // Auto mode: auto-replace invalid players
+          const avoidIds = new Set(extraAvoidPlayers.map(p => p.pl_id))
+          const result = autoSelectExtraPlayers(
+            matchDetail.left_team_players,
+            matchDetail.right_team_players,
+            avoidIds,
+          )
+          setExtraFixedPlayers(result.fixedPlayers)
+          setExtraCaptainOptions(result.captainOptions)
+          setExtraViceCaptainOptions(result.viceCaptainOptions)
+          setExtraAutoLastUpdated(new Date().toLocaleTimeString())
+          toast({ title: 'Lineup confirmed — auto-updated: removed OUT players' })
+        } else {
+          // Manual mode: mark invalid (the player picker will show OUT status)
+          toast({ title: 'Lineup confirmed — some selected players are OUT. Please replace them.', variant: 'destructive' })
+        }
+      }
+
+      // Also revalidate already generated teams
+      if (generatedTeams.length > 0) {
+        const avoidIds = new Set([
+          ...normalAvoidPlayers.map(p => p.pl_id),
+          ...extraAvoidPlayers.map(p => p.pl_id),
+        ])
+        const newInvalidTeams = new Map<number, { player: TGPlayer; reason: string }[]>()
+        for (let i = 0; i < generatedTeams.length; i++) {
+          const validation = validateTeamForLineup(generatedTeams[i], allPlayers, avoidIds)
+          if (!validation.valid) {
+            newInvalidTeams.set(i, validation.invalidPlayers)
+          }
+        }
+        setInvalidTeams(newInvalidTeams)
+        if (newInvalidTeams.size > 0) {
+          toast({ title: `${newInvalidTeams.size} previously generated team(s) are now INVALID after lineup update`, variant: 'destructive' })
+        }
+      }
+    }
+  }, [matchDetail, genMode, extraSubMode])
 
   // Handle OTP send
   const handleSendOTP = async () => {
@@ -1219,6 +1386,31 @@ export default function Home() {
 
     // In replace mode, only process as many teams as we have selected to replace
     const teamsToProcess = transferOption === 'replace' ? Math.min(selectedReplaceIds.size, generatedTeams.length) : generatedTeams.length
+
+    // Transfer safety: Validate all teams for lineup eligibility before transferring
+    if (matchDetail) {
+      const allPlayers = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
+      const avoidIds = new Set([
+        ...normalAvoidPlayers.map(p => p.pl_id),
+        ...extraAvoidPlayers.map(p => p.pl_id),
+      ])
+      const invalidTeamIndices: number[] = []
+      for (let i = 0; i < teamsToProcess; i++) {
+        const team = generatedTeams[i]
+        const validation = validateTeamForLineup(team, allPlayers, avoidIds)
+        if (!validation.valid) {
+          invalidTeamIndices.push(i)
+        }
+      }
+      if (invalidTeamIndices.length > 0) {
+        toast({
+          title: `Cannot transfer: ${invalidTeamIndices.length} team(s) contain invalid players (OUT / NOT IN PLAYING XI)`,
+          description: 'Regenerate teams after lineup confirmation to ensure all players are in Playing XI.',
+          variant: 'destructive',
+        })
+        return
+      }
+    }
 
     // Initialize per-team results
     const initialResults: TransferTeamResult[] = Array.from({ length: teamsToProcess }, (_, idx) => ({
@@ -2007,17 +2199,31 @@ export default function Home() {
               {/* Lineup Status */}
               <div className="mb-3">
                 {matchDetail ? (
-                  matchDetail.lineup_status === 1 ? (
-                    <div className="flex items-center gap-2 bg-green-50 border border-green-200 rounded-lg p-2.5">
-                      <CheckCircle2 className="w-4 h-4 text-green-600" />
-                      <span className="text-sm text-green-700 font-medium">Lineup is OUT — Teams can be generated!</span>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
-                      <Clock className="w-4 h-4 text-amber-600" />
-                      <span className="text-sm text-amber-700 font-medium">Lineup pending — Teams can still be generated (may change)</span>
-                    </div>
-                  )
+                  (() => {
+                    const allPlayers = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
+                    const lineupMode = getLineupMode(allPlayers)
+                    const isAfterLineup = lineupMode === 'after'
+                    const playingCount = allPlayers.filter(p => p.playing === 1).length
+                    const totalCount = allPlayers.length
+
+                    return isAfterLineup ? (
+                      <div className="bg-green-50 border border-green-200 rounded-lg p-2.5">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle2 className="w-4 h-4 text-green-600" />
+                          <span className="text-sm text-green-700 font-bold">AFTER LINEUP — PLAYING XI CONFIRMED</span>
+                        </div>
+                        <p className="text-xs text-green-600 mt-1 ml-6">{playingCount} of {totalCount} players confirmed playing. Only Playing XI players will be used for team generation.</p>
+                      </div>
+                    ) : (
+                      <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5">
+                        <div className="flex items-center gap-2">
+                          <Clock className="w-4 h-4 text-amber-600" />
+                          <span className="text-sm text-amber-700 font-bold">BEFORE LINEUP</span>
+                        </div>
+                        <p className="text-xs text-amber-600 mt-1 ml-6">Lineup not yet confirmed. All players are eligible. Teams may need regeneration after lineup is out.</p>
+                      </div>
+                    )
+                  })()
                 ) : (
                   <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg p-2.5">
                     <Loader2 className="w-4 h-4 text-gray-400 animate-spin" />
@@ -2143,6 +2349,132 @@ export default function Home() {
                     </div>
                   </div>
 
+                  {/* Combination Mode */}
+                  <div className="mb-3">
+                    <p className="text-sm font-semibold text-gray-700 mb-2">Combination</p>
+                    <div className="flex gap-2 mb-2">
+                      <button
+                        onClick={() => setCombinationMode('manual')}
+                        className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold transition-all border-2 ${
+                          combinationMode === 'manual'
+                            ? 'bg-[#6C63FF] text-white border-[#6C63FF] shadow-sm'
+                            : 'bg-white text-gray-600 border-gray-200 hover:border-[#6C63FF]/40 hover:text-[#6C63FF]'
+                        }`}
+                      >
+                        <Zap className="w-3.5 h-3.5" /> MANUAL
+                      </button>
+                      <button
+                        onClick={() => { setCombinationMode('auto'); setCombinationErrors([]) }}
+                        className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold transition-all border-2 ${
+                          combinationMode === 'auto'
+                            ? 'bg-[#6C63FF] text-white border-[#6C63FF] shadow-sm'
+                            : 'bg-white text-gray-600 border-gray-200 hover:border-[#6C63FF]/40 hover:text-[#6C63FF]'
+                        }`}
+                      >
+                        <Bot className="w-3.5 h-3.5" /> AUTO
+                      </button>
+                    </div>
+
+                    {combinationMode === 'manual' && matchDetail && (
+                      <div className="space-y-2">
+                        <div className="bg-[#6C63FF]/5 border border-[#6C63FF]/20 rounded-lg p-2.5">
+                          <p className="text-[11px] font-semibold text-[#6C63FF] mb-2">Manual Combination — Select role distribution</p>
+                          <div className="grid grid-cols-4 gap-2">
+                            {/* WK */}
+                            <div className="text-center">
+                              <p className="text-[10px] font-bold text-blue-600 mb-1">WK</p>
+                              <select
+                                value={manualCombination.wk}
+                                onChange={(e) => {
+                                  const newCombo = { ...manualCombination, wk: parseInt(e.target.value) }
+                                  setManualCombination(newCombo)
+                                }}
+                                className="w-full text-center text-sm font-semibold bg-white border border-gray-200 rounded-md py-1 px-1 focus:outline-none focus:ring-1 focus:ring-[#6C63FF]"
+                              >
+                                {Array.from({ length: MAX_WK - MIN_WK + 1 }, (_, i) => MIN_WK + i).map(n => (
+                                  <option key={n} value={n}>{n}</option>
+                                ))}
+                              </select>
+                            </div>
+                            {/* BAT */}
+                            <div className="text-center">
+                              <p className="text-[10px] font-bold text-orange-600 mb-1">BAT</p>
+                              <select
+                                value={manualCombination.bat}
+                                onChange={(e) => {
+                                  const newCombo = { ...manualCombination, bat: parseInt(e.target.value) }
+                                  setManualCombination(newCombo)
+                                }}
+                                className="w-full text-center text-sm font-semibold bg-white border border-gray-200 rounded-md py-1 px-1 focus:outline-none focus:ring-1 focus:ring-[#6C63FF]"
+                              >
+                                {Array.from({ length: MAX_BAT - MIN_BAT + 1 }, (_, i) => MIN_BAT + i).map(n => (
+                                  <option key={n} value={n}>{n}</option>
+                                ))}
+                              </select>
+                            </div>
+                            {/* AR */}
+                            <div className="text-center">
+                              <p className="text-[10px] font-bold text-purple-600 mb-1">AR</p>
+                              <select
+                                value={manualCombination.ar}
+                                onChange={(e) => {
+                                  const newCombo = { ...manualCombination, ar: parseInt(e.target.value) }
+                                  setManualCombination(newCombo)
+                                }}
+                                className="w-full text-center text-sm font-semibold bg-white border border-gray-200 rounded-md py-1 px-1 focus:outline-none focus:ring-1 focus:ring-[#6C63FF]"
+                              >
+                                {Array.from({ length: MAX_AR - MIN_AR + 1 }, (_, i) => MIN_AR + i).map(n => (
+                                  <option key={n} value={n}>{n}</option>
+                                ))}
+                              </select>
+                            </div>
+                            {/* BOWL */}
+                            <div className="text-center">
+                              <p className="text-[10px] font-bold text-green-600 mb-1">BOWL</p>
+                              <select
+                                value={manualCombination.bowl}
+                                onChange={(e) => {
+                                  const newCombo = { ...manualCombination, bowl: parseInt(e.target.value) }
+                                  setManualCombination(newCombo)
+                                }}
+                                className="w-full text-center text-sm font-semibold bg-white border border-gray-200 rounded-md py-1 px-1 focus:outline-none focus:ring-1 focus:ring-[#6C63FF]"
+                              >
+                                {Array.from({ length: MAX_BOWL - MIN_BOWL + 1 }, (_, i) => MIN_BOWL + i).map(n => (
+                                  <option key={n} value={n}>{n}</option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                          <div className="mt-2 text-center">
+                            <p className={`text-xs font-semibold ${
+                              manualCombination.wk + manualCombination.bat + manualCombination.ar + manualCombination.bowl === 11
+                                ? 'text-green-600' : 'text-red-500'
+                            }`}>
+                              Total: {manualCombination.wk + manualCombination.bat + manualCombination.ar + manualCombination.bowl}/11
+                            </p>
+                          </div>
+                        </div>
+                        {combinationErrors.length > 0 && (
+                          <div className="bg-red-50 border border-red-200 rounded-lg p-2">
+                            {combinationErrors.map((err, i) => (
+                              <p key={i} className="text-[10px] text-red-600">{err}</p>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {combinationMode === 'auto' && (
+                      <div className="bg-[#6C63FF]/5 border border-[#6C63FF]/20 rounded-lg p-2.5 flex items-start gap-2">
+                        <Bot className="w-4 h-4 text-[#6C63FF] flex-shrink-0 mt-0.5" />
+                        <div>
+                          <p className="text-[11px] font-semibold text-[#6C63FF]">Auto Combination Active</p>
+                          <p className="text-[10px] text-[#6C63FF]/70">Combinations will be intelligently selected and rotated based on category, player pool, and match conditions.</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
                   {/* ====== NORMAL TEAM GENERATION MODE ====== */}
                   {genMode === 'normal' && (
                     <>
@@ -2251,7 +2583,9 @@ export default function Home() {
                                 }}
                                 className={`relative rounded-lg border-2 p-1.5 text-left transition-all min-h-[56px] ${
                                   player
-                                    ? 'border-[#6C63FF] bg-[#6C63FF]/5'
+                                    ? (matchDetail && !isPlayerEligible(player, [...matchDetail.left_team_players, ...matchDetail.right_team_players], new Set(extraAvoidPlayers.map(p => p.pl_id))).eligible)
+                                      ? 'border-red-500 bg-red-50'
+                                      : 'border-[#6C63FF] bg-[#6C63FF]/5'
                                     : 'border-dashed border-gray-300 bg-white hover:border-[#6C63FF]/40'
                                 }`}
                               >
@@ -2260,7 +2594,11 @@ export default function Home() {
                                     <img src={player.image} alt={player.name} className="w-5 h-5 rounded-full object-cover bg-gray-100 flex-shrink-0" />
                                     <div className="min-w-0">
                                       <p className="text-[9px] font-semibold truncate leading-tight">{player.name}</p>
-                                      <p className={`text-[8px] px-0.5 rounded leading-tight ${roleColor(player.role)}`}>{getRoleShort(player.role)}</p>
+                                      {matchDetail && !isPlayerEligible(player, [...matchDetail.left_team_players, ...matchDetail.right_team_players], new Set(extraAvoidPlayers.map(p => p.pl_id))).eligible ? (
+                                        <p className="text-[7px] font-bold text-red-500 leading-tight">OUT</p>
+                                      ) : (
+                                        <p className={`text-[8px] px-0.5 rounded leading-tight ${roleColor(player.role)}`}>{getRoleShort(player.role)}</p>
+                                      )}
                                     </div>
                                     <span
                                       role="button"
@@ -2534,6 +2872,23 @@ export default function Home() {
                             </span>
                           </div>
                         )}
+                        <div className="flex items-center justify-between">
+                          <span className="text-gray-600">Combination</span>
+                          <span className="text-[#6C63FF] font-semibold">
+                            {combinationMode === 'manual'
+                              ? `WK${manualCombination.wk} BAT${manualCombination.bat} AR${manualCombination.ar} BOWL${manualCombination.bowl}`
+                              : 'AUTO'
+                            }
+                          </span>
+                        </div>
+                        {matchDetail && (
+                          <div className="flex items-center justify-between">
+                            <span className="text-gray-600">Lineup</span>
+                            <span className={getLineupMode([...matchDetail.left_team_players, ...matchDetail.right_team_players]) === 'after' ? 'text-green-600 font-semibold' : 'text-amber-600 font-semibold'}>
+                              {getLineupMode([...matchDetail.left_team_players, ...matchDetail.right_team_players]) === 'after' ? 'AFTER LINEUP' : 'BEFORE LINEUP'}
+                            </span>
+                          </div>
+                        )}
                       </div>
 
                       {/* Generate Extra Teams Button */}
@@ -2557,6 +2912,11 @@ export default function Home() {
                       <div className="flex items-center justify-between mb-2">
                         <p className="text-sm font-semibold text-gray-700">
                           Generated Teams ({generatedTeams.length})
+                          {invalidTeams.size > 0 && (
+                            <span className="ml-2 text-xs text-red-500 font-normal">
+                              ({invalidTeams.size} invalid after lineup check)
+                            </span>
+                          )}
                         </p>
                         <div className="flex items-center gap-1 text-[10px] text-gray-500">
                           <Crown className="w-3 h-3 text-yellow-500" /> = Captain
@@ -2564,15 +2924,33 @@ export default function Home() {
                         </div>
                       </div>
                       <div className="max-h-80 overflow-y-auto space-y-0">
-                        {generatedTeams.map((team, idx) => (
-                          <GeneratedTeamCard
-                            key={team.id}
-                            team={team}
-                            leftTeamName={matchDetail.left_team_name}
-                            rightTeamName={matchDetail.right_team_name}
-                            teamIndex={idx + 1}
-                          />
-                        ))}
+                        {generatedTeams.map((team, idx) => {
+                          const isInvalid = invalidTeams.has(idx)
+                          const invalidPlayers = invalidTeams.get(idx)
+                          return (
+                            <div key={team.id} className={isInvalid ? 'opacity-60' : ''}>
+                              <GeneratedTeamCard
+                                team={team}
+                                leftTeamName={matchDetail.left_team_name}
+                                rightTeamName={matchDetail.right_team_name}
+                                teamIndex={idx + 1}
+                              />
+                              {isInvalid && invalidPlayers && (
+                                <div className="bg-red-50 border border-red-200 rounded-b-lg p-1.5 -mt-1">
+                                  <p className="text-[9px] font-bold text-red-600 mb-0.5">
+                                    <AlertTriangle className="w-3 h-3 inline mr-1 -mt-0.5" />
+                                    INVALID AFTER LINEUP
+                                  </p>
+                                  {invalidPlayers.map((ip, i) => (
+                                    <p key={i} className="text-[8px] text-red-500 ml-4">
+                                      {ip.player.name} — {ip.reason}
+                                    </p>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
                       </div>
                     </div>
                   )}
@@ -3302,10 +3680,6 @@ export default function Home() {
                     const isAlreadyC = extraCaptainOptions.some((p, i) => p.pl_id === player.pl_id && i !== (extraPlayerPickerOpen === 'captain' ? extraPlayerPickerSlot : -1))
                     const isAlreadyVC = extraViceCaptainOptions.some((p, i) => p.pl_id === player.pl_id && i !== (extraPlayerPickerOpen === 'vicecaptain' ? extraPlayerPickerSlot : -1))
                     const isAlreadyAvoid = extraAvoidPlayers.some(p => p.pl_id === player.pl_id)
-                    // For fix picker: can't pick a player already fixed (in another slot)
-                    // For captain picker: can't pick a player already in captain options (in another slot), but CAN pick fixed players
-                    // For vicecaptain picker: can't pick a player already in VC options (in another slot), but CAN pick fixed players or captain options
-                    // For avoid picker: can't pick already avoided players
                     const isUsed = extraPlayerPickerOpen === 'fix'
                       ? isAlreadyFixed
                       : extraPlayerPickerOpen === 'captain'
@@ -3315,6 +3689,11 @@ export default function Home() {
                           : extraPlayerPickerOpen === 'avoid'
                             ? isAlreadyAvoid
                             : false
+                    // Lineup eligibility check
+                    const allPlayers = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
+                    const eligibility = isPlayerEligible(player, allPlayers, new Set(extraAvoidPlayers.map(p => p.pl_id)))
+                    const isIneligible = !eligibility.eligible
+                    const isDisabled = isUsed || isIneligible
 
                     return (
                       <button
@@ -3354,9 +3733,9 @@ export default function Home() {
                             }
                           }
                         }}
-                        disabled={isUsed}
+                        disabled={isDisabled}
                         className={`w-full flex items-center gap-2 py-1.5 px-2 border-b border-gray-50 last:border-0 text-xs transition-colors ${
-                          isUsed ? 'opacity-40 cursor-not-allowed bg-gray-50' : 'hover:bg-[#6C63FF]/5 cursor-pointer'
+                          isDisabled ? 'opacity-40 cursor-not-allowed bg-gray-50' : 'hover:bg-[#6C63FF]/5 cursor-pointer'
                         }`}
                       >
                         <div className="w-6 h-6 rounded-full overflow-hidden bg-gray-100 flex-shrink-0">
@@ -3364,9 +3743,16 @@ export default function Home() {
                         </div>
                         <div className="flex-1 min-w-0 text-left">
                           <p className="font-semibold truncate">{player.name}</p>
-                          <span className={`text-[8px] px-0.5 rounded border ${roleColor(player.role)}`}>
-                            {getRoleShort(player.role)}
-                          </span>
+                          <div className="flex items-center gap-1">
+                            <span className={`text-[8px] px-0.5 rounded border ${roleColor(player.role)}`}>
+                              {getRoleShort(player.role)}
+                            </span>
+                            {isIneligible && (
+                              <span className="text-[7px] font-bold text-red-500 bg-red-50 px-1 rounded">
+                                {eligibility.reason}
+                              </span>
+                            )}
+                          </div>
                         </div>
                         <div className="text-right flex-shrink-0 w-8">
                           <span className="font-medium">{player.credits}</span>
@@ -3398,6 +3784,11 @@ export default function Home() {
                           : extraPlayerPickerOpen === 'avoid'
                             ? isAlreadyAvoid
                             : false
+                    // Lineup eligibility check
+                    const allPlayers = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
+                    const eligibility = isPlayerEligible(player, allPlayers, new Set(extraAvoidPlayers.map(p => p.pl_id)))
+                    const isIneligible = !eligibility.eligible
+                    const isDisabled = isUsed || isIneligible
 
                     return (
                       <button
@@ -3437,9 +3828,9 @@ export default function Home() {
                             }
                           }
                         }}
-                        disabled={isUsed}
+                        disabled={isDisabled}
                         className={`w-full flex items-center gap-2 py-1.5 px-2 border-b border-gray-50 last:border-0 text-xs transition-colors ${
-                          isUsed ? 'opacity-40 cursor-not-allowed bg-gray-50' : 'hover:bg-[#00D4AA]/5 cursor-pointer'
+                          isDisabled ? 'opacity-40 cursor-not-allowed bg-gray-50' : 'hover:bg-[#00D4AA]/5 cursor-pointer'
                         }`}
                       >
                         <div className="w-6 h-6 rounded-full overflow-hidden bg-gray-100 flex-shrink-0">
@@ -3447,9 +3838,16 @@ export default function Home() {
                         </div>
                         <div className="flex-1 min-w-0 text-left">
                           <p className="font-semibold truncate">{player.name}</p>
-                          <span className={`text-[8px] px-0.5 rounded border ${roleColor(player.role)}`}>
-                            {getRoleShort(player.role)}
-                          </span>
+                          <div className="flex items-center gap-1">
+                            <span className={`text-[8px] px-0.5 rounded border ${roleColor(player.role)}`}>
+                              {getRoleShort(player.role)}
+                            </span>
+                            {isIneligible && (
+                              <span className="text-[7px] font-bold text-red-500 bg-red-50 px-1 rounded">
+                                {eligibility.reason}
+                              </span>
+                            )}
+                          </div>
                         </div>
                         <div className="text-right flex-shrink-0 w-8">
                           <span className="font-medium">{player.credits}</span>
