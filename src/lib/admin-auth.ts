@@ -1,7 +1,9 @@
 import { NextRequest } from 'next/server';
-import { PrismaClient } from '@prisma/client';
+import { db } from '@/lib/db';
 
-const prisma = new PrismaClient();
+// Use the shared singleton PrismaClient from db.ts
+// This ensures we don't create multiple PrismaClient instances in production
+const prisma = db;
 
 /**
  * Verify admin session token from request headers.
