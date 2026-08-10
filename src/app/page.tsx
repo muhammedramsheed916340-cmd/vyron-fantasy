@@ -38,6 +38,17 @@ import {
   Flame,
   Bot,
   Ban,
+  KeyRound,
+  Lock,
+  Unlock,
+  Search,
+  Trash2,
+  Copy,
+  PlusCircle,
+  Settings,
+  LayoutDashboard,
+  FileKey,
+  Activity,
 } from 'lucide-react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
@@ -622,6 +633,29 @@ export default function Home() {
   // Avoid players for normal mode
   const [normalAvoidPlayers, setNormalAvoidPlayers] = useState<TGPlayer[]>([])
 
+  // Admin Panel - Hidden, accessed via 5-tap on header logo
+  const [logoTapCount, setLogoTapCount] = useState(0)
+  const [logoTapTimer, setLogoTapTimer] = useState<NodeJS.Timeout | null>(null)
+  const [showAdminLogin, setShowAdminLogin] = useState(false)
+  const [adminPassword, setAdminPassword] = useState('')
+  const [adminLoggingIn, setAdminLoggingIn] = useState(false)
+  const [adminToken, setAdminToken] = useState<string | null>(null)
+  const [adminView, setAdminView] = useState<'dashboard' | 'licenses' | 'users' | 'logs' | 'settings'>('dashboard')
+
+  // Admin License Management
+  const [adminLicenses, setAdminLicenses] = useState<any[]>([])
+  const [adminLicenseLoading, setAdminLicenseLoading] = useState(false)
+  const [adminLicenseType, setAdminLicenseType] = useState<string>('MONTHLY')
+  const [adminLicenseCount, setAdminLicenseCount] = useState<number>(1)
+  const [adminLicenseSearch, setAdminLicenseSearch] = useState('')
+  const [adminTransferLogs, setAdminTransferLogs] = useState<any[]>([])
+
+  // User License state
+  const [userLicense, setUserLicense] = useState<{ valid: boolean; license?: { key: string; type: string; status: string; expiresAt: string | null; assignedTo: string | null } } | null>(null)
+  const [licenseKeyInput, setLicenseKeyInput] = useState('')
+  const [licenseActivating, setLicenseActivating] = useState(false)
+  const [showLicenseDialog, setShowLicenseDialog] = useState(false)
+
   const generatedTeamsRef = useRef<HTMLDivElement>(null)
   const { toast } = useToast()
 
@@ -681,6 +715,88 @@ export default function Home() {
       }
       return next
     })
+  }
+
+  // Validate user license - check server-side
+  const validateUserLicense = useCallback(async () => {
+    // Try to find an active license for any linked account
+    const accounts = JSON.parse(localStorage.getItem('vyron_fantasy_accounts') || '{}')
+    let accountId: string | null = null
+    for (const platform of ['dream11', 'my11circle']) {
+      if (accounts[platform]?.mobileNumber) {
+        accountId = accounts[platform].mobileNumber
+        break
+      }
+    }
+    if (!accountId) {
+      // Also check stored license key
+      const storedKey = localStorage.getItem('vyron_license_key')
+      if (storedKey) {
+        try {
+          const res = await fetch('/api/license/validate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ licenseKey: storedKey }),
+          })
+          const data = await res.json()
+          if (data.status === 'success') {
+            setUserLicense(data.data)
+            return
+          }
+        } catch {}
+      }
+      setUserLicense({ valid: false })
+      return
+    }
+    try {
+      const res = await fetch('/api/license/validate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId }),
+      })
+      const data = await res.json()
+      if (data.status === 'success') {
+        setUserLicense(data.data)
+        if (data.data.valid && data.data.license?.key) {
+          localStorage.setItem('vyron_license_key', data.data.license.key)
+        }
+      }
+    } catch {
+      setUserLicense({ valid: false })
+    }
+  }, [])
+
+  // Re-validate license when accounts change
+  useEffect(() => {
+    validateUserLicense()
+  }, [validateUserLicense, fantasyAccounts])
+
+  // Load admin data when admin dashboard opens
+  useEffect(() => {
+    if (activeModal === 'admin-dashboard' && adminToken) {
+      fetch('/api/admin/licenses', { headers: { 'Authorization': `Bearer ${adminToken}` } })
+        .then(res => res.json())
+        .then(data => { if (data.status === 'success') setAdminLicenses(data.data) })
+        .catch(() => {})
+      fetch('/api/admin/transfer-logs', { headers: { 'Authorization': `Bearer ${adminToken}` } })
+        .then(res => res.json())
+        .then(data => { if (data.status === 'success') setAdminTransferLogs(data.data.logs) })
+        .catch(() => {})
+    }
+  }, [activeModal, adminToken])
+
+  // Handle 5-tap on header logo to open admin login
+  const handleLogoTap = () => {
+    const newCount = logoTapCount + 1
+    setLogoTapCount(newCount)
+    if (logoTapTimer) clearTimeout(logoTapTimer)
+    if (newCount >= 5) {
+      setLogoTapCount(0)
+      setShowAdminLogin(true)
+      return
+    }
+    const timer = setTimeout(() => setLogoTapCount(0), 2000)
+    setLogoTapTimer(timer)
   }
 
   // Handle refresh
@@ -1481,6 +1597,13 @@ export default function Home() {
           authToken: account.authToken,
           sportIndex: selectedMatch?.sport_index ?? 0,  // 0=cricket
           type: transferType,
+          licenseAccountId: (() => {
+            const accts = JSON.parse(localStorage.getItem('vyron_fantasy_accounts') || '{}')
+            for (const p of ['dream11', 'my11circle']) {
+              if (accts[p]?.mobileNumber) return accts[p].mobileNumber
+            }
+            return null
+          })(),
         }
 
         // For my11circle, include challenge token
@@ -1652,13 +1775,17 @@ export default function Home() {
           <Menu className="w-6 h-6" />
         </button>
 
-        <div className="flex flex-col items-center">
+        <button
+          onClick={handleLogoTap}
+          className="flex flex-col items-center bg-transparent border-0 p-0 cursor-pointer"
+          aria-label="VYRON"
+        >
           <div className="flex items-center gap-1.5">
             <Trophy className="w-5 h-5 text-yellow-400" />
             <span className="font-bold text-[15px]">VYRON</span>
           </div>
           <span className="text-[9px] opacity-80 -mt-0.5">AI Fantasy Cricket Platform</span>
-        </div>
+        </button>
 
         <button
           onClick={handleRefresh}
@@ -3171,6 +3298,40 @@ export default function Home() {
               </div>
             </div>
 
+            {/* License Check */}
+            {!userLicense?.valid ? (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <Lock className="w-4 h-4 text-red-600" />
+                  <span className="text-sm font-bold text-red-700">🔒 TRANSFER LOCKED</span>
+                </div>
+                <p className="text-xs text-red-600 mb-3">An active license is required to use team transfer.</p>
+                <button
+                  onClick={() => setShowLicenseDialog(true)}
+                  className="w-full py-2 bg-[#6C63FF] text-white text-sm font-semibold rounded-lg hover:bg-[#5a52e0] transition-colors flex items-center justify-center gap-2"
+                >
+                  <KeyRound className="w-4 h-4" />
+                  ACTIVATE LICENSE
+                </button>
+              </div>
+            ) : (
+              <div className="bg-green-50 border border-green-200 rounded-lg p-2.5">
+                <div className="flex items-center gap-2">
+                  <Unlock className="w-4 h-4 text-green-600" />
+                  <span className="text-sm text-green-700 font-semibold">✓ License Active</span>
+                </div>
+                <div className="flex items-center gap-3 mt-1 ml-6">
+                  <span className="text-xs text-green-600 font-medium">{userLicense.license?.type === 'THREE_MONTHS' ? '3 Months' : userLicense.license?.type === 'SIX_MONTHS' ? '6 Months' : userLicense.license?.type === 'LIFETIME' ? 'Lifetime' : 'Monthly'}</span>
+                  {userLicense.license?.expiresAt && (
+                    <span className="text-xs text-green-600">Expires: {new Date(userLicense.license.expiresAt).toLocaleDateString()}</span>
+                  )}
+                  {userLicense.license?.type === 'LIFETIME' && (
+                    <span className="text-xs text-green-600">Never expires</span>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Auth status check */}
             {!fantasyAccounts[transferPlatform!]?.authToken ? (
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
@@ -3198,6 +3359,7 @@ export default function Home() {
             )}
 
             {/* Transfer Options */}
+            {userLicense?.valid ? (
             <div className="space-y-2">
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Select Transfer Option</p>
 
@@ -3285,6 +3447,11 @@ export default function Home() {
                 </div>
               </button>
             </div>
+            ) : (
+              <div className="text-center py-4 text-gray-400 text-sm">
+                Activate a license to unlock transfer options
+              </div>
+            )}
 
             {/* Replace Team: Existing Teams Selection UI */}
             {transferOption === 'replace' && (
@@ -3586,7 +3753,7 @@ export default function Home() {
             {transferProgress.status === 'idle' && (
               <Button
                 className="w-full bg-[#6C63FF] hover:bg-[#5B54E0] text-white h-12 text-sm font-semibold"
-                disabled={transferring || !fantasyAccounts[transferPlatform!]?.authToken || (transferOption === 'replace' && selectedReplaceIds.size === 0)}
+                disabled={transferring || !fantasyAccounts[transferPlatform!]?.authToken || (transferOption === 'replace' && selectedReplaceIds.size === 0) || !userLicense?.valid}
                 onClick={handleTransfer}
               >
                 <Share2 className="w-4 h-4 mr-2" />
@@ -3866,6 +4033,428 @@ export default function Home() {
             <X className="w-4 h-4" />
           </button>
           {activeModal && MODAL_CONTENT[activeModal]?.()}
+        </DialogContent>
+      </Dialog>
+
+      {/* ============ ADMIN LOGIN DIALOG ============ */}
+      <Dialog open={showAdminLogin} onOpenChange={setShowAdminLogin}>
+        <DialogContent className="max-w-sm">
+          <DialogTitle className="sr-only">Admin Login</DialogTitle>
+          <div className="space-y-4 p-2">
+            <div className="flex flex-col items-center gap-2">
+              <Shield className="w-10 h-10 text-[#6C63FF]" />
+              <h3 className="text-lg font-bold text-gray-900">ADMIN LOGIN</h3>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-500 mb-1 block">Password</label>
+              <input
+                type="password"
+                value={adminPassword}
+                onChange={(e) => setAdminPassword(e.target.value)}
+                onKeyDown={async (e) => {
+                  if (e.key === 'Enter') {
+                    if (!adminPassword) return
+                    setAdminLoggingIn(true)
+                    try {
+                      const res = await fetch('/api/admin/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ password: adminPassword }),
+                      })
+                      const data = await res.json()
+                      if (data.status === 'success') {
+                        setAdminToken(data.data.token)
+                        setShowAdminLogin(false)
+                        setAdminPassword('')
+                        setActiveModal('admin-dashboard')
+                      } else {
+                        toast({ title: 'Access denied', variant: 'destructive' })
+                      }
+                    } catch {
+                      toast({ title: 'Login failed', variant: 'destructive' })
+                    }
+                    setAdminLoggingIn(false)
+                  }
+                }}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#6C63FF]"
+                placeholder="Enter admin password"
+                autoFocus
+              />
+            </div>
+            <Button
+              onClick={async () => {
+                if (!adminPassword) return
+                setAdminLoggingIn(true)
+                try {
+                  const res = await fetch('/api/admin/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: adminPassword }),
+                  })
+                  const data = await res.json()
+                  if (data.status === 'success') {
+                    setAdminToken(data.data.token)
+                    setShowAdminLogin(false)
+                    setAdminPassword('')
+                    setActiveModal('admin-dashboard')
+                  } else {
+                    toast({ title: 'Access denied', variant: 'destructive' })
+                  }
+                } catch {
+                  toast({ title: 'Login failed', variant: 'destructive' })
+                }
+                setAdminLoggingIn(false)
+              }}
+              disabled={adminLoggingIn || !adminPassword}
+              className="w-full bg-[#6C63FF] hover:bg-[#5a52e0] text-white"
+            >
+              {adminLoggingIn ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              {adminLoggingIn ? 'Verifying...' : 'Login'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ============ LICENSE ACTIVATION DIALOG ============ */}
+      <Dialog open={showLicenseDialog} onOpenChange={setShowLicenseDialog}>
+        <DialogContent className="max-w-sm">
+          <DialogTitle className="sr-only">Activate License</DialogTitle>
+          <div className="space-y-4 p-2">
+            <div className="flex flex-col items-center gap-2">
+              <KeyRound className="w-10 h-10 text-[#6C63FF]" />
+              <h3 className="text-lg font-bold text-gray-900">ACTIVATE LICENSE</h3>
+              <p className="text-xs text-gray-500 text-center">Enter your license key to unlock team transfer</p>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-500 mb-1 block">License Key</label>
+              <input
+                type="text"
+                value={licenseKeyInput}
+                onChange={(e) => setLicenseKeyInput(e.target.value.toUpperCase())}
+                className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm font-mono tracking-wider text-center focus:outline-none focus:ring-2 focus:ring-[#6C63FF]"
+                placeholder="VYRON-XXXX-XXXX-XXXX"
+                autoFocus
+              />
+            </div>
+            {userLicense?.valid && userLicense.license && (
+              <div className="bg-green-50 border border-green-200 rounded-lg p-2.5">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-green-600" />
+                  <span className="text-sm text-green-700 font-medium">Active: {userLicense.license.type === 'THREE_MONTHS' ? '3 Months' : userLicense.license.type === 'SIX_MONTHS' ? '6 Months' : userLicense.license.type === 'LIFETIME' ? 'Lifetime' : 'Monthly'}</span>
+                </div>
+              </div>
+            )}
+            <Button
+              onClick={async () => {
+                if (!licenseKeyInput) return
+                setLicenseActivating(true)
+                try {
+                  const accounts = JSON.parse(localStorage.getItem('vyron_fantasy_accounts') || '{}')
+                  let accountId: string | null = null
+                  for (const p of ['dream11', 'my11circle']) {
+                    if (accounts[p]?.mobileNumber) {
+                      accountId = accounts[p].mobileNumber
+                      break
+                    }
+                  }
+                  const res = await fetch('/api/license/activate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ licenseKey: licenseKeyInput, accountId }),
+                  })
+                  const data = await res.json()
+                  if (data.status === 'success') {
+                    localStorage.setItem('vyron_license_key', licenseKeyInput)
+                    toast({ title: '✓ License activated successfully!' })
+                    setLicenseKeyInput('')
+                    setShowLicenseDialog(false)
+                    validateUserLicense()
+                  } else {
+                    toast({ title: data.message || 'Invalid license', variant: 'destructive' })
+                  }
+                } catch {
+                  toast({ title: 'Activation failed', variant: 'destructive' })
+                }
+                setLicenseActivating(false)
+              }}
+              disabled={licenseActivating || !licenseKeyInput}
+              className="w-full bg-[#6C63FF] hover:bg-[#5a52e0] text-white"
+            >
+              {licenseActivating ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              {licenseActivating ? 'Activating...' : 'Activate'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ============ ADMIN DASHBOARD DIALOG ============ */}
+      <Dialog open={activeModal === 'admin-dashboard'} onOpenChange={(open) => { if (!open) { setActiveModal(null); setAdminToken(null); } }}>
+        <DialogContent className="max-w-[95vw] max-h-[90vh] overflow-y-auto">
+          <DialogTitle className="sr-only">Admin Dashboard</DialogTitle>
+          <button onClick={() => { setActiveModal(null); setAdminToken(null); }} className="absolute top-3 right-3 p-1 hover:bg-gray-100 rounded-md z-10">
+            <X className="w-4 h-4" />
+          </button>
+          <div className="p-2">
+            {/* Admin Nav */}
+            <div className="flex items-center gap-2 mb-4 overflow-x-auto pb-2">
+              <div className="flex items-center gap-2 mr-4">
+                <Shield className="w-5 h-5 text-[#6C63FF]" />
+                <span className="font-bold text-sm">VYRON ADMIN</span>
+              </div>
+              {(['dashboard', 'licenses', 'logs', 'settings'] as const).map((view) => (
+                <button
+                  key={view}
+                  onClick={() => setAdminView(view)}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap ${adminView === view ? 'bg-[#6C63FF] text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                >
+                  {view === 'dashboard' ? 'Dashboard' : view === 'licenses' ? 'Licenses' : view === 'logs' ? 'Transfer Logs' : 'Settings'}
+                </button>
+              ))}
+            </div>
+
+            {/* Dashboard View */}
+            {adminView === 'dashboard' && (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="bg-[#6C63FF]/10 rounded-lg p-3 text-center">
+                    <p className="text-2xl font-bold text-[#6C63FF]">{adminLicenses.length || '-'}</p>
+                    <p className="text-xs text-gray-500">Total Licenses</p>
+                  </div>
+                  <div className="bg-green-50 rounded-lg p-3 text-center">
+                    <p className="text-2xl font-bold text-green-600">{adminLicenses.filter(l => l.status === 'ACTIVE').length || '-'}</p>
+                    <p className="text-xs text-gray-500">Active</p>
+                  </div>
+                  <div className="bg-amber-50 rounded-lg p-3 text-center">
+                    <p className="text-2xl font-bold text-amber-600">{adminLicenses.filter(l => l.status === 'INACTIVE').length || '-'}</p>
+                    <p className="text-xs text-gray-500">Inactive</p>
+                  </div>
+                  <div className="bg-red-50 rounded-lg p-3 text-center">
+                    <p className="text-2xl font-bold text-red-600">{adminLicenses.filter(l => l.status === 'REVOKED' || l.status === 'EXPIRED').length || '-'}</p>
+                    <p className="text-xs text-gray-500">Revoked/Expired</p>
+                  </div>
+                </div>
+                <Button onClick={async () => { setAdminView('licenses'); /* load licenses */ }} variant="outline" className="w-full text-sm">Manage Licenses →</Button>
+              </div>
+            )}
+
+            {/* Licenses View */}
+            {adminView === 'licenses' && (
+              <div className="space-y-4">
+                {/* Create License */}
+                <div className="bg-gray-50 rounded-lg p-3 space-y-3">
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Create New License</p>
+                  <div className="flex gap-2 items-end">
+                    <div className="flex-1">
+                      <label className="text-[10px] text-gray-500 mb-0.5 block">Type</label>
+                      <select
+                        value={adminLicenseType}
+                        onChange={(e) => setAdminLicenseType(e.target.value)}
+                        className="w-full px-2 py-1.5 border rounded-md text-xs"
+                      >
+                        <option value="MONTHLY">Monthly</option>
+                        <option value="THREE_MONTHS">3 Months</option>
+                        <option value="SIX_MONTHS">6 Months</option>
+                        <option value="LIFETIME">Lifetime</option>
+                      </select>
+                    </div>
+                    <div className="w-20">
+                      <label className="text-[10px] text-gray-500 mb-0.5 block">Count</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={50}
+                        value={adminLicenseCount}
+                        onChange={(e) => setAdminLicenseCount(Number(e.target.value))}
+                        className="w-full px-2 py-1.5 border rounded-md text-xs text-center"
+                      />
+                    </div>
+                    <Button
+                      onClick={async () => {
+                        if (!adminToken) return
+                        setAdminLicenseLoading(true)
+                        try {
+                          const res = await fetch('/api/admin/licenses/create', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${adminToken}` },
+                            body: JSON.stringify({ type: adminLicenseType, count: adminLicenseCount }),
+                          })
+                          const data = await res.json()
+                          if (data.status === 'success') {
+                            toast({ title: `✓ ${data.data.length} license(s) created` })
+                            // Reload licenses
+                            const listRes = await fetch('/api/admin/licenses', { headers: { 'Authorization': `Bearer ${adminToken}` } })
+                            const listData = await listRes.json()
+                            if (listData.status === 'success') setAdminLicenses(listData.data)
+                          } else {
+                            toast({ title: data.message || 'Failed', variant: 'destructive' })
+                          }
+                        } catch {
+                          toast({ title: 'Error creating license', variant: 'destructive' })
+                        }
+                        setAdminLicenseLoading(false)
+                      }}
+                      disabled={adminLicenseLoading}
+                      className="bg-[#6C63FF] hover:bg-[#5a52e0] text-white text-xs h-[30px] px-3"
+                    >
+                      Generate
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Search */}
+                <div className="flex gap-2">
+                  <div className="flex-1 relative">
+                    <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input
+                      type="text"
+                      value={adminLicenseSearch}
+                      onChange={(e) => setAdminLicenseSearch(e.target.value)}
+                      className="w-full pl-8 pr-3 py-1.5 border rounded-md text-xs"
+                      placeholder="Search by key, account..."
+                    />
+                  </div>
+                  <Button
+                    onClick={async () => {
+                      if (!adminToken) return
+                      try {
+                        const res = await fetch(`/api/admin/licenses?search=${encodeURIComponent(adminLicenseSearch)}`, {
+                          headers: { 'Authorization': `Bearer ${adminToken}` },
+                        })
+                        const data = await res.json()
+                        if (data.status === 'success') setAdminLicenses(data.data)
+                      } catch {}
+                    }}
+                    variant="outline"
+                    className="text-xs h-[30px] px-3"
+                  >Search</Button>
+                </div>
+
+                {/* License List */}
+                <div className="space-y-2 max-h-[50vh] overflow-y-auto">
+                  {adminLicenses.length === 0 ? (
+                    <p className="text-center text-gray-400 text-xs py-8">No licenses yet. Create one above.</p>
+                  ) : adminLicenses.map((lic) => (
+                    <div key={lic.id} className="bg-white border rounded-lg p-2.5 text-xs">
+                      <div className="flex items-center justify-between mb-1">
+                        <code className="font-mono font-bold text-[11px] tracking-wider">{lic.key}</code>
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${lic.status === 'ACTIVE' ? 'bg-green-100 text-green-700' : lic.status === 'INACTIVE' ? 'bg-gray-100 text-gray-600' : lic.status === 'REVOKED' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>{lic.status}</span>
+                      </div>
+                      <div className="flex items-center gap-3 text-gray-500">
+                        <span>{lic.type === 'THREE_MONTHS' ? '3M' : lic.type === 'SIX_MONTHS' ? '6M' : lic.type === 'LIFETIME' ? 'LT' : '1M'}</span>
+                        <span>Created: {new Date(lic.createdAt).toLocaleDateString()}</span>
+                        {lic.activatedAt && <span>Act: {new Date(lic.activatedAt).toLocaleDateString()}</span>}
+                        {lic.expiresAt ? <span>Exp: {new Date(lic.expiresAt).toLocaleDateString()}</span> : lic.type === 'LIFETIME' && <span>Never expires</span>}
+                        {lic.assignedTo && <span>User: {lic.assignedTo}</span>}
+                      </div>
+                      <div className="flex gap-1.5 mt-2">
+                        {lic.status === 'INACTIVE' && (
+                          <button onClick={async () => {
+                            if (!adminToken) return
+                            try {
+                              const res = await fetch('/api/admin/licenses/update', { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${adminToken}` }, body: JSON.stringify({ id: lic.id, action: 'activate' }) })
+                              const data = await res.json()
+                              if (data.status === 'success') {
+                                toast({ title: '✓ License activated' })
+                                const listRes = await fetch('/api/admin/licenses', { headers: { 'Authorization': `Bearer ${adminToken}` } })
+                                const listData = await listRes.json()
+                                if (listData.status === 'success') setAdminLicenses(listData.data)
+                              }
+                            } catch {}
+                          }} className="px-2 py-0.5 bg-green-500 text-white rounded text-[10px] font-semibold hover:bg-green-600">Activate</button>
+                        )}
+                        {lic.status === 'ACTIVE' && (
+                          <button onClick={async () => {
+                            if (!adminToken) return
+                            try {
+                              const res = await fetch('/api/admin/licenses/update', { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${adminToken}` }, body: JSON.stringify({ id: lic.id, action: 'revoke' }) })
+                              const data = await res.json()
+                              if (data.status === 'success') {
+                                toast({ title: 'License revoked' })
+                                const listRes = await fetch('/api/admin/licenses', { headers: { 'Authorization': `Bearer ${adminToken}` } })
+                                const listData = await listRes.json()
+                                if (listData.status === 'success') setAdminLicenses(listData.data)
+                              }
+                            } catch {}
+                          }} className="px-2 py-0.5 bg-red-500 text-white rounded text-[10px] font-semibold hover:bg-red-600">Revoke</button>
+                        )}
+                        {lic.status === 'ACTIVE' && (
+                          <button onClick={async () => {
+                            if (!adminToken) return
+                            try {
+                              const res = await fetch('/api/admin/licenses/update', { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${adminToken}` }, body: JSON.stringify({ id: lic.id, action: 'deactivate' }) })
+                              const data = await res.json()
+                              if (data.status === 'success') {
+                                toast({ title: 'License deactivated' })
+                                const listRes = await fetch('/api/admin/licenses', { headers: { 'Authorization': `Bearer ${adminToken}` } })
+                                const listData = await listRes.json()
+                                if (listData.status === 'success') setAdminLicenses(listData.data)
+                              }
+                            } catch {}
+                          }} className="px-2 py-0.5 bg-amber-500 text-white rounded text-[10px] font-semibold hover:bg-amber-600">Deactivate</button>
+                        )}
+                        <button onClick={async () => {
+                          if (!confirm('Delete this license?')) return
+                          if (!adminToken) return
+                          try {
+                            const res = await fetch('/api/admin/licenses/update', { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${adminToken}` }, body: JSON.stringify({ id: lic.id, action: 'delete' }) })
+                            const data = await res.json()
+                            if (data.status === 'success') {
+                              toast({ title: 'License deleted' })
+                              setAdminLicenses(prev => prev.filter(l => l.id !== lic.id))
+                            }
+                          } catch {}
+                        }} className="px-2 py-0.5 bg-gray-500 text-white rounded text-[10px] font-semibold hover:bg-gray-600">Delete</button>
+                        <button onClick={() => { navigator.clipboard.writeText(lic.key); toast({ title: 'Key copied!' }) }} className="px-2 py-0.5 bg-gray-200 text-gray-700 rounded text-[10px] font-semibold hover:bg-gray-300">Copy</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Transfer Logs View */}
+            {adminView === 'logs' && (
+              <div className="space-y-3">
+                <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+                  {adminTransferLogs.length === 0 ? (
+                    <p className="text-center text-gray-400 text-xs py-8">No transfer logs yet</p>
+                  ) : adminTransferLogs.map((log) => (
+                    <div key={log.id} className="bg-white border rounded-lg p-2.5 text-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold">{log.platform} • {log.transferType}</span>
+                        <span className="text-gray-400">{new Date(log.createdAt).toLocaleString()}</span>
+                      </div>
+                      <div className="text-gray-500 mt-1">
+                        Match: {log.matchId} | Teams: {log.teamCount} | ✓{log.successCount} ✗{log.failCount}
+                        {log.performedBy && ` | By: ${log.performedBy}`}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <Button onClick={async () => {
+                  if (!adminToken) return
+                  try {
+                    const res = await fetch('/api/admin/transfer-logs', { headers: { 'Authorization': `Bearer ${adminToken}` } })
+                    const data = await res.json()
+                    if (data.status === 'success') setAdminTransferLogs(data.data.logs)
+                  } catch {}
+                }} variant="outline" className="w-full text-xs">Load Logs</Button>
+              </div>
+            )}
+
+            {/* Settings View */}
+            {adminView === 'settings' && (
+              <div className="space-y-3">
+                <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-600">
+                  <p className="font-semibold mb-2">System Info</p>
+                  <p>Admin session expires in 4 hours</p>
+                  <p>License types: Monthly, 3 Months, 6 Months, Lifetime</p>
+                  <p>Transfer requires active license: Yes</p>
+                </div>
+                <Button onClick={() => { setAdminToken(null); setActiveModal(null); toast({ title: 'Logged out' }); }} variant="outline" className="w-full text-xs text-red-600 border-red-200 hover:bg-red-50">Logout Admin</Button>
+              </div>
+            )}
+          </div>
         </DialogContent>
       </Dialog>
     </div>

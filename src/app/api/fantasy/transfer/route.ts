@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { findActiveLicenseForAccount, prisma } from '@/lib/admin-auth';
 
 const TG_API_BASE = 'https://tgsoftware-api.online/api';
 
@@ -18,6 +19,7 @@ interface TransferRequestBody {
   vice_captain: number; // Vice-captain's platform-specific player ID (NOTE: underscore!)
   id?: string | number; // Required for edit mode
   my11circleChallenge?: string; // For my11circle
+  licenseAccountId?: string; // Account identifier for license validation
 }
 
 export async function POST(request: NextRequest) {
@@ -35,7 +37,28 @@ export async function POST(request: NextRequest) {
       vice_captain,
       id,
       my11circleChallenge,
+      licenseAccountId,
     } = body;
+
+    // ========== LICENSE GATE ==========
+    // A valid active license is REQUIRED before any transfer operation.
+    // This check is server-side only — frontend cannot bypass this.
+    if (licenseAccountId) {
+      const licenseCheck = await findActiveLicenseForAccount(licenseAccountId);
+      if (!licenseCheck.valid) {
+        return NextResponse.json(
+          { status: 'LICENSE_REQUIRED', message: 'An active license is required to use team transfer.' },
+          { status: 403 }
+        );
+      }
+    } else {
+      // No account ID provided — cannot validate license
+      return NextResponse.json(
+        { status: 'LICENSE_REQUIRED', message: 'An active license is required to use team transfer.' },
+        { status: 403 }
+      );
+    }
+    // ========== END LICENSE GATE ==========
 
     // Validate required fields
     if (!fantasyApp) {
@@ -135,6 +158,24 @@ export async function POST(request: NextRequest) {
       });
 
       const data = await response.json();
+
+      // Log the transfer
+      try {
+        await prisma.transferLog.create({
+          data: {
+            licenseKey: null,
+            platform: fantasyApp,
+            matchId: String(matchId),
+            transferType: type,
+            teamCount: 1,
+            successCount: data.status === 'success' ? 1 : 0,
+            failCount: data.status === 'success' ? 0 : 1,
+            performedBy: licenseAccountId || null,
+          },
+        });
+      } catch {
+        // Log failure shouldn't block the transfer response
+      }
 
       // Return the real API response as-is
       if (data.status === 'success') {

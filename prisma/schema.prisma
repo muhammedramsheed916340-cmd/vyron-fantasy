@@ -1,9 +1,6 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -29,4 +26,37 @@ model Post {
   authorId  String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model License {
+  id          String   @id @default(cuid())
+  key         String   @unique                    // Unique license key (e.g. VYRON-XXXX-XXXX-XXXX)
+  type        String                              // MONTHLY | THREE_MONTHS | SIX_MONTHS | LIFETIME
+  status      String   @default("INACTIVE")       // INACTIVE | ACTIVE | REVOKED | EXPIRED
+  createdAt   DateTime @default(now())
+  activatedAt DateTime?
+  expiresAt   DateTime?                           // null for LIFETIME
+  assignedTo  String?                             // Account identifier (phone/email/device)
+  notes       String?
+  updatedAt   DateTime @updatedAt
+}
+
+model TransferLog {
+  id          String   @id @default(cuid())
+  licenseKey  String?
+  platform    String                              // dream11 | my11circle
+  matchId     String
+  transferType String                             // new | edit | replace_all
+  teamCount   Int      @default(0)
+  successCount Int     @default(0)
+  failCount   Int      @default(0)
+  performedBy String?
+  createdAt   DateTime @default(now())
+}
+
+model AdminSession {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  createdAt DateTime @default(now())
+  expiresAt DateTime
 }
