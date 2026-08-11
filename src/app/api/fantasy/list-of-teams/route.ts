@@ -2,8 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const TG_API_BASE = 'https://tgsoftware-api.online/api';
 
-// Proxy to the TG API's list-of-teams endpoint
-// Used to verify the auth token is valid and get existing team list
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -16,7 +14,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Forward to the real TG Software API
     try {
       const response = await fetch(`${TG_API_BASE}/fantasy/list-of-teams`, {
         method: 'POST',
@@ -25,7 +22,16 @@ export async function POST(request: NextRequest) {
         signal: AbortSignal.timeout(10000),
       });
 
-      const data = await response.json();
+      let data: any;
+      try {
+        data = await response.json();
+      } catch {
+        return NextResponse.json({
+          status: 'fail',
+          message: `API returned unexpected response (HTTP ${response.status}).`,
+          tokenExpired: true,
+        });
+      }
 
       if (response.status === 200 && data.status === 'success') {
         return NextResponse.json({
@@ -37,21 +43,20 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      // Auth token is invalid or expired
       return NextResponse.json({
         status: 'fail',
         message: data.message || 'Auth token is invalid or expired. Please re-login.',
         tokenExpired: true,
       });
     } catch (fetchError) {
-      console.error('TG API list-of-teams unreachable:', fetchError);
+      console.error('TG API list-of-teams unreachable:', fetchError instanceof Error ? fetchError.message : 'unknown');
       return NextResponse.json({
         status: 'fail',
         message: 'Backend API is unavailable. Please try again later.',
       });
     }
   } catch (error) {
-    console.error('List-of-teams API Error:', error);
+    console.error('List-of-teams API Error:', error instanceof Error ? error.message : 'unknown');
     return NextResponse.json(
       { status: 'fail', message: 'Failed to verify account.' },
       { status: 500 }

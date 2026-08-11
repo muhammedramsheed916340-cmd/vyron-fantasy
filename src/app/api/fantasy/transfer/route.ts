@@ -3,23 +3,18 @@ import { prisma } from '@/lib/admin-auth';
 
 const TG_API_BASE = 'https://tgsoftware-api.online/api';
 
-// The TG Software API expects these exact field names:
-// - "players" (not "playerList")
-// - "vice_captain" (not "vicecaptain")
-// - "sportIndex" (required)
-// - "authToken" in body (not Bearer header)
 interface TransferRequestBody {
-  fantasyApp: string; // "dream11" | "my11circle"
+  fantasyApp: string;
   matchId: string | number;
   authToken: string;
   type: 'new' | 'edit';
-  sportIndex?: number; // 0=cricket, 1=football, 2=basketball, 3=kabaddi
-  players: number[]; // Platform-specific player IDs (mapped from fantasy_id_list)
-  captain: number; // Captain's platform-specific player ID
-  vice_captain: number; // Vice-captain's platform-specific player ID (NOTE: underscore!)
-  id?: string | number; // Required for edit mode
-  my11circleChallenge?: string; // For my11circle
-  licenseAccountId?: string; // Account identifier for logging only
+  sportIndex?: number;
+  players: number[];
+  captain: number;
+  vice_captain: number;
+  id?: string | number;
+  my11circleChallenge?: string;
+  licenseAccountId?: string;
 }
 
 export async function POST(request: NextRequest) {
@@ -44,66 +39,35 @@ export async function POST(request: NextRequest) {
 
     // Validate required fields
     if (!fantasyApp) {
-      return NextResponse.json(
-        { status: 'fail', message: 'fantasyApp is required' },
-        { status: 400 }
-      );
+      return NextResponse.json({ status: 'fail', message: 'fantasyApp is required' }, { status: 400 });
     }
-
     if (!authToken) {
-      return NextResponse.json(
-        { status: 'fail', message: 'authToken is required' },
-        { status: 400 }
-      );
+      return NextResponse.json({ status: 'fail', message: 'authToken is required' }, { status: 400 });
     }
-
     if (!matchId) {
-      return NextResponse.json(
-        { status: 'fail', message: 'matchId is required' },
-        { status: 400 }
-      );
+      return NextResponse.json({ status: 'fail', message: 'matchId is required' }, { status: 400 });
     }
-
     if (!type || (type !== 'new' && type !== 'edit')) {
-      return NextResponse.json(
-        { status: 'fail', message: 'type must be "new" or "edit"' },
-        { status: 400 }
-      );
+      return NextResponse.json({ status: 'fail', message: 'type must be "new" or "edit"' }, { status: 400 });
     }
-
     if (!players || !Array.isArray(players) || players.length === 0) {
-      return NextResponse.json(
-        { status: 'fail', message: 'players must be a non-empty array' },
-        { status: 400 }
-      );
+      return NextResponse.json({ status: 'fail', message: 'players must be a non-empty array' }, { status: 400 });
     }
-
     if (captain === undefined || captain === null) {
-      return NextResponse.json(
-        { status: 'fail', message: 'captain is required' },
-        { status: 400 }
-      );
+      return NextResponse.json({ status: 'fail', message: 'captain is required' }, { status: 400 });
     }
-
     if (vice_captain === undefined || vice_captain === null) {
-      return NextResponse.json(
-        { status: 'fail', message: 'vice_captain is required' },
-        { status: 400 }
-      );
+      return NextResponse.json({ status: 'fail', message: 'vice_captain is required' }, { status: 400 });
     }
-
     if (type === 'edit' && !id) {
-      return NextResponse.json(
-        { status: 'fail', message: 'id is required for edit mode' },
-        { status: 400 }
-      );
+      return NextResponse.json({ status: 'fail', message: 'id is required for edit mode' }, { status: 400 });
     }
 
-    // Determine endpoint based on type
+    // Determine endpoint
     const endpoint = type === 'new' ? 'add-team' : 'edit-team';
     const url = `${TG_API_BASE}/fantasy/${endpoint}`;
 
-    // Build the EXACT payload the TG API expects
+    // Build payload for TG API
     const payload: Record<string, unknown> = {
       matchId,
       captain,
@@ -111,34 +75,39 @@ export async function POST(request: NextRequest) {
       players,
       fantasyApp,
       authToken,
-      sportIndex: sportIndex ?? 0, // Default to cricket (0)
+      sportIndex: sportIndex ?? 0,
       type,
     };
 
-    // For edit mode, include the team ID to replace
     if (type === 'edit' && id) {
       payload.id = id;
     }
-
-    // For my11circle, include the challenge token
     if (fantasyApp === 'my11circle' && my11circleChallenge) {
       payload.my11circleChallenge = my11circleChallenge;
     }
 
-    // Call the real TG Software API
+    // Call the TG Software API
     try {
       const response = await fetch(url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
         signal: AbortSignal.timeout(15000),
       });
 
-      const data = await response.json();
+      // Safely parse JSON response
+      let data: any;
+      try {
+        data = await response.json();
+      } catch {
+        console.error('TG API returned non-JSON response, status:', response.status);
+        return NextResponse.json({
+          status: 'fail',
+          message: `Transfer API returned unexpected response (HTTP ${response.status}).`,
+        });
+      }
 
-      // Log the transfer
+      // Log the transfer to database (non-blocking)
       try {
         await prisma.transferLog.create({
           data: {
@@ -152,33 +121,32 @@ export async function POST(request: NextRequest) {
             performedBy: licenseAccountId || null,
           },
         });
-      } catch {
+      } catch (logErr) {
         // Log failure shouldn't block the transfer response
+        console.error('Transfer log write failed:', logErr instanceof Error ? logErr.message : 'unknown');
       }
 
-      // Return the real API response as-is
+      // Return the API response
       if (data.status === 'success') {
-        return NextResponse.json({
-          status: 'success',
-          data: data.data || {},
-        });
+        return NextResponse.json({ status: 'success', data: data.data || {} });
       }
 
-      // API returned a failure response - pass the real error message
+      // Pass through the real TG API error message
       return NextResponse.json({
         status: 'fail',
         message: data.message || 'Team transfer failed at the platform API.',
       });
     } catch (fetchError) {
-      // API is unreachable
-      console.error('TG API unreachable:', fetchError);
+      const errMsg = fetchError instanceof Error ? fetchError.message : String(fetchError);
+      console.error('TG API unreachable:', errMsg);
       return NextResponse.json({
         status: 'fail',
-        message: 'Backend transfer API is unavailable for direct in-app transfer.',
+        message: 'Backend transfer API is unavailable. Please try again later.',
       });
     }
   } catch (error) {
-    console.error('Transfer API Error:', error);
+    const errMsg = error instanceof Error ? error.message : String(error);
+    console.error('Transfer API Error:', errMsg);
     return NextResponse.json(
       { status: 'fail', message: 'Failed to process transfer request.' },
       { status: 500 }
