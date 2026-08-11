@@ -3,14 +3,13 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import {
   Trophy, X, CheckCircle2, Loader2, ChevronRight, ChevronLeft,
-  AlertCircle, Users, DollarSign, Filter, Search,
+  AlertCircle, Users, DollarSign, Filter, RefreshCw,
 } from 'lucide-react';
 import {
   JCMatch, JCContest, JCTeam, JCJoinItem, JCProgress,
   parseContest, formatCurrency, getContestTypeColor,
-  generatedTeamToJCTeam, buildJoinItems, getJoinKey,
+  getExistingPlatformTeams, buildJoinItems, getJoinKey,
 } from '@/lib/join-contest-service';
-import { TGPlayer, GeneratedTeam } from '@/lib/tg-api';
 
 // ============ Step Enum ============
 type Step = 'matches' | 'teams' | 'contests' | 'joining' | 'result';
@@ -20,13 +19,12 @@ interface JoinContestDialogProps {
   open: boolean;
   onClose: () => void;
   matches: JCMatch[];
-  generatedTeams: GeneratedTeam[];
   fantasyAccounts: Record<string, { authToken: string; mobileNumber: string; my11circleChallenge?: string | null }>;
 }
 
 // ============ Main Dialog ============
 export default function JoinContestDialog({
-  open, onClose, matches, generatedTeams, fantasyAccounts,
+  open, onClose, matches, fantasyAccounts,
 }: JoinContestDialogProps) {
   // Step state
   const [step, setStep] = useState<Step>('matches');
@@ -35,9 +33,13 @@ export default function JoinContestDialog({
   // Match selection
   const [selectedMatchIds, setSelectedMatchIds] = useState<Set<string | number>>(new Set());
 
-  // Team selection
+  // Team selection — EXISTING PLATFORM TEAMS
+  const [platformTeams, setPlatformTeams] = useState<JCTeam[]>([]);
   const [selectedTeamIds, setSelectedTeamIds] = useState<Set<string | number>>(new Set());
   const [mixedTeamMode, setMixedTeamMode] = useState(false);
+  const [loadingTeams, setLoadingTeams] = useState(false);
+  const [teamsError, setTeamsError] = useState<string | null>(null);
+  const [teamsTokenExpired, setTeamsTokenExpired] = useState(false);
 
   // Contest selection
   const [contestsMap, setContestsMap] = useState<Map<string, JCContest[]>>(new Map());
@@ -51,20 +53,6 @@ export default function JoinContestDialog({
   // Result
   const [resultItems, setResultItems] = useState<JCJoinItem[]>([]);
 
-  // Reset on close
-  const handleClose = () => {
-    setStep('matches');
-    setSelectedMatchIds(new Set());
-    setSelectedTeamIds(new Set());
-    setMixedTeamMode(false);
-    setContestsMap(new Map());
-    setSelectedContestIds(new Set());
-    setJoinItems([]);
-    setProgress({ current: 0, total: 0, status: 'idle' });
-    setResultItems([]);
-    onClose();
-  };
-
   // Available platforms from linked accounts
   const availablePlatforms = useMemo(() => {
     const platforms: string[] = [];
@@ -74,6 +62,24 @@ export default function JoinContestDialog({
   }, [fantasyAccounts]);
 
   const account = fantasyAccounts[platform];
+
+  // Reset on close
+  const handleClose = () => {
+    setStep('matches');
+    setSelectedMatchIds(new Set());
+    setPlatformTeams([]);
+    setSelectedTeamIds(new Set());
+    setMixedTeamMode(false);
+    setLoadingTeams(false);
+    setTeamsError(null);
+    setTeamsTokenExpired(false);
+    setContestsMap(new Map());
+    setSelectedContestIds(new Set());
+    setJoinItems([]);
+    setProgress({ current: 0, total: 0, status: 'idle' });
+    setResultItems([]);
+    onClose();
+  };
 
   // ============ Match Selection ============
   const toggleMatch = (id: string | number) => {
@@ -88,12 +94,45 @@ export default function JoinContestDialog({
     setSelectedMatchIds(new Set(matches.map(m => m.id)));
   };
 
-  // ============ Team Selection ============
-  const jcTeams = useMemo(() => {
-    const selectedMatch = matches.find(m => selectedMatchIds.has(m.id));
-    return generatedTeams.map((t, i) => generatedTeamToJCTeam(t, i, selectedMatch?.id));
-  }, [generatedTeams, selectedMatchIds, matches]);
+  // ============ Load Existing Platform Teams ============
+  const loadPlatformTeams = useCallback(async (selectedPlatform?: string) => {
+    const plat = selectedPlatform || platform;
+    const acc = fantasyAccounts[plat];
+    if (!acc?.authToken) {
+      setTeamsError('No connected account found. Connect your platform account to load existing teams.');
+      setPlatformTeams([]);
+      return;
+    }
 
+    setLoadingTeams(true);
+    setTeamsError(null);
+    setTeamsTokenExpired(false);
+    setSelectedTeamIds(new Set());
+
+    const allTeams: JCTeam[] = [];
+    let firstError: string | null = null;
+    let anyTokenExpired = false;
+
+    for (const matchId of selectedMatchIds) {
+      const result = await getExistingPlatformTeams(plat, matchId, acc.authToken);
+      if (result.teams.length > 0) {
+        allTeams.push(...result.teams);
+      }
+      if (result.tokenExpired) {
+        anyTokenExpired = true;
+        firstError = result.error || 'Session expired';
+      } else if (result.error && !firstError) {
+        firstError = result.error;
+      }
+    }
+
+    setPlatformTeams(allTeams);
+    setTeamsError(allTeams.length === 0 ? firstError : null);
+    setTeamsTokenExpired(anyTokenExpired);
+    setLoadingTeams(false);
+  }, [selectedMatchIds, platform, fantasyAccounts]);
+
+  // ============ Team Selection ============
   const toggleTeam = (id: string | number) => {
     setSelectedTeamIds(prev => {
       const next = new Set(prev);
@@ -103,7 +142,11 @@ export default function JoinContestDialog({
   };
 
   const selectAllTeams = () => {
-    setSelectedTeamIds(new Set(jcTeams.map(t => t.id)));
+    setSelectedTeamIds(new Set(platformTeams.map(t => t.id)));
+  };
+
+  const deselectAllTeams = () => {
+    setSelectedTeamIds(new Set());
   };
 
   // ============ Contest Loading ============
@@ -156,7 +199,7 @@ export default function JoinContestDialog({
       selectedContestsForJoin.set(matchId, contests.filter(c => selectedContestIds.has(c.id)));
     }
 
-    const items = buildJoinItems(selectedMatches, selectedContestsForJoin, selectedTeamIds, jcTeams, platform);
+    const items = buildJoinItems(selectedMatches, selectedContestsForJoin, selectedTeamIds, platformTeams, platform);
 
     if (items.length === 0) {
       setStep('result');
@@ -167,13 +210,11 @@ export default function JoinContestDialog({
     setProgress({ current: 0, total: items.length, status: 'joining' });
     setStep('joining');
 
-    let current = 0;
     const updatedItems = [...items];
 
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      current = i + 1;
-      setProgress(prev => ({ ...prev, current }));
+      setProgress(prev => ({ ...prev, current: i + 1 }));
       setJoinItems(prev => prev.map((it, idx) =>
         idx === i ? { ...it, status: 'processing' } : it
       ));
@@ -184,10 +225,10 @@ export default function JoinContestDialog({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            fantasyApp: platform,
+            fantasyApp: item.platform || platform,
             matchId: item.matchId,
             authToken: account?.authToken,
-            teamId: item.teamId,
+            teamId: item.teamId,    // REAL platform team ID
             contestId: item.contestId,
             sportIndex: match?.sport_index ?? 0,
           }),
@@ -211,7 +252,7 @@ export default function JoinContestDialog({
     setResultItems([...updatedItems]);
     setProgress(prev => ({ ...prev, status: 'done' }));
     setStep('result');
-  }, [matches, selectedMatchIds, contestsMap, selectedContestIds, selectedTeamIds, jcTeams, platform, account]);
+  }, [matches, selectedMatchIds, contestsMap, selectedContestIds, selectedTeamIds, platformTeams, platform, account]);
 
   // ============ Result Stats ============
   const resultStats = useMemo(() => {
@@ -229,10 +270,7 @@ export default function JoinContestDialog({
   // ============ RENDER ============
   return (
     <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={handleClose}>
-      <div
-        className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col"
-        onClick={e => e.stopPropagation()}
-      >
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b bg-gradient-to-r from-green-600 to-emerald-600 text-white">
           <div className="flex items-center gap-3">
@@ -271,6 +309,7 @@ export default function JoinContestDialog({
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6">
+
           {/* ===== STEP: MATCHES ===== */}
           {step === 'matches' && (
             <div className="space-y-4">
@@ -282,14 +321,15 @@ export default function JoinContestDialog({
                     <button key={p} onClick={() => setPlatform(p)}
                       className={`flex-1 rounded-xl border-2 p-3 text-center font-semibold text-sm transition-all ${
                         platform === p ? 'border-green-500 bg-green-50 text-green-700' : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300'
-                      }`}
-                    >
+                      }`}>
                       {p === 'dream11' ? 'Dream11' : 'My11Circle'}
                     </button>
                   ))}
                 </div>
                 {availablePlatforms.length === 0 && (
-                  <p className="text-sm text-amber-600">⚠️ Link a fantasy account first via Transfer</p>
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-700">
+                    ⚠️ No connected account found. Link your platform account first via Transfer.
+                  </div>
                 )}
               </div>
 
@@ -297,8 +337,7 @@ export default function JoinContestDialog({
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Select Matches</p>
-                  <button onClick={selectAllMatches}
-                    className="text-xs font-semibold text-green-600 hover:text-green-700">
+                  <button onClick={selectAllMatches} className="text-xs font-semibold text-green-600 hover:text-green-700">
                     Select All
                   </button>
                 </div>
@@ -338,71 +377,137 @@ export default function JoinContestDialog({
             </div>
           )}
 
-          {/* ===== STEP: TEAMS ===== */}
+          {/* ===== STEP: TEAMS — EXISTING PLATFORM TEAMS ===== */}
           {step === 'teams' && (
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                  Select Teams ({jcTeams.length} available)
-                </p>
-                <button onClick={selectAllTeams}
-                  className="text-xs font-semibold text-green-600 hover:text-green-700">
-                  Select All
-                </button>
-              </div>
-
-              {/* Mixed Team Toggle */}
-              <button onClick={() => setMixedTeamMode(!mixedTeamMode)}
-                className={`w-full rounded-xl border-2 p-3 transition-all ${
-                  mixedTeamMode ? 'border-purple-500 bg-purple-50' : 'border-gray-200 bg-white hover:border-gray-300'
-                }`}>
-                <div className="flex items-center gap-3">
-                  <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${
-                    mixedTeamMode ? 'bg-purple-500 text-white' : 'bg-gray-100 text-gray-500'
-                  }`}>
-                    <Filter className="w-5 h-5" />
-                  </div>
-                  <div className="flex-1">
-                    <p className={`font-semibold text-sm ${mixedTeamMode ? 'text-purple-700' : 'text-gray-900'}`}>
-                      Mixed Team Mode
-                    </p>
-                    <p className="text-xs text-gray-500">
-                      {mixedTeamMode ? 'Teams can be combined across compatible match pools' : 'Enable to mix teams from compatible matches'}
-                    </p>
-                  </div>
-                  <div className={`w-10 h-6 rounded-full relative transition-all ${mixedTeamMode ? 'bg-purple-500' : 'bg-gray-300'}`}>
-                    <div className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${mixedTeamMode ? 'left-4.5' : 'left-0.5'}`} />
-                  </div>
+              {/* Loading State */}
+              {loadingTeams && (
+                <div className="flex flex-col items-center justify-center py-12">
+                  <Loader2 className="w-8 h-8 animate-spin text-green-500" />
+                  <p className="text-sm text-gray-500 mt-3">Loading existing teams from {platform === 'dream11' ? 'Dream11' : 'My11Circle'}...</p>
                 </div>
-              </button>
+              )}
 
-              {/* Team Grid */}
-              <div className="grid grid-cols-2 gap-2 max-h-72 overflow-y-auto">
-                {jcTeams.map(team => {
-                  const selected = selectedTeamIds.has(team.id);
-                  return (
-                    <button key={team.id} onClick={() => toggleTeam(team.id)}
-                      className={`rounded-xl border-2 p-2.5 text-left transition-all ${
-                        selected ? 'border-green-500 bg-green-50' : 'border-gray-200 bg-white hover:border-gray-300'
+              {/* Error State */}
+              {!loadingTeams && teamsError && (
+                <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+                  <div className="flex items-center gap-2">
+                    <AlertCircle className="w-5 h-5 text-red-500 shrink-0" />
+                    <div>
+                      <p className="text-sm font-semibold text-red-700">
+                        {teamsTokenExpired ? 'SESSION EXPIRED' : 'Error Loading Teams'}
+                      </p>
+                      <p className="text-xs text-red-600 mt-0.5">{teamsError}</p>
+                    </div>
+                  </div>
+                  {teamsTokenExpired && (
+                    <p className="text-xs text-red-500 mt-2">Reconnect your {platform === 'dream11' ? 'Dream11' : 'My11Circle'} account via Transfer.</p>
+                  )}
+                  <button onClick={() => loadPlatformTeams()} className="mt-2 flex items-center gap-1 text-xs font-semibold text-red-600 hover:text-red-700">
+                    <RefreshCw className="w-3 h-3" /> Retry
+                  </button>
+                </div>
+              )}
+
+              {/* No Account */}
+              {!loadingTeams && !teamsError && !account?.authToken && (
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-center">
+                  <p className="text-sm font-semibold text-amber-700">No connected account found</p>
+                  <p className="text-xs text-amber-600 mt-1">Connect your {platform === 'dream11' ? 'Dream11' : 'My11Circle'} account to load existing teams.</p>
+                </div>
+              )}
+
+              {/* Teams List */}
+              {!loadingTeams && account?.authToken && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                      Existing Teams ({platformTeams.length} available)
+                    </p>
+                    <div className="flex gap-2">
+                      <button onClick={selectAllTeams} disabled={platformTeams.length === 0}
+                        className="text-xs font-semibold text-green-600 hover:text-green-700 disabled:opacity-40">
+                        Select All
+                      </button>
+                      <button onClick={deselectAllTeams} disabled={selectedTeamIds.size === 0}
+                        className="text-xs font-semibold text-gray-500 hover:text-gray-700 disabled:opacity-40">
+                        Deselect
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Mixed Team Toggle */}
+                  <button onClick={() => setMixedTeamMode(!mixedTeamMode)}
+                    className={`w-full rounded-xl border-2 p-3 transition-all ${
+                      mixedTeamMode ? 'border-purple-500 bg-purple-50' : 'border-gray-200 bg-white hover:border-gray-300'
+                    }`}>
+                    <div className="flex items-center gap-3">
+                      <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${
+                        mixedTeamMode ? 'bg-purple-500 text-white' : 'bg-gray-100 text-gray-500'
                       }`}>
-                      <div className="flex items-center gap-2">
-                        <div className={`w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 ${
-                          selected ? 'border-green-500 bg-green-500' : 'border-gray-300'
-                        }`}>
-                          {selected && <CheckCircle2 className="w-3 h-3 text-white" />}
-                        </div>
-                        <div>
-                          <p className="text-sm font-medium text-gray-900">{team.name}</p>
-                          <p className="text-[10px] text-gray-500">C: {team.captain.name} | VC: {team.viceCaptain.name}</p>
-                        </div>
+                        <Filter className="w-5 h-5" />
                       </div>
-                    </button>
-                  );
-                })}
-              </div>
+                      <div className="flex-1">
+                        <p className={`font-semibold text-sm ${mixedTeamMode ? 'text-purple-700' : 'text-gray-900'}`}>Mixed Team Mode</p>
+                        <p className="text-xs text-gray-500">
+                          {mixedTeamMode ? 'Combining teams from compatible platform accounts' : 'Enable to mix teams from compatible accounts'}
+                        </p>
+                      </div>
+                      <div className={`w-10 h-6 rounded-full relative transition-all ${mixedTeamMode ? 'bg-purple-500' : 'bg-gray-300'}`}>
+                        <div className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${mixedTeamMode ? 'left-[18px]' : 'left-0.5'}`} />
+                      </div>
+                    </div>
+                  </button>
 
-              {selectedTeamIds.size > 0 && (
-                <p className="text-sm text-green-600 font-medium">{selectedTeamIds.size} team(s) selected</p>
+                  {/* No Teams */}
+                  {platformTeams.length === 0 && !teamsError && (
+                    <div className="bg-gray-50 border border-gray-200 rounded-xl p-6 text-center">
+                      <p className="text-sm text-gray-500">No existing teams found on this platform account.</p>
+                      <p className="text-xs text-gray-400 mt-1">Create teams on {platform === 'dream11' ? 'Dream11' : 'My11Circle'} first, then join contests.</p>
+                    </div>
+                  )}
+
+                  {/* Team Cards */}
+                  {platformTeams.length > 0 && (
+                    <div className="space-y-2 max-h-72 overflow-y-auto">
+                      {platformTeams.map(team => {
+                        const selected = selectedTeamIds.has(team.id);
+                        return (
+                          <button key={team.id} onClick={() => toggleTeam(team.id)}
+                            className={`w-full text-left rounded-xl border-2 p-3 transition-all ${
+                              selected ? 'border-green-500 bg-green-50' : 'border-gray-200 bg-white hover:border-gray-300'
+                            }`}>
+                            <div className="flex items-center gap-3">
+                              <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
+                                selected ? 'border-green-500 bg-green-500' : 'border-gray-300'
+                              }`}>
+                                {selected && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
+                              </div>
+                              <div className="flex-1">
+                                <p className="font-semibold text-sm text-gray-900">{team.name}</p>
+                                <div className="flex items-center gap-2 text-xs text-gray-500 mt-0.5">
+                                  <span>{team.playerCount || 11} Players</span>
+                                  {team.captain?.name && <span>C: {team.captain.name}</span>}
+                                  {team.viceCaptain?.name && <span>VC: {team.viceCaptain.name}</span>}
+                                </div>
+                              </div>
+                              <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">
+                                ID: {team.platformTeamId}
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Selection Count */}
+                  {selectedTeamIds.size > 0 && (
+                    <p className="text-sm text-green-600 font-medium">
+                      Selected: {selectedTeamIds.size} / {platformTeams.length}
+                    </p>
+                  )}
+                </div>
               )}
             </div>
           )}
@@ -475,7 +580,6 @@ export default function JoinContestDialog({
           {/* ===== STEP: JOINING ===== */}
           {step === 'joining' && (
             <div className="space-y-4">
-              {/* Progress Bar */}
               <div className="bg-green-50 border border-green-200 rounded-xl p-4">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm font-semibold text-green-700">Joining contests...</span>
@@ -491,8 +595,6 @@ export default function JoinContestDialog({
                   <span className="text-red-500 font-medium">✗ {resultStats.fail} failed</span>
                 </div>
               </div>
-
-              {/* Per-item Status */}
               <div className="max-h-56 overflow-y-auto space-y-1.5">
                 {joinItems.map((item, i) => (
                   <div key={i} className="flex items-center gap-2 text-xs py-1 px-2 rounded-lg bg-gray-50">
@@ -524,7 +626,6 @@ export default function JoinContestDialog({
                 </div>
                 <h3 className="text-xl font-bold text-gray-900">JOIN COMPLETE</h3>
               </div>
-
               <div className="grid grid-cols-4 gap-2">
                 <div className="bg-gray-50 rounded-xl p-3 text-center">
                   <p className="text-lg font-bold text-gray-900">{resultStats.total}</p>
@@ -543,8 +644,6 @@ export default function JoinContestDialog({
                   <p className="text-[10px] text-red-500 uppercase">Failed</p>
                 </div>
               </div>
-
-              {/* Per-match details */}
               <div className="max-h-48 overflow-y-auto space-y-2">
                 {(() => {
                   const byMatch = new Map<string, JCJoinItem[]>();
@@ -593,7 +692,10 @@ export default function JoinContestDialog({
           <div className="flex items-center gap-2">
             {step === 'matches' && (
               <button onClick={() => {
-                if (selectedMatchIds.size > 0 && availablePlatforms.length > 0) setStep('teams');
+                if (selectedMatchIds.size > 0 && availablePlatforms.length > 0) {
+                  setStep('teams');
+                  loadPlatformTeams();
+                }
               }} disabled={selectedMatchIds.size === 0 || availablePlatforms.length === 0}
                 className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
                 Next <ChevronRight className="w-4 h-4" />

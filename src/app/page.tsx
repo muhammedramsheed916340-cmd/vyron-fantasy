@@ -4411,7 +4411,6 @@ export default function Home() {
           lineup_out: m.lineup_out,
           fantasy_list: m.fantasy_list,
         }))}
-        generatedTeams={generatedTeams}
         fantasyAccounts={fantasyAccounts}
       />
     </div>

@@ -30,12 +30,16 @@ export interface JCContest {
 }
 
 export interface JCTeam {
-  id: string | number;
+  id: string | number;         // Unique ID for selection tracking
+  platformTeamId: string | number;  // REAL platform team ID for join API
   name: string;
   players: TGPlayer[];
   captain: TGPlayer;
   viceCaptain: TGPlayer;
   matchId?: string | number;
+  platform?: string;           // Which platform this team belongs to
+  accountId?: string;          // Which account this team belongs to
+  playerCount?: number;        // Number of players in the team
 }
 
 export interface JCJoinItem {
@@ -138,7 +142,61 @@ export function getContestTypeColor(type: string): string {
 // ============ Team Helpers ============
 
 /**
- * Convert GeneratedTeam to JCTeam format for the join contest module.
+ * Fetch existing teams from the platform for a given match.
+ * Uses the list-of-teams API — does NOT create/transfer any teams.
+ * Returns teams with their REAL platform team IDs.
+ */
+export async function getExistingPlatformTeams(
+  platform: string,
+  matchId: string | number,
+  authToken: string,
+): Promise<{ teams: JCTeam[]; error?: string; tokenExpired?: boolean }> {
+  try {
+    const res = await fetch('/api/fantasy/list-of-teams', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fantasyApp: platform,
+        matchId,
+        authToken,
+      }),
+    });
+
+    const data = await res.json();
+
+    if (data.status === 'success' && data.data?.teamsList) {
+      const teams: JCTeam[] = (data.data.teamsList as Record<string, unknown>[]).map((t, i) => {
+        const teamId = (t.id as string | number) || (t._id as string | number) || i + 1;
+        return {
+          id: teamId,
+          platformTeamId: teamId,  // REAL platform team ID
+          name: (t.name as string) || `Team ${i + 1}`,
+          players: [],              // Platform doesn't return full player list in list-of-teams
+          captain: { name: String(t.captain || ''), pl_id: 0, fantasy_id_list: [] } as TGPlayer,
+          viceCaptain: { name: String(t.vice_captain || t.viceCaptain || ''), pl_id: 0, fantasy_id_list: [] } as TGPlayer,
+          matchId,
+          platform,
+          playerCount: (t.players as number) || (t.player_count as number) || (t.totalPlayers as number) || 11,
+        };
+      });
+      return { teams };
+    }
+
+    // Token expired
+    if (data.tokenExpired) {
+      return { teams: [], error: 'Session expired. Reconnect your account.', tokenExpired: true };
+    }
+
+    return { teams: [], error: data.message || 'Failed to load teams' };
+  } catch {
+    return { teams: [], error: 'Network error. Please try again.' };
+  }
+}
+
+/**
+ * Convert GeneratedTeam to JCTeam format.
+ * NOTE: This is kept for backward compatibility but should NOT be used
+ * for Join Contest — use getExistingPlatformTeams() instead.
  */
 export function generatedTeamToJCTeam(
   team: GeneratedTeam,
@@ -147,6 +205,7 @@ export function generatedTeamToJCTeam(
 ): JCTeam {
   return {
     id: `gen-${index}`,
+    platformTeamId: `gen-${index}`,
     name: `Team ${index + 1}`,
     players: team.players,
     captain: team.captain,
@@ -183,9 +242,9 @@ export function buildJoinItems(
           matchName,
           contestId: contest.id,
           contestName: contest.name,
-          teamId: team.id,
+          teamId: team.platformTeamId,  // Use REAL platform team ID for join
           teamName: team.name,
-          platform,
+          platform: team.platform || platform,
           status: 'pending',
         });
       }
