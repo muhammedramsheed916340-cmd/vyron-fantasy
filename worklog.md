@@ -118,3 +118,33 @@ Stage Summary:
 - Real platform contest IDs preserved throughout the flow
 - Numeric matchId validated at every level (dialog → service → route → platform API)
 - transfer/route.ts join-contest bug fixed (was calling non-existent TG API endpoint)
+---
+Task ID: 1
+Agent: main
+Task: Fix Join Contest SESSION EXPIRED + After Lineup Team Generation
+
+Work Log:
+- Audited full codebase: found SESSION EXPIRED has no refresh mechanism, list-of-teams returns false tokenExpired, no verify-session or refresh-session routes
+- Created /api/fantasy/verify-session route: checks token validity via TG API list-of-teams
+- Created /api/fantasy/refresh-session route: initiates re-auth via send-otp to stored mobile number
+- Fixed list-of-teams/route.ts: only returns tokenExpired:true for actual auth failures, not JSON parse errors
+- Added verifySession(), initiateSessionRefresh(), completeSessionRefresh() to join-contest-service.ts
+- Updated JoinContestDialog: added session refresh state, handleSessionExpired(), handleCompleteRefresh()
+- Added Session Refresh Overlay UI: OTP input, sending/verifying/success/failed states
+- Replaced "Reconnect via Transfer" with "Refresh Session" button that triggers inline OTP flow
+- Auto-triggers session refresh when token expired detected in loadPlatformTeams/loadContests
+- Preserves wizard state (match/teams/contests) across token refresh
+- After token refresh: updates fantasyAccounts in parent, auto-retries failed request
+- Fixed JOIN ALL SELECTED (N) button: shows correct count when contests selected
+- Added onAccountUpdate callback from page.tsx to save refreshed token to localStorage
+- Fixed after-lineup team generation: fallback to probable players when eligible < 11
+- Added relaxed constraint retry: credits 110, max 8/team, 500 attempts, systematic combos
+- Added diagnostic logging for after-lineup team generation
+- Better toast when 0 teams generated after lineup
+- Build successful, pushed to main
+
+Stage Summary:
+- Session expired now shows "Refresh Session" button + inline OTP instead of "Reconnect via Transfer"
+- Token refresh preserves all wizard state and auto-retries
+- After lineup: team generation falls back to probable players and relaxed constraints
+- All APIs share the same latest token via onAccountUpdate callback
