@@ -13,7 +13,7 @@ interface TransferRequestBody {
   captain: number;
   vice_captain: number;
   id?: string | number;
-  contestId?: string;
+  joinContest?: boolean;
   my11circleChallenge?: string;
   licenseAccountId?: string;
 }
@@ -32,7 +32,7 @@ export async function POST(request: NextRequest) {
       captain,
       vice_captain,
       id,
-      contestId,
+      joinContest,
       my11circleChallenge,
       licenseAccountId,
     } = body;
@@ -87,11 +87,9 @@ export async function POST(request: NextRequest) {
     if (type === 'edit' && id) {
       payload.id = id;
     }
-    // Include contestId if provided — this joins the team to a specific contest
-    // on the target platform (Dream11/My11Circle) when creating/editing the team
-    if (contestId) {
-      payload.contestId = contestId;
-    }
+    // joinContest flag — if true, after team creation we'll call join-contest API
+    // The JWT token is handled server-side only (never exposed to client)
+    // No contestId or JWT is added to the add-team payload itself
     // Use case-insensitive check for my11circle challenge token
     if (fantasyApp.toLowerCase() === 'my11circle' && my11circleChallenge) {
       payload.my11circleChallenge = my11circleChallenge;
@@ -140,7 +138,45 @@ export async function POST(request: NextRequest) {
 
       // Return the API response
       if (data.status === 'success') {
-        return NextResponse.json({ status: 'success', data: data.data || {} });
+        // If joinContest is enabled, attempt to join the team to a contest
+        // This is a best-effort follow-up — failure won't fail the team creation
+        let contestJoined = false;
+        let contestMessage = '';
+
+        if (joinContest) {
+          try {
+            const teamId = data.data?.teamId || data.data?.id || data.data?.team_id;
+            if (teamId) {
+              const contestRes = await fetch(`${TG_API_BASE}/fantasy/join-contest`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  matchId: numericMatchId,
+                  fantasyApp,
+                  authToken,
+                  teamId,
+                  sportIndex: sportIndex ?? 0,
+                }),
+                signal: AbortSignal.timeout(10000),
+              });
+              const contestData = await contestRes.json();
+              contestJoined = contestData.status === 'success';
+              contestMessage = contestJoined ? 'Contest joined' : (contestData.message || 'Contest join failed');
+            } else {
+              contestMessage = 'No teamId returned — cannot join contest';
+            }
+          } catch (contestErr) {
+            contestMessage = 'Contest join request failed';
+            console.error('Join contest error:', contestErr instanceof Error ? contestErr.message : 'unknown');
+          }
+        }
+
+        return NextResponse.json({
+          status: 'success',
+          data: data.data || {},
+          contestJoined,
+          contestMessage,
+        });
       }
 
       // Pass through the real TG API error message

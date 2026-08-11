@@ -1626,9 +1626,9 @@ export default function Home() {
           payload.my11circleChallenge = account.my11circleChallenge
         }
 
-        // Include contestId if provided — joins team to specific contest on platform
-        if (contestId.trim()) {
-          payload.contestId = contestId.trim()
+        // Include joinContest flag if enabled — backend handles JWT token & contest joining
+        if (contestId) {
+          payload.joinContest = true
         }
 
         // For edit/replace mode, attach the existing team ID to replace
@@ -1657,7 +1657,15 @@ export default function Home() {
           successCount++
           setTransferSuccessCount(successCount)
           setTransferResults(prev => prev.map((r, idx) =>
-            idx === i ? { ...r, status: 'success' as const } : r
+            idx === i ? {
+              ...r,
+              status: 'success' as const,
+              message: data.contestJoined
+                ? '✓ Team created & contest joined'
+                : data.contestMessage
+                  ? `✓ Team created (contest: ${data.contestMessage})`
+                  : undefined,
+            } : r
           ))
         } else {
           failCount++
@@ -3548,41 +3556,40 @@ export default function Home() {
               </div>
             )}
 
-            {/* Contest ID — Join Contest */}
+            {/* Join Contest Toggle */}
             {transferProgress.status === 'idle' && (
               <div className="space-y-1.5">
-                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Join Contest (Optional)</p>
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={contestId}
-                    onChange={(e) => setContestId(e.target.value)}
-                    disabled={transferring}
-                    placeholder="Enter contest ID from Dream11 / My11Circle"
-                    className={`w-full rounded-xl border-2 px-3.5 py-2.5 text-sm placeholder:text-gray-400 transition-all focus:outline-none focus:ring-0 ${
-                      contestId.trim()
-                        ? 'border-[#6C63FF] bg-[#6C63FF]/5 text-[#6C63FF]'
-                        : 'border-gray-200 bg-white text-gray-900 focus:border-gray-300'
-                    } ${transferring ? 'opacity-60' : ''}`}
-                  />
-                  {contestId.trim() && (
-                    <button
-                      onClick={() => setContestId('')}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
-                {contestId.trim() ? (
-                  <p className="text-xs text-[#6C63FF] font-medium">
-                    Teams will be joined to contest <span className="font-bold">{contestId.trim()}</span> on {transferPlatform === 'dream11' ? 'Dream11' : 'My11Circle'}
-                  </p>
-                ) : (
-                  <p className="text-xs text-gray-400">
-                    Paste the contest ID to auto-join after team creation. Leave empty to create teams only.
-                  </p>
-                )}
+                <button
+                  onClick={() => setContestId(contestId ? '' : 'join-enabled')}
+                  disabled={transferring}
+                  className={`w-full text-left rounded-xl border-2 p-3 transition-all ${
+                    contestId
+                      ? 'border-green-500 bg-green-50 shadow-sm'
+                      : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50'
+                  } ${transferring ? 'opacity-60 pointer-events-none' : ''}`}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
+                      contestId ? 'bg-green-500 text-white' : 'bg-gray-100 text-gray-500'
+                    }`}>
+                      <Trophy className="w-5 h-5" />
+                    </div>
+                    <div className="flex-1">
+                      <p className={`font-semibold text-sm ${contestId ? 'text-green-700' : 'text-gray-900'}`}>
+                        Join Contest
+                      </p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        {contestId
+                          ? `Teams will auto-join contest on ${transferPlatform === 'dream11' ? 'Dream11' : 'My11Circle'}`
+                          : 'Enable to auto-join contest after team creation'
+                        }
+                      </p>
+                    </div>
+                    <div className={`w-10 h-6 rounded-full relative transition-all ${contestId ? 'bg-green-500' : 'bg-gray-300'}`}>
+                      <div className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${contestId ? 'left-4.5' : 'left-0.5'}`} />
+                    </div>
+                  </div>
+                </button>
               </div>
             )}
 
@@ -3615,10 +3622,10 @@ export default function Home() {
                   <span className="text-gray-600">Rate limit</span>
                   <span className="font-semibold text-gray-900">{transferPlatform === 'dream11' ? '200ms' : '2000ms'} between teams</span>
                 </div>
-                {contestId.trim() && (
+                {contestId && (
                   <div className="flex items-center justify-between text-sm mt-1">
                     <span className="text-gray-600">Contest</span>
-                    <span className="font-semibold text-[#6C63FF]">{contestId.trim()}</span>
+                    <span className="font-semibold text-green-600">Auto-join enabled</span>
                   </div>
                 )}
               </div>
