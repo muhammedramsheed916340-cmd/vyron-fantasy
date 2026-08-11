@@ -4,6 +4,159 @@
 
 import { TGPlayer, GeneratedTeam } from './tg-api';
 
+// ============ Session Management ============
+
+/**
+ * Verify whether a platform session token is still valid.
+ * Calls the verify-session API route which checks with the TG API.
+ * Returns 'valid', 'expired', or 'error' (network/unknown).
+ */
+export async function verifySession(
+  platform: string,
+  authToken: string,
+  matchId?: string | number,
+): Promise<{ status: 'valid' | 'expired' | 'error'; message?: string }> {
+  console.log('[JOIN CONTEST] Verifying session — Platform:', platform, 'Token length:', authToken?.length || 0);
+
+  try {
+    const res = await fetch('/api/fantasy/verify-session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fantasyApp: platform,
+        authToken,
+        matchId: matchId || 1,
+      }),
+    });
+
+    const data = await res.json();
+    console.log('[JOIN CONTEST] Session verification result:', data.status);
+
+    if (data.status === 'valid' || data.status === 'expired') {
+      return { status: data.status, message: data.message };
+    }
+
+    // 'error' or unknown
+    return { status: 'error', message: data.message || 'Unable to verify session.' };
+  } catch (err) {
+    console.error('[JOIN CONTEST] Session verification network error:', err instanceof Error ? err.message : 'unknown');
+    return { status: 'error', message: 'Network error during session verification.' };
+  }
+}
+
+/**
+ * Initiate a session refresh by sending OTP to the stored mobile number.
+ * Returns the OTP state needed to complete verification.
+ * The CLIENT must collect the OTP from the user and call verify-otp.
+ */
+export async function initiateSessionRefresh(
+  platform: string,
+  mobileNumber: string,
+): Promise<{
+  success: boolean;
+  state?: string | null;
+  challenge?: string | null;
+  reasonCode?: string | null;
+  message?: string;
+}> {
+  console.log('[JOIN CONTEST] Initiating session refresh — Platform:', platform);
+
+  try {
+    const res = await fetch('/api/fantasy/refresh-session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fantasyApp: platform,
+        mobileNumber,
+      }),
+    });
+
+    const data = await res.json();
+
+    if (data.status === 'success') {
+      console.log('[JOIN CONTEST] Session refresh OTP sent successfully');
+      return {
+        success: true,
+        state: data.data?.state,
+        challenge: data.data?.challenge,
+        reasonCode: data.data?.reasonCode,
+        message: data.data?.message,
+      };
+    }
+
+    console.error('[JOIN CONTEST] Session refresh failed:', data.message);
+    return { success: false, message: data.message || 'Failed to initiate session refresh.' };
+  } catch (err) {
+    console.error('[JOIN CONTEST] Session refresh network error:', err instanceof Error ? err.message : 'unknown');
+    return { success: false, message: 'Network error during session refresh.' };
+  }
+}
+
+/**
+ * Complete a session refresh by verifying the OTP.
+ * Returns the new auth token if successful.
+ */
+export async function completeSessionRefresh(
+  platform: string,
+  mobileNumber: string,
+  otp: string,
+  state?: string | null,
+  challenge?: string | null,
+  reasonCode?: string | null,
+): Promise<{
+  success: boolean;
+  token?: string;
+  my11circleChallenge?: string | null;
+  my11circleUserId?: string | null;
+  message?: string;
+}> {
+  console.log('[JOIN CONTEST] Completing session refresh — Platform:', platform);
+
+  try {
+    const payload: Record<string, unknown> = {
+      fantasyApp: platform,
+      mobileNumber,
+      verificationCode: otp,
+    };
+
+    // Dream11 requires the 'state' from send-otp
+    if (platform === 'dream11' && state) {
+      payload.state = state;
+    }
+
+    // My11Circle requires challenge and reasonCode
+    if (platform === 'my11circle') {
+      if (challenge) payload.challenge = challenge;
+      if (reasonCode) payload.reasonCode = reasonCode;
+    }
+
+    const res = await fetch('/api/fantasy/verify-otp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await res.json();
+
+    if (data.status === 'success' && data.data?.token) {
+      console.log('[JOIN CONTEST] Session refresh COMPLETE — new token obtained');
+      return {
+        success: true,
+        token: data.data.token,
+        my11circleChallenge: data.data.my11circleChallenge || null,
+        my11circleUserId: data.data.my11circleUserId || null,
+        message: 'Session refreshed successfully.',
+      };
+    }
+
+    console.error('[JOIN CONTEST] Session refresh verify failed:', data.message);
+    return { success: false, message: data.message || 'OTP verification failed.' };
+  } catch (err) {
+    console.error('[JOIN CONTEST] Session refresh verify network error:', err instanceof Error ? err.message : 'unknown');
+    return { success: false, message: 'Network error during OTP verification.' };
+  }
+}
+
 // ============ Types ============
 
 export interface JCMatch {

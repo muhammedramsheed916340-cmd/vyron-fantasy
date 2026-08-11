@@ -26,10 +26,14 @@ export async function POST(request: NextRequest) {
       try {
         data = await response.json();
       } catch {
+        // JSON parse failure — only mark as token expired if HTTP status indicates auth issue
+        const isAuthError = response.status === 401 || response.status === 403;
         return NextResponse.json({
           status: 'fail',
-          message: `API returned unexpected response (HTTP ${response.status}).`,
-          tokenExpired: true,
+          message: isAuthError
+            ? 'Session expired. Please re-authenticate.'
+            : `API returned unexpected response (HTTP ${response.status}).`,
+          tokenExpired: isAuthError,
         });
       }
 
@@ -43,10 +47,24 @@ export async function POST(request: NextRequest) {
         });
       }
 
+      // Determine if this is an auth/token error vs a different kind of error
+      const msg = (data.message || '').toLowerCase();
+      const isAuthError = (
+        response.status === 401 ||
+        response.status === 403 ||
+        msg.includes('token') ||
+        msg.includes('expire') ||
+        msg.includes('auth') ||
+        msg.includes('session') ||
+        msg.includes('unauthorized') ||
+        msg.includes('re-login') ||
+        msg.includes('invalid')
+      );
+
       return NextResponse.json({
         status: 'fail',
-        message: data.message || 'Auth token is invalid or expired. Please re-login.',
-        tokenExpired: true,
+        message: data.message || (isAuthError ? 'Session expired. Please re-authenticate.' : 'Failed to load teams.'),
+        tokenExpired: isAuthError,
       });
     } catch (fetchError) {
       console.error('TG API list-of-teams unreachable:', fetchError instanceof Error ? fetchError.message : 'unknown');

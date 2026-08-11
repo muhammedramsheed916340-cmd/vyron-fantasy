@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   Trophy, X, CheckCircle2, Loader2, ChevronRight, ChevronLeft,
-  AlertCircle, Users, DollarSign, Filter, RefreshCw,
+  AlertCircle, Users, DollarSign, Filter, RefreshCw, KeyRound,
 } from 'lucide-react';
 import {
   JCMatch, JCContest, JCTeam, JCJoinItem, JCProgress,
@@ -11,6 +11,7 @@ import {
   parseContest, formatCurrency, getContestTypeColor,
   getExistingPlatformTeams, getPlatformContests, normalizeContests,
   buildJoinItems, getJoinKey,
+  verifySession, initiateSessionRefresh, completeSessionRefresh,
 } from '@/lib/join-contest-service';
 
 // ============ Step Enum ============
@@ -29,11 +30,13 @@ interface JoinContestDialogProps {
   onClose: () => void;
   matches: JCMatch[];
   fantasyAccounts: Record<string, { authToken: string; mobileNumber: string; my11circleChallenge?: string | null }>;
+  /** Callback to update the parent's fantasy account state after a successful token refresh */
+  onAccountUpdate?: (platform: string, account: { authToken: string; mobileNumber: string; my11circleChallenge?: string | null; my11circleUserId?: string | null; linkedAt: string }) => void;
 }
 
 // ============ Main Dialog ============
 export default function JoinContestDialog({
-  open, onClose, matches, fantasyAccounts,
+  open, onClose, matches, fantasyAccounts, onAccountUpdate,
 }: JoinContestDialogProps) {
   // Step state
   const [step, setStep] = useState<Step>('matches');
@@ -64,6 +67,22 @@ export default function JoinContestDialog({
   // Result
   const [resultItems, setResultItems] = useState<JCJoinItem[]>([]);
 
+  // Session refresh state
+  const [sessionRefreshState, setSessionRefreshState] = useState<{
+    active: boolean;
+    step: 'verifying' | 'sending_otp' | 'entering_otp' | 'verifying_otp' | 'success' | 'failed';
+    otpState?: string | null;
+    challenge?: string | null;
+    reasonCode?: string | null;
+    message?: string;
+  }>({ active: false, step: 'verifying', message: '' });
+  const [refreshOtp, setRefreshOtp] = useState('');
+
+  // Use the LATEST token — after a successful refresh, use the new token
+  const effectiveAccount = useMemo(() => {
+    return fantasyAccounts[platform];
+  }, [fantasyAccounts, platform]);
+
   // Available platforms from linked accounts
   const availablePlatforms = useMemo(() => {
     const platforms: string[] = [];
@@ -72,7 +91,7 @@ export default function JoinContestDialog({
     return platforms;
   }, [fantasyAccounts]);
 
-  const account = fantasyAccounts[platform];
+  const account = effectiveAccount;
 
   // Reset on close
   const handleClose = () => {
@@ -92,8 +111,130 @@ export default function JoinContestDialog({
     setJoinItems([]);
     setProgress({ current: 0, total: 0, status: 'idle' });
     setResultItems([]);
+    setSessionRefreshState({ active: false, step: 'verifying', message: '' });
+    setRefreshOtp('');
     onClose();
   };
+
+  // ============ Session Refresh Handlers ============
+
+  /**
+   * Handle session expiry by initiating a token refresh flow.
+   * This uses the existing connected account's mobile number to re-authenticate.
+   * The wizard state (selected match, teams, contests) is PRESERVED.
+   */
+  const handleSessionExpired = useCallback(async () => {
+    const acc = effectiveAccount;
+    if (!acc?.mobileNumber) {
+      console.error('[JOIN CONTEST] Cannot refresh session — no mobile number stored for account');
+      setSessionRefreshState({
+        active: true,
+        step: 'failed',
+        message: 'No mobile number stored for this account. Please reconnect manually.',
+      });
+      return;
+    }
+
+    console.log('[JOIN CONTEST] Session expired — initiating refresh for', platform, acc.mobileNumber.slice(0, 4) + '****');
+
+    // Step 1: Send OTP
+    setSessionRefreshState({ active: true, step: 'sending_otp', message: `Sending OTP to ${acc.mobileNumber}...` });
+
+    const refreshResult = await initiateSessionRefresh(platform, acc.mobileNumber);
+
+    if (!refreshResult.success) {
+      console.error('[JOIN CONTEST] Session refresh OTP send failed:', refreshResult.message);
+      setSessionRefreshState({
+        active: true,
+        step: 'failed',
+        message: refreshResult.message || 'Failed to send OTP. Please try again.',
+      });
+      return;
+    }
+
+    // Step 2: Wait for user to enter OTP
+    console.log('[JOIN CONTEST] OTP sent — waiting for user to enter OTP');
+    setSessionRefreshState({
+      active: true,
+      step: 'entering_otp',
+      otpState: refreshResult.state,
+      challenge: refreshResult.challenge,
+      reasonCode: refreshResult.reasonCode,
+      message: `OTP sent to ${acc.mobileNumber}. Enter the OTP to refresh your session.`,
+    });
+  }, [platform, effectiveAccount]);
+
+  /**
+   * Complete the session refresh by verifying the OTP entered by the user.
+   * On success, update the token in the parent state and retry the failed operation.
+   */
+  const handleCompleteRefresh = useCallback(async () => {
+    if (!refreshOtp || refreshOtp.length < 4) return;
+
+    const acc = effectiveAccount;
+    if (!acc?.mobileNumber) return;
+
+    console.log('[JOIN CONTEST] Verifying refresh OTP...');
+    setSessionRefreshState(prev => ({ ...prev, step: 'verifying_otp', message: 'Verifying OTP...' }));
+
+    const result = await completeSessionRefresh(
+      platform,
+      acc.mobileNumber,
+      refreshOtp,
+      sessionRefreshState.otpState,
+      sessionRefreshState.challenge,
+      sessionRefreshState.reasonCode,
+    );
+
+    if (!result.success || !result.token) {
+      console.error('[JOIN CONTEST] Session refresh OTP verification failed:', result.message);
+      setSessionRefreshState(prev => ({
+        ...prev,
+        step: 'failed',
+        message: result.message || 'OTP verification failed. Please try again.',
+      }));
+      return;
+    }
+
+    console.log('[JOIN CONTEST] Session refresh SUCCESS — new token obtained, length:', result.token.length);
+
+    // Update the parent's fantasy account state with the new token
+    if (onAccountUpdate) {
+      onAccountUpdate(platform, {
+        authToken: result.token,
+        mobileNumber: acc.mobileNumber,
+        my11circleChallenge: result.my11circleChallenge || acc.my11circleChallenge,
+        my11circleUserId: result.my11circleUserId || null,
+        linkedAt: new Date().toISOString(),
+      });
+    }
+
+    // Mark refresh as successful
+    setSessionRefreshState({
+      active: true,
+      step: 'success',
+      message: 'Session refreshed successfully!',
+    });
+
+    // Clear token expired flags
+    setTeamsTokenExpired(false);
+    setContestTokenExpired(false);
+    setTeamsError(null);
+    setContestErrors([]);
+
+    // After a brief delay, auto-retry the failed operation
+    setTimeout(() => {
+      setSessionRefreshState({ active: false, step: 'verifying', message: '' });
+      setRefreshOtp('');
+
+      // Retry based on current step — preserve all selections
+      if (step === 'teams') {
+        loadPlatformTeams();
+      } else if (step === 'contests') {
+        loadContests();
+      }
+    }, 1500);
+  }, [refreshOtp, platform, effectiveAccount, sessionRefreshState, onAccountUpdate, step, loadPlatformTeams, loadContests]);
 
   // ============ Match Selection ============
   const toggleMatch = (id: string | number) => {
@@ -118,10 +259,14 @@ export default function JoinContestDialog({
       return;
     }
 
+    console.log('[JOIN CONTEST] Connected account detected — Platform:', plat, 'Mobile:', acc.mobileNumber?.slice(0, 4) + '****');
     setLoadingTeams(true);
     setTeamsError(null);
     setTeamsTokenExpired(false);
-    setSelectedTeamIds(new Set());
+    // Preserve team selections on retry (only clear on first load)
+    if (platformTeams.length === 0) {
+      setSelectedTeamIds(new Set());
+    }
 
     const allTeams: JCTeam[] = [];
     let firstError: string | null = null;
@@ -144,7 +289,13 @@ export default function JoinContestDialog({
     setTeamsError(allTeams.length === 0 ? firstError : null);
     setTeamsTokenExpired(anyTokenExpired);
     setLoadingTeams(false);
-  }, [selectedMatchIds, platform, fantasyAccounts]);
+
+    // If session expired and we have a connected account, auto-trigger refresh
+    if (anyTokenExpired && acc.mobileNumber) {
+      console.log('[JOIN CONTEST] Token expired — auto-triggering session refresh');
+      handleSessionExpired();
+    }
+  }, [selectedMatchIds, platform, fantasyAccounts, platformTeams.length, handleSessionExpired]);
 
   // ============ Team Selection ============
   const toggleTeam = (id: string | number) => {
@@ -169,7 +320,12 @@ export default function JoinContestDialog({
     setLoadingContests(true);
     setContestErrors([]);
     setContestTokenExpired(false);
-    setSelectedContestIds(new Set());
+    // Preserve contest selections on retry (only clear on first load)
+    if (contestsMap.size === 0) {
+      setSelectedContestIds(new Set());
+    }
+
+    console.log('[JOIN CONTEST] Connected account detected — Platform:', platform, 'Mobile:', account.mobileNumber?.slice(0, 4) + '****');
 
     const newMap = new Map<string, JCContest[]>();
     const errors: ContestErrorState[] = [];
@@ -249,7 +405,13 @@ export default function JoinContestDialog({
     setContestErrors(errors);
     setContestTokenExpired(anyTokenExpired);
     setLoadingContests(false);
-  }, [selectedMatchIds, platform, account, matches]);
+
+    // If session expired and we have a connected account, auto-trigger refresh
+    if (anyTokenExpired && account.mobileNumber) {
+      console.log('[JOIN CONTEST] Token expired — auto-triggering session refresh');
+      handleSessionExpired();
+    }
+  }, [selectedMatchIds, platform, account, matches, contestsMap.size, handleSessionExpired]);
 
   const toggleContest = (id: string) => {
     setSelectedContestIds(prev => {
@@ -373,7 +535,7 @@ export default function JoinContestDialog({
   // ============ RENDER ============
   return (
     <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={handleClose}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b bg-gradient-to-r from-green-600 to-emerald-600 text-white">
           <div className="flex items-center gap-3">
@@ -492,7 +654,7 @@ export default function JoinContestDialog({
               )}
 
               {/* Error State */}
-              {!loadingTeams && teamsError && (
+              {!loadingTeams && teamsError && !sessionRefreshState.active && (
                 <div className="bg-red-50 border border-red-200 rounded-xl p-4">
                   <div className="flex items-center gap-2">
                     <AlertCircle className="w-5 h-5 text-red-500 shrink-0" />
@@ -503,8 +665,13 @@ export default function JoinContestDialog({
                       <p className="text-xs text-red-600 mt-0.5">{teamsError}</p>
                     </div>
                   </div>
-                  {teamsTokenExpired && (
-                    <p className="text-xs text-red-500 mt-2">Reconnect your {platform === 'dream11' ? 'Dream11' : 'My11Circle'} account via Transfer.</p>
+                  {teamsTokenExpired && account?.mobileNumber && (
+                    <button onClick={handleSessionExpired} className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-700 bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200">
+                      <KeyRound className="w-3 h-3" /> Refresh Session
+                    </button>
+                  )}
+                  {teamsTokenExpired && !account?.mobileNumber && (
+                    <p className="text-xs text-red-500 mt-2">No mobile number stored. Please reconnect your account.</p>
                   )}
                   <button onClick={() => loadPlatformTeams()} className="mt-2 flex items-center gap-1 text-xs font-semibold text-red-600 hover:text-red-700">
                     <RefreshCw className="w-3 h-3" /> Retry
@@ -628,7 +795,7 @@ export default function JoinContestDialog({
               )}
 
               {/* SESSION EXPIRED */}
-              {!loadingContests && contestTokenExpired && (
+              {!loadingContests && contestTokenExpired && !sessionRefreshState.active && (
                 <div className="bg-red-50 border border-red-200 rounded-xl p-4">
                   <div className="flex items-center gap-2">
                     <AlertCircle className="w-5 h-5 text-red-500 shrink-0" />
@@ -637,7 +804,13 @@ export default function JoinContestDialog({
                       <p className="text-xs text-red-600 mt-0.5">Your {platform === 'dream11' ? 'Dream11' : 'My11Circle'} session has expired.</p>
                     </div>
                   </div>
-                  <p className="text-xs text-red-500 mt-2">Reconnect your account via Transfer to continue.</p>
+                  {account?.mobileNumber ? (
+                    <button onClick={handleSessionExpired} className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-700 bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200">
+                      <KeyRound className="w-3 h-3" /> Refresh Session
+                    </button>
+                  ) : (
+                    <p className="text-xs text-red-500 mt-2">No mobile number stored. Please reconnect your account.</p>
+                  )}
                   <button onClick={loadContests} className="mt-2 flex items-center gap-1 text-xs font-semibold text-red-600 hover:text-red-700">
                     <RefreshCw className="w-3 h-3" /> Retry
                   </button>
@@ -918,6 +1091,103 @@ export default function JoinContestDialog({
           )}
         </div>
 
+        {/* Session Refresh Overlay */}
+        {sessionRefreshState.active && (
+          <div className="absolute inset-0 z-20 bg-white/95 flex items-center justify-center">
+            <div className="max-w-sm w-full mx-4 space-y-4">
+              {/* Verifying / Sending OTP */}
+              {(sessionRefreshState.step === 'verifying' || sessionRefreshState.step === 'sending_otp' || sessionRefreshState.step === 'verifying_otp') && (
+                <div className="text-center space-y-3">
+                  <div className="w-14 h-14 rounded-full bg-blue-50 flex items-center justify-center mx-auto">
+                    <Loader2 className="w-7 h-7 animate-spin text-blue-500" />
+                  </div>
+                  <h3 className="text-lg font-bold text-gray-900">
+                    {sessionRefreshState.step === 'verifying' ? 'Verifying Session...' :
+                     sessionRefreshState.step === 'sending_otp' ? 'Sending OTP...' :
+                     'Verifying OTP...'}
+                  </h3>
+                  <p className="text-sm text-gray-500">{sessionRefreshState.message}</p>
+                </div>
+              )}
+
+              {/* Enter OTP */}
+              {sessionRefreshState.step === 'entering_otp' && (
+                <div className="space-y-3">
+                  <div className="text-center">
+                    <div className="w-14 h-14 rounded-full bg-blue-50 flex items-center justify-center mx-auto">
+                      <KeyRound className="w-7 h-7 text-blue-500" />
+                    </div>
+                    <h3 className="text-lg font-bold text-gray-900 mt-3">Refresh Session</h3>
+                    <p className="text-sm text-gray-500 mt-1">{sessionRefreshState.message}</p>
+                  </div>
+                  <div className="space-y-2">
+                    <input
+                      type="text"
+                      value={refreshOtp}
+                      onChange={(e) => setRefreshOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      placeholder="Enter OTP"
+                      className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl text-center text-lg font-bold tracking-[0.5em] focus:border-blue-500 focus:outline-none"
+                      autoFocus
+                      onKeyDown={(e) => { if (e.key === 'Enter' && refreshOtp.length >= 4) handleCompleteRefresh(); }}
+                    />
+                    <button
+                      onClick={handleCompleteRefresh}
+                      disabled={refreshOtp.length < 4}
+                      className="w-full py-3 rounded-xl bg-blue-600 text-white font-semibold text-sm hover:bg-blue-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Verify OTP
+                    </button>
+                  </div>
+                  <button
+                    onClick={() => { setSessionRefreshState({ active: false, step: 'verifying', message: '' }); setRefreshOtp(''); }}
+                    className="w-full text-center text-sm text-gray-500 hover:text-gray-700"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+
+              {/* Success */}
+              {sessionRefreshState.step === 'success' && (
+                <div className="text-center space-y-3">
+                  <div className="w-14 h-14 rounded-full bg-green-50 flex items-center justify-center mx-auto">
+                    <CheckCircle2 className="w-7 h-7 text-green-500" />
+                  </div>
+                  <h3 className="text-lg font-bold text-green-700">Session Refreshed!</h3>
+                  <p className="text-sm text-gray-500">Retrying with new session...</p>
+                </div>
+              )}
+
+              {/* Failed */}
+              {sessionRefreshState.step === 'failed' && (
+                <div className="space-y-3">
+                  <div className="text-center">
+                    <div className="w-14 h-14 rounded-full bg-red-50 flex items-center justify-center mx-auto">
+                      <AlertCircle className="w-7 h-7 text-red-500" />
+                    </div>
+                    <h3 className="text-lg font-bold text-red-700 mt-3">Session Refresh Failed</h3>
+                    <p className="text-sm text-gray-500 mt-1">{sessionRefreshState.message}</p>
+                  </div>
+                  <div className="space-y-2">
+                    <button
+                      onClick={handleSessionExpired}
+                      className="w-full py-3 rounded-xl bg-blue-600 text-white font-semibold text-sm hover:bg-blue-700 transition-all"
+                    >
+                      Try Again
+                    </button>
+                    <button
+                      onClick={() => { setSessionRefreshState({ active: false, step: 'verifying', message: '' }); setRefreshOtp(''); }}
+                      className="w-full py-3 rounded-xl border-2 border-gray-200 text-gray-700 font-semibold text-sm hover:border-gray-300 transition-all"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Footer Buttons */}
         <div className="px-6 py-4 border-t bg-gray-50 flex items-center justify-between">
           <div>
@@ -961,7 +1231,7 @@ export default function JoinContestDialog({
               <button onClick={executeJoin} disabled={selectedContestIds.size === 0}
                 className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
                 <Trophy className="w-4 h-4" />
-                JOIN ALL SELECTED ({selectedContestIds.size * selectedTeamIds.size})
+                JOIN ALL SELECTED ({selectedContestIds.size > 0 && selectedTeamIds.size > 0 ? selectedContestIds.size * selectedTeamIds.size : selectedContestIds.size})
               </button>
             )}
             {step === 'result' && (
