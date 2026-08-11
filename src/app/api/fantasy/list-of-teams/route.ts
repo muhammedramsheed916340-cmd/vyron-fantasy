@@ -18,7 +18,7 @@ export async function POST(request: NextRequest) {
       const response = await fetch(`${TG_API_BASE}/fantasy/list-of-teams`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fantasyApp, matchId, authToken }),
+        body: JSON.stringify({ fantasyApp, matchId: typeof matchId === 'string' ? parseInt(matchId, 10) : matchId, authToken }),
         signal: AbortSignal.timeout(10000),
       });
 

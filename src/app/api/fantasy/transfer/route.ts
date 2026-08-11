@@ -68,8 +68,11 @@ export async function POST(request: NextRequest) {
     const url = `${TG_API_BASE}/fantasy/${endpoint}`;
 
     // Build payload for TG API
+    // IMPORTANT: TG API expects matchId as a NUMBER, not a string
+    const numericMatchId = typeof matchId === 'string' ? parseInt(matchId, 10) : matchId;
+
     const payload: Record<string, unknown> = {
-      matchId,
+      matchId: numericMatchId,
       captain,
       vice_captain,
       players,
