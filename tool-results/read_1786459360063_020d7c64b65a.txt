@@ -1,0 +1,802 @@
+     1→// ============================================================
+     2→// PLATFORM CONTEST API — Direct platform API calls for contests
+     3→// The TG API does NOT have list-contests or join-contest endpoints.
+     4→// We call the platform APIs directly using the auth token from verify-otp.
+     5→//
+     6→// ARCHITECTURE:
+     7→//   TG API (proxy) has: matches, verify-otp, list-of-teams, add-team, edit-team
+     8→//   TG API does NOT have: list-contests, join-contest (HTTP 404)
+     9→//   So we call Dream11/My11Circle APIs directly with the platform session token.
+    10→//
+    11→// The CONTEST_JWT_TOKEN from .env is passed as an additional auth header
+    12→// for future TG API support (if they add contest endpoints).
+    13→// ============================================================
+    14→
+    15→const DREAM11_API_BASE = 'https://api.dream11.com';
+    16→const MY11CIRCLE_API_BASE = 'https://www.my11circle.com';
+    17→
+    18→// ============ Types ============
+    19→
+    20→export interface PlatformContestResult {
+    21→  contests: PlatformContest[];
+    22→  error?: string;
+    23→  errorType?: 'none' | 'auth' | 'network' | 'parse' | 'api_fail' | 'not_supported' | 'http_404';
+    24→  rawResponse?: unknown;
+    25→  /** Diagnostic info for 404/418 debugging */
+    26→  _debug?: {
+    27→    platform: string;
+    28→    matchId: string | number;
+    29→    endpoint: string;
+    30→    httpStatus: number;
+    31→    responsePreview: string;
+    32→  };
+    33→}
+    34→
+    35→export interface PlatformContest {
+    36→  id: string;
+    37→  name: string;
+    38→  entryFee: number;
+    39→  prizePool: number;
+    40→  totalSpots: number;
+    41→  filledSpots: number;
+    42→  remainingSpots: number;
+    43→  joinable: boolean;
+    44→  matchId: string;
+    45→  platform: string;
+    46→  /** Raw contest data for additional fields */
+    47→  _raw?: Record<string, unknown>;
+    48→}
+    49→
+    50→export interface PlatformJoinResult {
+    51→  success: boolean;
+    52→  alreadyJoined?: boolean;
+    53→  message?: string;
+    54→  errorType?: 'none' | 'auth' | 'network' | 'api_fail' | 'not_supported';
+    55→}
+    56→
+    57→// ============ Dream11 Contest API ============
+    58→
+    59→/**
+    60→ * Fetch contests from Dream11 for a specific match.
+    61→ * Uses the auth token from verify-otp as a session token.
+    62→ *
+    63→ * Dream11 API endpoints (tried in order):
+    64→ * 1. GET /1/contest/category/m/{matchId}  — Contest categories with nested contests
+    65→ * 2. GET /1/contest/list?matchId={id}     — Direct contest list
+    66→ *
+    67→ * The auth token is passed as both a cookie and Authorization header.
+    68→ * Dream11 uses cookie-based sessions but also accepts Bearer tokens.
+    69→ *
+    70→ * IMPORTANT: Dream11 returns HTTP 418 ("I'm a teapot") for server-side
+    71→ * requests without a valid active session. The user MUST have connected
+    72→ * their Dream11 account (verify-otp) and the session MUST be valid.
+    73→ */
+    74→async function fetchDream11Contests(
+    75→  matchId: string | number,
+    76→  authToken: string,
+    77→  contestJwtToken?: string,
+    78→): Promise<PlatformContestResult> {
+    79→  const numericMatchId = typeof matchId === 'string' ? parseInt(matchId, 10) : matchId;
+    80→  console.log('[PLATFORM CONTEST] Dream11 — Match ID:', numericMatchId, '(original:', matchId, ')');
+    81→
+    82→  // Common headers for Dream11 API
+    83→  const dream11Headers: Record<string, string> = {
+    84→    'User-Agent': 'Dream11/8.29.0 (Android 12; SM-G991B)',
+    85→    'Accept': 'application/json',
+    86→    'Content-Type': 'application/json',
+    87→    'x-platform': 'android',
+    88→    'x-app-ver': '8.29.0',
+    89→    'x-lang': 'en',
+    90→    // Pass auth token as both cookie and bearer (Dream11 supports both)
+    91→    'Cookie': `sid=${authToken}`,
+    92→    'Authorization': `Bearer ${authToken}`,
+    93→  };
+    94→
+    95→  // Add CONTEST_JWT_TOKEN if available (for future TG API support)
+    96→  if (contestJwtToken) {
+    97→    dream11Headers['x-contest-token'] = contestJwtToken;
+    98→  }
+    99→
+   100→  try {
+   101→    // Strategy 1: Fetch contest categories for the match
+   102→    const categoryUrl = `${DREAM11_API_BASE}/1/contest/category/m/${numericMatchId}`;
+   103→    console.log('[PLATFORM CONTEST] Dream11 strategy 1 (category):', categoryUrl);
+   104→
+   105→    const categoryResponse = await fetch(categoryUrl, {
+   106→      method: 'GET',
+   107→      headers: dream11Headers,
+   108→      signal: AbortSignal.timeout(15000),
+   109→    });
+   110→
+   111→    console.log('[PLATFORM CONTEST] Dream11 category HTTP:', categoryResponse.status);
+   112→
+   113→    // Handle specific HTTP status codes
+   114→    if (categoryResponse.status === 418) {
+   115→      // Dream11 anti-bot — need valid session token from verify-otp
+   116→      const debugInfo = {
+   117→        platform: 'dream11',
+   118→        matchId: numericMatchId,
+   119→        endpoint: categoryUrl,
+   120→        httpStatus: 418,
+   121→        responsePreview: 'I\'m a teapot — Dream11 anti-bot protection',
+   122→      };
+   123→      console.error('[PLATFORM CONTEST] Dream11 418 — Anti-bot. Platform: dream11, Match ID:', numericMatchId, 'Endpoint:', categoryUrl);
+   124→      return {
+   125→        contests: [],
+   126→        error: 'Dream11 requires a valid active session. Please reconnect your Dream11 account (Send OTP → Verify OTP) and try again. Dream11 blocks server-side requests without proper authentication.',
+   127→        errorType: 'auth',
+   128→        _debug: debugInfo,
+   129→      };
+   130→    }
+   131→
+   132→    if (categoryResponse.status === 401 || categoryResponse.status === 403) {
+   133→      const debugInfo = {
+   134→        platform: 'dream11',
+   135→        matchId: numericMatchId,
+   136→        endpoint: categoryUrl,
+   137→        httpStatus: categoryResponse.status,
+   138→        responsePreview: 'Auth failed — session expired or invalid',
+   139→      };
+   140→      console.error('[PLATFORM CONTEST] Dream11 auth fail:', categoryResponse.status, 'Match ID:', numericMatchId);
+   141→      return {
+   142→        contests: [],
+   143→        error: 'Dream11 session expired or invalid. Please reconnect your account.',
+   144→        errorType: 'auth',
+   145→        _debug: debugInfo,
+   146→      };
+   147→    }
+   148→
+   149→    if (categoryResponse.status === 404) {
+   150→      // HTTP 404 — either wrong endpoint or wrong matchId
+   151→      const body = await categoryResponse.text().catch(() => '');
+   152→      const debugInfo = {
+   153→        platform: 'dream11',
+   154→        matchId: numericMatchId,
+   155→        endpoint: categoryUrl,
+   156→        httpStatus: 404,
+   157→        responsePreview: body.slice(0, 200),
+   158→      };
+   159→      console.error('[PLATFORM CONTEST] Dream11 HTTP 404! Platform: dream11, Match ID:', numericMatchId, 'Endpoint:', categoryUrl, 'Response:', body.slice(0, 200));
+   160→
+   161→      // Try strategy 2: direct contest list
+   162→      console.log('[PLATFORM CONTEST] Dream11 strategy 1 got 404, trying strategy 2...');
+   163→      const listUrl = `${DREAM11_API_BASE}/1/contest/list?matchId=${numericMatchId}`;
+   164→      const listResponse = await fetch(listUrl, {
+   165→        method: 'GET',
+   166→        headers: dream11Headers,
+   167→        signal: AbortSignal.timeout(15000),
+   168→      });
+   169→
+   170→      console.log('[PLATFORM CONTEST] Dream11 strategy 2 (list) HTTP:', listResponse.status);
+   171→
+   172→      if (listResponse.status === 418 || listResponse.status === 401 || listResponse.status === 403) {
+   173→        return {
+   174→          contests: [],
+   175→          error: 'Dream11 session expired. Please reconnect your account.',
+   176→          errorType: 'auth',
+   177→          _debug: debugInfo,
+   178→        };
+   179→      }
+   180→
+   181→      if (listResponse.ok) {
+   182→        let listData: any;
+   183→        try {
+   184→          listData = await listResponse.json();
+   185→        } catch {
+   186→          return {
+   187→            contests: [],
+   188→            error: 'Failed to parse Dream11 contest list response.',
+   189→            errorType: 'parse',
+   190→            _debug: debugInfo,
+   191→          };
+   192→        }
+   193→
+   194→        const contests = normalizeDream11Contests(listData, String(numericMatchId));
+   195→        console.log('[PLATFORM CONTEST] Dream11 strategy 2 normalized contests:', contests.length);
+   196→
+   197→        if (contests.length > 0) {
+   198→          return { contests, errorType: 'none', rawResponse: listData };
+   199→        }
+   200→      }
+   201→
+   202→      // Both strategies failed
+   203→      return {
+   204→        contests: [],
+   205→        error: `Dream11 returned HTTP 404 for match ID ${numericMatchId}. This could mean: (1) Invalid match ID, (2) Match not available on Dream11, (3) Contest data not yet available. Verify the match is live on Dream11.`,
+   206→        errorType: 'http_404',
+   207→        _debug: debugInfo,
+   208→      };
+   209→    }
+   210→
+   211→    if (!categoryResponse.ok) {
+   212→      const body = await categoryResponse.text().catch(() => '');
+   213→      const debugInfo = {
+   214→        platform: 'dream11',
+   215→        matchId: numericMatchId,
+   216→        endpoint: categoryUrl,
+   217→        httpStatus: categoryResponse.status,
+   218→        responsePreview: body.slice(0, 200),
+   219→      };
+   220→      console.error('[PLATFORM CONTEST] Dream11 error:', categoryResponse.status, body.slice(0, 200));
+   221→      return {
+   222→        contests: [],
+   223→        error: `Dream11 API error (HTTP ${categoryResponse.status}). Platform: dream11, Match ID: ${numericMatchId}, Endpoint: ${categoryUrl}`,
+   224→        errorType: 'api_fail',
+   225→        _debug: debugInfo,
+   226→      };
+   227→    }
+   228→
+   229→    let categoryData: any;
+   230→    try {
+   231→      categoryData = await categoryResponse.json();
+   232→    } catch {
+   233→      return {
+   234→        contests: [],
+   235→        error: 'Failed to parse Dream11 contest category response.',
+   236→        errorType: 'parse',
+   237→      };
+   238→    }
+   239→
+   240→    console.log('[PLATFORM CONTEST] Dream11 category response keys:', Object.keys(categoryData));
+   241→
+   242→    // Extract contests from the response
+   243→    const contests = normalizeDream11Contests(categoryData, String(numericMatchId));
+   244→
+   245→    console.log('[PLATFORM CONTEST] Dream11 normalized contests:', contests.length);
+   246→    if (contests.length === 0) {
+   247→      console.log('[PLATFORM CONTEST] Dream11 raw response structure:', JSON.stringify(categoryData, null, 2).slice(0, 500));
+   248→    }
+   249→
+   250→    return {
+   251→      contests,
+   252→      errorType: contests.length === 0 ? undefined : 'none',
+   253→      rawResponse: categoryData,
+   254→    };
+   255→  } catch (err) {
+   256→    console.error('[PLATFORM CONTEST] Dream11 network error:', err instanceof Error ? err.message : 'unknown');
+   257→    return {
+   258→      contests: [],
+   259→      error: `Network error connecting to Dream11. Match ID: ${matchId}. ${err instanceof Error ? err.message : 'Unknown error'}`,
+   260→      errorType: 'network',
+   261→    };
+   262→  }
+   263→}
+   264→
+   265→/**
+   266→ * Normalize Dream11 contest data into our standard format.
+   267→ * Handles various response structures from the Dream11 API.
+   268→ */
+   269→function normalizeDream11Contests(data: any, matchId: string): PlatformContest[] {
+   270→  const contests: PlatformContest[] = [];
+   271→
+   272→  if (!data || typeof data !== 'object') return contests;
+   273→
+   274→  // Try to find contest arrays in the response
+   275→  let contestArrays: any[][] = [];
+   276→
+   277→  // Direct array
+   278→  if (Array.isArray(data)) {
+   279→    contestArrays.push(data);
+   280→  }
+   281→
+   282→  // Common field names that might contain contest arrays
+   283→  const arrayFields = ['contests', 'contestList', 'contest_list', 'data', 'result', 'items', 'categories'];
+   284→  for (const field of arrayFields) {
+   285→    if (Array.isArray(data[field])) {
+   286→      contestArrays.push(data[field]);
+   287→    }
+   288→  }
+   289→
+   290→  // Categories with nested contests
+   291→  if (Array.isArray(data.categories)) {
+   292→    for (const cat of data.categories) {
+   293→      if (cat && typeof cat === 'object') {
+   294→        for (const key of ['contests', 'contestList', 'list', 'challengeList', 'challenges']) {
+   295→          if (Array.isArray(cat[key])) {
+   296→            contestArrays.push(cat[key]);
+   297→          }
+   298→        }
+   299→      }
+   300→    }
+   301→  }
+   302→
+   303→  // Heuristic: find any array of objects that look like contests
+   304→  if (contestArrays.length === 0) {
+   305→    for (const [key, val] of Object.entries(data)) {
+   306→      if (Array.isArray(val) && val.length > 0 && typeof val[0] === 'object') {
+   307→        const sample = val[0];
+   308→        if (sample.contestId || sample.contest_id || sample.id || sample.entryFee || sample.prizePool || sample.challengeId) {
+   309→          contestArrays.push(val);
+   310→        }
+   311→      }
+   312→    }
+   313→  }
+   314→
+   315→  // Normalize each contest
+   316→  for (const arr of contestArrays) {
+   317→    for (const item of arr) {
+   318→      if (!item || typeof item !== 'object') continue;
+   319→      const contest = parsePlatformContest(item, matchId, 'dream11');
+   320→      if (contest.id) contests.push(contest);
+   321→    }
+   322→  }
+   323→
+   324→  // Deduplicate by ID
+   325→  const seen = new Set<string>();
+   326→  return contests.filter(c => {
+   327→    if (seen.has(c.id)) return false;
+   328→    seen.add(c.id);
+   329→    return true;
+   330→  });
+   331→}
+   332→
+   333→// ============ My11Circle Contest API ============
+   334→
+   335→/**
+   336→ * Fetch contests from My11Circle for a specific match.
+   337→ * Uses the auth token and challenge from verify-otp.
+   338→ *
+   339→ * My11Circle contest endpoints (tried in order):
+   340→ * 1. POST /api/contest/get-contest-list  — Standard contest listing
+   341→ * 2. GET  /api/contest/list?matchId={id}  — Alternative format
+   342→ *
+   343→ * The auth token is passed as both a cookie and Authorization header.
+   344→ */
+   345→async function fetchMy11CircleContests(
+   346→  matchId: string | number,
+   347→  authToken: string,
+   348→  challenge?: string,
+   349→  contestJwtToken?: string,
+   350→): Promise<PlatformContestResult> {
+   351→  const numericMatchId = typeof matchId === 'string' ? parseInt(matchId, 10) : matchId;
+   352→  console.log('[PLATFORM CONTEST] My11Circle — Match ID:', numericMatchId, '(original:', matchId, ')');
+   353→
+   354→  try {
+   355→    // Strategy 1: POST to get-contest-list (standard My11Circle API)
+   356→    const url = `${MY11CIRCLE_API_BASE}/api/contest/get-contest-list`;
+   357→    console.log('[PLATFORM CONTEST] My11Circle strategy 1 URL:', url);
+   358→
+   359→    const payload: Record<string, unknown> = {
+   360→      matchId: numericMatchId,
+   361→      authToken,
+   362→    };
+   363→    if (challenge) {
+   364→      payload.challenge = challenge;
+   365→    }
+   366→
+   367→    const headers: Record<string, string> = {
+   368→      'User-Agent': 'Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36',
+   369→      'Accept': 'application/json',
+   370→      'Content-Type': 'application/json',
+   371→      'Cookie': `token=${authToken}`,
+   372→      'Authorization': `Bearer ${authToken}`,
+   373→    };
+   374→
+   375→    if (contestJwtToken) {
+   376→      headers['x-contest-token'] = contestJwtToken;
+   377→    }
+   378→
+   379→    const response = await fetch(url, {
+   380→      method: 'POST',
+   381→      headers,
+   382→      body: JSON.stringify(payload),
+   383→      signal: AbortSignal.timeout(15000),
+   384→    });
+   385→
+   386→    console.log('[PLATFORM CONTEST] My11Circle HTTP:', response.status);
+   387→
+   388→    if (response.status === 401 || response.status === 403) {
+   389→      const debugInfo = {
+   390→        platform: 'my11circle',
+   391→        matchId: numericMatchId,
+   392→        endpoint: url,
+   393→        httpStatus: response.status,
+   394→        responsePreview: 'Auth failed',
+   395→      };
+   396→      console.error('[PLATFORM CONTEST] My11Circle auth fail:', response.status, 'Match ID:', numericMatchId);
+   397→      return {
+   398→        contests: [],
+   399→        error: 'My11Circle session expired. Please reconnect your account.',
+   400→        errorType: 'auth',
+   401→        _debug: debugInfo,
+   402→      };
+   403→    }
+   404→
+   405→    if (response.status === 404) {
+   406→      // HTTP 404 — either wrong endpoint or wrong matchId
+   407→      const body = await response.text().catch(() => '');
+   408→      const debugInfo = {
+   409→        platform: 'my11circle',
+   410→        matchId: numericMatchId,
+   411→        endpoint: url,
+   412→        httpStatus: 404,
+   413→        responsePreview: body.slice(0, 200),
+   414→      };
+   415→      console.error('[PLATFORM CONTEST] My11Circle HTTP 404! Platform: my11circle, Match ID:', numericMatchId, 'Endpoint:', url, 'Response:', body.slice(0, 200));
+   416→
+   417→      // Try strategy 2: GET contest list
+   418→      const altUrl = `${MY11CIRCLE_API_BASE}/api/contest/list?matchId=${numericMatchId}`;
+   419→      console.log('[PLATFORM CONTEST] My11Circle strategy 2:', altUrl);
+   420→
+   421→      const altResponse = await fetch(altUrl, {
+   422→        method: 'GET',
+   423→        headers: {
+   424→          ...headers,
+   425→          'Content-Type': undefined as any, // Remove for GET
+   426→        },
+   427→        signal: AbortSignal.timeout(15000),
+   428→      });
+   429→
+   430→      console.log('[PLATFORM CONTEST] My11Circle strategy 2 HTTP:', altResponse.status);
+   431→
+   432→      if (altResponse.ok) {
+   433→        let altData: any;
+   434→        try { altData = await altResponse.json(); } catch { /* parse fail */ }
+   435→
+   436→        if (altData) {
+   437→          const contests = normalizeMy11CircleContests(altData, String(numericMatchId));
+   438→          if (contests.length > 0) {
+   439→            return { contests, errorType: 'none', rawResponse: altData };
+   440→          }
+   441→        }
+   442→      }
+   443→
+   444→      return {
+   445→        contests: [],
+   446→        error: `My11Circle returned HTTP 404 for match ID ${numericMatchId}. This could mean: (1) Invalid match ID, (2) Match not available on My11Circle, (3) Contest API endpoint changed. Verify the match is live on My11Circle.`,
+   447→        errorType: 'http_404',
+   448→        _debug: debugInfo,
+   449→      };
+   450→    }
+   451→
+   452→    if (!response.ok) {
+   453→      const body = await response.text().catch(() => '');
+   454→      const debugInfo = {
+   455→        platform: 'my11circle',
+   456→        matchId: numericMatchId,
+   457→        endpoint: url,
+   458→        httpStatus: response.status,
+   459→        responsePreview: body.slice(0, 200),
+   460→      };
+   461→      console.error('[PLATFORM CONTEST] My11Circle error:', response.status, body.slice(0, 200));
+   462→      return {
+   463→        contests: [],
+   464→        error: `My11Circle API error (HTTP ${response.status}). Platform: my11circle, Match ID: ${numericMatchId}, Endpoint: ${url}`,
+   465→        errorType: 'api_fail',
+   466→        _debug: debugInfo,
+   467→      };
+   468→    }
+   469→
+   470→    let data: any;
+   471→    try {
+   472→      data = await response.json();
+   473→    } catch {
+   474→      return {
+   475→        contests: [],
+   476→        error: 'Failed to parse My11Circle contest response.',
+   477→        errorType: 'parse',
+   478→      };
+   479→    }
+   480→
+   481→    console.log('[PLATFORM CONTEST] My11Circle response keys:', Object.keys(data));
+   482→
+   483→    const contests = normalizeMy11CircleContests(data, String(numericMatchId));
+   484→    console.log('[PLATFORM CONTEST] My11Circle normalized contests:', contests.length);
+   485→
+   486→    if (contests.length === 0) {
+   487→      console.log('[PLATFORM CONTEST] My11Circle raw response:', JSON.stringify(data, null, 2).slice(0, 500));
+   488→    }
+   489→
+   490→    return {
+   491→      contests,
+   492→      errorType: contests.length === 0 ? undefined : 'none',
+   493→      rawResponse: data,
+   494→    };
+   495→  } catch (err) {
+   496→    console.error('[PLATFORM CONTEST] My11Circle network error:', err instanceof Error ? err.message : 'unknown');
+   497→    return {
+   498→      contests: [],
+   499→      error: `Network error connecting to My11Circle. Match ID: ${matchId}. ${err instanceof Error ? err.message : 'Unknown error'}`,
+   500→      errorType: 'network',
+   501→    };
+   502→  }
+   503→}
+   504→
+   505→/**
+   506→ * Normalize My11Circle contest data into our standard format.
+   507→ */
+   508→function normalizeMy11CircleContests(data: any, matchId: string): PlatformContest[] {
+   509→  const contests: PlatformContest[] = [];
+   510→  if (!data || typeof data !== 'object') return contests;
+   511→
+   512→  let contestArrays: any[][] = [];
+   513→
+   514→  if (Array.isArray(data)) {
+   515→    contestArrays.push(data);
+   516→  }
+   517→
+   518→  const arrayFields = ['contests', 'contestList', 'contest_list', 'data', 'result', 'items', 'challengeList', 'challenges'];
+   519→  for (const field of arrayFields) {
+   520→    if (Array.isArray(data[field])) {
+   521→      contestArrays.push(data[field]);
+   522→    }
+   523→  }
+   524→
+   525→  // Heuristic
+   526→  if (contestArrays.length === 0) {
+   527→    for (const [key, val] of Object.entries(data)) {
+   528→      if (Array.isArray(val) && val.length > 0 && typeof val[0] === 'object') {
+   529→        const sample = val[0];
+   530→        if (sample.contestId || sample.contest_id || sample.id || sample.entryFee || sample.challengeId) {
+   531→          contestArrays.push(val);
+   532→        }
+   533→      }
+   534→    }
+   535→  }
+   536→
+   537→  for (const arr of contestArrays) {
+   538→    for (const item of arr) {
+   539→      if (!item || typeof item !== 'object') continue;
+   540→      const contest = parsePlatformContest(item, matchId, 'my11circle');
+   541→      if (contest.id) contests.push(contest);
+   542→    }
+   543→  }
+   544→
+   545→  const seen = new Set<string>();
+   546→  return contests.filter(c => {
+   547→    if (seen.has(c.id)) return false;
+   548→    seen.add(c.id);
+   549→    return true;
+   550→  });
+   551→}
+   552→
+   553→// ============ Common Parser ============
+   554→
+   555→/**
+   556→ * Parse a single contest from platform response into our standard format.
+   557→ * Handles various field naming conventions from Dream11 and My11Circle.
+   558→ *
+   559→ * IMPORTANT: Preserves the REAL platform contest ID — never generates fake IDs.
+   560→ */
+   561→function parsePlatformContest(raw: Record<string, unknown>, matchId: string, platform: string): PlatformContest {
+   562→  const totalSpots = (raw.totalSpots as number) || (raw.total_spots as number) || (raw.size as number) || (raw.totalSpot as number) || (raw.maxTeam as number) || (raw.maximumSpot as number) || 0;
+   563→  const filledSpots = (raw.filledSpots as number) || (raw.filled_spots as number) || (raw.joined as number) || (raw.spot_filled as number) || (raw.totalJoined as number) || (raw.spotFilled as number) || 0;
+   564→  // REAL platform contest ID — never fake
+   565→  const id = String(raw.id || raw.contestId || raw.contest_id || raw.challengeId || raw.challenge_id || raw._id || '');
+   566→
+   567→  return {
+   568→    id,
+   569→    name: String(raw.name || raw.contestName || raw.contest_name || raw.challengeName || raw.challenge_name || raw.title || 'Contest'),
+   570→    entryFee: (raw.entryFee as number) || (raw.entry_fee as number) || (raw.entry as number) || (raw.joinAmount as number) || (raw.buyIn as number) || (raw.joiningAmount as number) || 0,
+   571→    prizePool: (raw.prizePool as number) || (raw.prize_pool as number) || (raw.prize as number) || (raw.winningAmount as number) || (raw.totalWinnings as number) || (raw.totalPrize as number) || 0,
+   572→    totalSpots,
+   573→    filledSpots,
+   574→    remainingSpots: Math.max(0, totalSpots - filledSpots),
+   575→    joinable: totalSpots === 0 || filledSpots < totalSpots,
+   576→    matchId,
+   577→    platform,
+   578→    _raw: raw,
+   579→  };
+   580→}
+   581→
+   582→// ============ Main Export ============
+   583→
+   584→/**
+   585→ * Fetch contests from the platform for a specific match.
+   586→ * Routes to the correct platform-specific implementation.
+   587→ *
+   588→ * Since the TG API does NOT have list-contests (returns HTTP 404),
+   589→ * we call the platform APIs directly with the session token from verify-otp.
+   590→ *
+   591→ * The CONTEST_JWT_TOKEN from .env is passed as an additional auth header
+   592→ * for future TG API contest endpoint support.
+   593→ */
+   594→export async function fetchPlatformContests(
+   595→  platform: string,
+   596→  matchId: string | number,
+   597→  authToken: string,
+   598→  challenge?: string,
+   599→  contestJwtToken?: string,
+   600→): Promise<PlatformContestResult> {
+   601→  const numericMatchId = typeof matchId === 'string' ? parseInt(matchId, 10) : matchId;
+   602→  console.log('[PLATFORM CONTEST] Fetching — Platform:', platform, 'Match ID:', numericMatchId, '(original:', matchId, ')');
+   603→
+   604→  // Validate matchId — must be a positive number
+   605→  if (!matchId || numericMatchId <= 0 || isNaN(numericMatchId)) {
+   606→    console.error('[PLATFORM CONTEST] INVALID matchId:', matchId, 'Platform:', platform);
+   607→    return {
+   608→      contests: [],
+   609→      error: `Invalid match ID "${matchId}". A valid numeric platform match ID is required.`,
+   610→      errorType: 'api_fail',
+   611→      _debug: {
+   612→        platform,
+   613→        matchId: String(matchId),
+   614→        endpoint: 'N/A',
+   615→        httpStatus: 0,
+   616→        responsePreview: 'Invalid matchId — not a positive number',
+   617→      },
+   618→    };
+   619→  }
+   620→
+   621→  switch (platform.toLowerCase()) {
+   622→    case 'dream11':
+   623→      return fetchDream11Contests(numericMatchId, authToken, contestJwtToken);
+   624→    case 'my11circle':
+   625→      return fetchMy11CircleContests(numericMatchId, authToken, challenge, contestJwtToken);
+   626→    default:
+   627→      return {
+   628→        contests: [],
+   629→        error: `Contest listing is not supported for platform "${platform}". Supported: Dream11, My11Circle.`,
+   630→        errorType: 'not_supported',
+   631→      };
+   632→  }
+   633→}
+   634→
+   635→/**
+   636→ * Join a contest on the platform using an existing team.
+   637→ * Calls the platform's join-contest API directly.
+   638→ *
+   639→ * IMPORTANT: Sends REAL platformTeamId, platformContestId, platformMatchId, accountId.
+   640→ * Never sends generated team data.
+   641→ *
+   642→ * Since the TG API does NOT have join-contest (returns HTTP 404),
+   643→ * we call the platform APIs directly.
+   644→ */
+   645→export async function joinPlatformContest(
+   646→  platform: string,
+   647→  matchId: string | number,
+   648→  authToken: string,
+   649→  teamId: string | number,
+   650→  contestId: string,
+   651→  challenge?: string,
+   652→  contestJwtToken?: string,
+   653→): Promise<PlatformJoinResult> {
+   654→  const numericMatchId = typeof matchId === 'string' ? parseInt(matchId, 10) : matchId;
+   655→  console.log('[PLATFORM CONTEST] Join — Platform:', platform, 'Match:', numericMatchId, 'Team:', teamId, 'Contest:', contestId);
+   656→
+   657→  switch (platform.toLowerCase()) {
+   658→    case 'dream11':
+   659→      return joinDream11Contest(numericMatchId, authToken, teamId, contestId, contestJwtToken);
+   660→    case 'my11circle':
+   661→      return joinMy11CircleContest(numericMatchId, authToken, teamId, contestId, challenge, contestJwtToken);
+   662→    default:
+   663→      return {
+   664→        success: false,
+   665→        message: `Contest joining is not supported for platform "${platform}".`,
+   666→        errorType: 'not_supported',
+   667→      };
+   668→  }
+   669→}
+   670→
+   671→async function joinDream11Contest(
+   672→  matchId: number,
+   673→  authToken: string,
+   674→  teamId: string | number,
+   675→  contestId: string,
+   676→  contestJwtToken?: string,
+   677→): Promise<PlatformJoinResult> {
+   678→  try {
+   679→    const url = `${DREAM11_API_BASE}/1/contest/join`;
+   680→    const headers: Record<string, string> = {
+   681→      'User-Agent': 'Dream11/8.29.0 (Android 12; SM-G991B)',
+   682→      'Accept': 'application/json',
+   683→      'Content-Type': 'application/json',
+   684→      'x-platform': 'android',
+   685→      'x-app-ver': '8.29.0',
+   686→      'x-lang': 'en',
+   687→      'Cookie': `sid=${authToken}`,
+   688→      'Authorization': `Bearer ${authToken}`,
+   689→    };
+   690→    if (contestJwtToken) {
+   691→      headers['x-contest-token'] = contestJwtToken;
+   692→    }
+   693→
+   694→    const response = await fetch(url, {
+   695→      method: 'POST',
+   696→      headers,
+   697→      body: JSON.stringify({
+   698→        matchId,
+   699→        teamId: typeof teamId === 'string' ? parseInt(teamId, 10) : teamId,
+   700→        contestId,
+   701→      }),
+   702→      signal: AbortSignal.timeout(15000),
+   703→    });
+   704→
+   705→    console.log('[PLATFORM CONTEST] Dream11 join HTTP:', response.status);
+   706→
+   707→    if (response.status === 418) {
+   708→      return { success: false, message: 'Dream11 API blocked. Reconnect your account.', errorType: 'auth' };
+   709→    }
+   710→    if (response.status === 401 || response.status === 403) {
+   711→      return { success: false, message: 'Session expired. Reconnect your account.', errorType: 'auth' };
+   712→    }
+   713→
+   714→    let data: any;
+   715→    try {
+   716→      data = await response.json();
+   717→    } catch {
+   718→      return { success: false, message: `Join failed (HTTP ${response.status}).`, errorType: 'api_fail' };
+   719→    }
+   720→
+   721→    if (data.status === 'success') {
+   722→      return { success: true, message: data.message || 'Contest joined successfully.' };
+   723→    }
+   724→
+   725→    // Already joined detection
+   726→    const msg = data.message || '';
+   727→    if (/already.*join|already.*entered|already.*participat/i.test(msg)) {
+   728→      return { success: false, alreadyJoined: true, message: msg };
+   729→    }
+   730→
+   731→    return { success: false, message: msg || 'Join failed.', errorType: 'api_fail' };
+   732→  } catch (err) {
+   733→    console.error('[PLATFORM CONTEST] Dream11 join error:', err instanceof Error ? err.message : 'unknown');
+   734→    return { success: false, message: 'Network error.', errorType: 'network' };
+   735→  }
+   736→}
+   737→
+   738→async function joinMy11CircleContest(
+   739→  matchId: number,
+   740→  authToken: string,
+   741→  teamId: string | number,
+   742→  contestId: string,
+   743→  challenge?: string,
+   744→  contestJwtToken?: string,
+   745→): Promise<PlatformJoinResult> {
+   746→  try {
+   747→    const url = `${MY11CIRCLE_API_BASE}/api/contest/join`;
+   748→    const payload: Record<string, unknown> = {
+   749→      matchId,
+   750→      authToken,
+   751→      teamId: typeof teamId === 'string' ? parseInt(teamId, 10) : teamId,
+   752→      contestId,
+   753→    };
+   754→    if (challenge) payload.challenge = challenge;
+   755→
+   756→    const headers: Record<string, string> = {
+   757→      'User-Agent': 'Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36',
+   758→      'Accept': 'application/json',
+   759→      'Content-Type': 'application/json',
+   760→      'Cookie': `token=${authToken}`,
+   761→      'Authorization': `Bearer ${authToken}`,
+   762→    };
+   763→    if (contestJwtToken) {
+   764→      headers['x-contest-token'] = contestJwtToken;
+   765→    }
+   766→
+   767→    const response = await fetch(url, {
+   768→      method: 'POST',
+   769→      headers,
+   770→      body: JSON.stringify(payload),
+   771→      signal: AbortSignal.timeout(15000),
+   772→    });
+   773→
+   774→    console.log('[PLATFORM CONTEST] My11Circle join HTTP:', response.status);
+   775→
+   776→    if (response.status === 401 || response.status === 403) {
+   777→      return { success: false, message: 'Session expired. Reconnect your account.', errorType: 'auth' };
+   778→    }
+   779→
+   780→    let data: any;
+   781→    try {
+   782→      data = await response.json();
+   783→    } catch {
+   784→      return { success: false, message: `Join failed (HTTP ${response.status}).`, errorType: 'api_fail' };
+   785→    }
+   786→
+   787→    if (data.status === 'success') {
+   788→      return { success: true, message: data.message || 'Contest joined successfully.' };
+   789→    }
+   790→
+   791→    const msg = data.message || '';
+   792→    if (/already.*join|already.*entered|already.*participat/i.test(msg)) {
+   793→      return { success: false, alreadyJoined: true, message: msg };
+   794→    }
+   795→
+   796→    return { success: false, message: msg || 'Join failed.', errorType: 'api_fail' };
+   797→  } catch (err) {
+   798→    console.error('[PLATFORM CONTEST] My11Circle join error:', err instanceof Error ? err.message : 'unknown');
+   799→    return { success: false, message: 'Network error.', errorType: 'network' };
+   800→  }
+   801→}
+   802→

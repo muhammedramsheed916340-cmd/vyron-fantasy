@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import {
   Trophy, X, CheckCircle2, Loader2, ChevronRight, ChevronLeft,
   AlertCircle, Users, DollarSign, Filter, RefreshCw, KeyRound,
@@ -78,6 +78,21 @@ export default function JoinContestDialog({
   }>({ active: false, step: 'verifying', message: '' });
   const [refreshOtp, setRefreshOtp] = useState('');
 
+  // ============ OTP REQUEST GUARD ============
+  // Hard guard: prevents duplicate OTP requests within the same login attempt.
+  // A Join Contest button click must NEVER create multiple OTP requests.
+  const otpRequestInProgressRef = useRef(false);
+  const lastOtpTimestampRef = useRef(0);
+  const OTP_COOLDOWN_MS = 10000; // 10 seconds minimum between OTP requests
+
+  // ============ SESSION PRE-CHECK STATE ============
+  const [sessionChecked, setSessionChecked] = useState(false);
+  const [sessionValid, setSessionValid] = useState(false);
+
+  // ============ JOIN RETRY STATE ============
+  const MAX_JOIN_RETRIES = 3;
+  const JOIN_RETRY_DELAY_MS = 500;
+
   // Use the LATEST token — after a successful refresh, use the new token
   const effectiveAccount = useMemo(() => {
     return fantasyAccounts[platform];
@@ -113,20 +128,99 @@ export default function JoinContestDialog({
     setResultItems([]);
     setSessionRefreshState({ active: false, step: 'verifying', message: '' });
     setRefreshOtp('');
+    setSessionChecked(false);
+    setSessionValid(false);
+    otpRequestInProgressRef.current = false;
     onClose();
   };
+
+  // ============ Session Pre-Check ============
+
+  /**
+   * Verify the stored session token is still valid BEFORE starting any operation.
+   * This is the SINGLE authenticated-account check required by the spec:
+   *   getStoredFantasyAccount(platform) → validate stored token/session
+   *     → if valid: use existing account, NEVER open OTP login
+   *     → if invalid/expired: show "Session expired — Login required", allow manual OTP
+   */
+  const checkSessionValidity = useCallback(async (plat?: string): Promise<boolean> => {
+    const p = plat || platform;
+    const acc = fantasyAccounts[p];
+
+    console.log('[JOIN] === SESSION PRE-CHECK ===');
+    console.log('[JOIN] Platform:', p);
+    console.log('[JOIN] Account:', acc?.mobileNumber ? acc.mobileNumber.slice(0, 4) + '****' : 'NONE');
+    console.log('[JOIN] Existing session:', !!acc?.authToken);
+    console.log('[JOIN] Token present:', !!acc?.authToken);
+    console.log('[JOIN] Token valid: CHECKING...');
+
+    if (!acc?.authToken) {
+      console.log('[JOIN] Token present: NO');
+      console.log('[JOIN] OTP required: YES (no token stored)');
+      console.log('[JOIN] OTP request started: NO (user must initiate)');
+      setSessionChecked(true);
+      setSessionValid(false);
+      return false;
+    }
+
+    // Verify the token with the backend
+    const result = await verifySession(p, acc.authToken);
+
+    console.log('[JOIN] Token valid:', result.status === 'valid');
+    console.log('[JOIN] OTP required:', result.status === 'expired' ? 'YES' : 'NO');
+
+    if (result.status === 'valid') {
+      setSessionChecked(true);
+      setSessionValid(true);
+      console.log('[JOIN] === SESSION PRE-CHECK COMPLETE: VALID — proceeding with existing token ===');
+      return true;
+    }
+
+    if (result.status === 'expired') {
+      // Token is genuinely expired — show session expired UI but DO NOT auto-trigger OTP
+      setSessionChecked(true);
+      setSessionValid(false);
+      setTeamsTokenExpired(true);
+      setContestTokenExpired(true);
+      console.log('[JOIN] === SESSION PRE-CHECK COMPLETE: EXPIRED — user must manually refresh ===');
+      return false;
+    }
+
+    // 'error' — network/unknown issue. Don't assume expired. Let the operation try with the existing token.
+    // The token MIGHT still be valid — the verify endpoint could be down.
+    console.log('[JOIN] === SESSION PRE-CHECK COMPLETE: UNCERTAIN — proceeding with existing token (verify endpoint error) ===');
+    setSessionChecked(true);
+    setSessionValid(true); // Optimistic — let the operation try
+    return true;
+  }, [platform, fantasyAccounts]);
 
   // ============ Session Refresh Handlers ============
 
   /**
    * Handle session expiry by initiating a token refresh flow.
-   * This uses the existing connected account's mobile number to re-authenticate.
+   * CRITICAL SAFETY: This is USER-INITIATED only.
+   *   - Has OTP request guard to prevent duplicate requests.
+   *   - Has cooldown to prevent rapid-fire OTP requests.
+   *   - NEVER called automatically — only when user clicks "Refresh Session".
+   *
    * The wizard state (selected match, teams, contests) is PRESERVED.
    */
   const handleSessionExpired = useCallback(async () => {
+    // === OTP REQUEST GUARD ===
+    if (otpRequestInProgressRef.current) {
+      console.warn('[JOIN] OTP request BLOCKED — another OTP request is already in progress');
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastOtpTimestampRef.current < OTP_COOLDOWN_MS) {
+      console.warn('[JOIN] OTP request BLOCKED — cooldown period active. Last OTP:', Math.round((now - lastOtpTimestampRef.current) / 1000), 'seconds ago');
+      return;
+    }
+
     const acc = effectiveAccount;
     if (!acc?.mobileNumber) {
-      console.error('[JOIN CONTEST] Cannot refresh session — no mobile number stored for account');
+      console.error('[JOIN] Cannot refresh session — no mobile number stored for account');
       setSessionRefreshState({
         active: true,
         step: 'failed',
@@ -135,34 +229,53 @@ export default function JoinContestDialog({
       return;
     }
 
-    console.log('[JOIN CONTEST] Session expired — initiating refresh for', platform, acc.mobileNumber.slice(0, 4) + '****');
+    console.log('[JOIN] Session expired — USER initiated refresh for', platform, acc.mobileNumber.slice(0, 4) + '****');
+    console.log('[JOIN] OTP request started: YES');
+
+    // Mark OTP as in progress
+    otpRequestInProgressRef.current = true;
+    lastOtpTimestampRef.current = Date.now();
 
     // Step 1: Send OTP
     setSessionRefreshState({ active: true, step: 'sending_otp', message: `Sending OTP to ${acc.mobileNumber}...` });
 
-    const refreshResult = await initiateSessionRefresh(platform, acc.mobileNumber);
+    try {
+      const refreshResult = await initiateSessionRefresh(platform, acc.mobileNumber);
 
-    if (!refreshResult.success) {
-      console.error('[JOIN CONTEST] Session refresh OTP send failed:', refreshResult.message);
+      if (!refreshResult.success) {
+        console.error('[JOIN] Session refresh OTP send failed:', refreshResult.message);
+        setSessionRefreshState({
+          active: true,
+          step: 'failed',
+          message: refreshResult.message || 'Failed to send OTP. Please try again.',
+        });
+        otpRequestInProgressRef.current = false;
+        return;
+      }
+
+      // Step 2: Wait for user to enter OTP
+      console.log('[JOIN] OTP sent — waiting for user to enter OTP');
+      setSessionRefreshState({
+        active: true,
+        step: 'entering_otp',
+        otpState: refreshResult.state,
+        challenge: refreshResult.challenge,
+        reasonCode: refreshResult.reasonCode,
+        message: `OTP sent to ${acc.mobileNumber}. Enter the OTP to refresh your session.`,
+      });
+    } catch (err) {
+      console.error('[JOIN] Session refresh error:', err);
       setSessionRefreshState({
         active: true,
         step: 'failed',
-        message: refreshResult.message || 'Failed to send OTP. Please try again.',
+        message: 'Unexpected error during session refresh.',
       });
-      return;
+    } finally {
+      // Clear the in-progress flag after sending phase (the verify phase is separate)
+      // We keep it set during entering_otp to prevent double-send
+      // It will be cleared after verify completes or user cancels
     }
-
-    // Step 2: Wait for user to enter OTP
-    console.log('[JOIN CONTEST] OTP sent — waiting for user to enter OTP');
-    setSessionRefreshState({
-      active: true,
-      step: 'entering_otp',
-      otpState: refreshResult.state,
-      challenge: refreshResult.challenge,
-      reasonCode: refreshResult.reasonCode,
-      message: `OTP sent to ${acc.mobileNumber}. Enter the OTP to refresh your session.`,
-    });
-  }, [platform, effectiveAccount]);
+  }, [platform, effectiveAccount, OTP_COOLDOWN_MS]);
 
   /**
    * Complete the session refresh by verifying the OTP entered by the user.
@@ -174,7 +287,7 @@ export default function JoinContestDialog({
     const acc = effectiveAccount;
     if (!acc?.mobileNumber) return;
 
-    console.log('[JOIN CONTEST] Verifying refresh OTP...');
+    console.log('[JOIN] Verifying refresh OTP...');
     setSessionRefreshState(prev => ({ ...prev, step: 'verifying_otp', message: 'Verifying OTP...' }));
 
     const result = await completeSessionRefresh(
@@ -187,16 +300,18 @@ export default function JoinContestDialog({
     );
 
     if (!result.success || !result.token) {
-      console.error('[JOIN CONTEST] Session refresh OTP verification failed:', result.message);
+      console.error('[JOIN] Session refresh OTP verification failed:', result.message);
       setSessionRefreshState(prev => ({
         ...prev,
         step: 'failed',
         message: result.message || 'OTP verification failed. Please try again.',
       }));
+      otpRequestInProgressRef.current = false; // Allow retry
       return;
     }
 
-    console.log('[JOIN CONTEST] Session refresh SUCCESS — new token obtained, length:', result.token.length);
+    console.log('[JOIN] Session refresh SUCCESS — new token obtained, length:', result.token.length);
+    otpRequestInProgressRef.current = false; // Clear guard
 
     // Update the parent's fantasy account state with the new token
     if (onAccountUpdate) {
@@ -216,16 +331,19 @@ export default function JoinContestDialog({
       message: 'Session refreshed successfully!',
     });
 
-    // Clear token expired flags
+    // Clear token expired flags and session check state
     setTeamsTokenExpired(false);
     setContestTokenExpired(false);
     setTeamsError(null);
     setContestErrors([]);
+    setSessionChecked(true);
+    setSessionValid(true);
 
     // After a brief delay, auto-retry the failed operation
     setTimeout(() => {
       setSessionRefreshState({ active: false, step: 'verifying', message: '' });
       setRefreshOtp('');
+      otpRequestInProgressRef.current = false;
 
       // Retry based on current step — preserve all selections
       if (step === 'teams') {
@@ -259,7 +377,7 @@ export default function JoinContestDialog({
       return;
     }
 
-    console.log('[JOIN CONTEST] Connected account detected — Platform:', plat, 'Mobile:', acc.mobileNumber?.slice(0, 4) + '****');
+    console.log('[JOIN] Connected account detected — Platform:', plat, 'Mobile:', acc.mobileNumber?.slice(0, 4) + '****');
     setLoadingTeams(true);
     setTeamsError(null);
     setTeamsTokenExpired(false);
@@ -290,12 +408,14 @@ export default function JoinContestDialog({
     setTeamsTokenExpired(anyTokenExpired);
     setLoadingTeams(false);
 
-    // If session expired and we have a connected account, auto-trigger refresh
-    if (anyTokenExpired && acc.mobileNumber) {
-      console.log('[JOIN CONTEST] Token expired — auto-triggering session refresh');
-      handleSessionExpired();
+    // *** CRITICAL FIX: NEVER auto-trigger OTP on token expiry ***
+    // Only set the expired flag — user must manually click "Refresh Session"
+    if (anyTokenExpired) {
+      console.log('[JOIN] Token expired detected — showing session expired UI (NOT auto-triggering OTP)');
+      console.log('[JOIN] OTP required: YES (token expired)');
+      console.log('[JOIN] OTP request started: NO (waiting for user action)');
     }
-  }, [selectedMatchIds, platform, fantasyAccounts, platformTeams.length, handleSessionExpired]);
+  }, [selectedMatchIds, platform, fantasyAccounts, platformTeams.length]);
 
   // ============ Team Selection ============
   const toggleTeam = (id: string | number) => {
@@ -325,7 +445,7 @@ export default function JoinContestDialog({
       setSelectedContestIds(new Set());
     }
 
-    console.log('[JOIN CONTEST] Connected account detected — Platform:', platform, 'Mobile:', account.mobileNumber?.slice(0, 4) + '****');
+    console.log('[JOIN] Connected account detected — Platform:', platform, 'Mobile:', account.mobileNumber?.slice(0, 4) + '****');
 
     const newMap = new Map<string, JCContest[]>();
     const errors: ContestErrorState[] = [];
@@ -341,15 +461,15 @@ export default function JoinContestDialog({
       const platformMatchId = matchId;
       const numericMatchId = typeof matchId === 'string' ? parseInt(matchId, 10) : matchId;
 
-      console.log('[JOIN CONTEST] Selected match:', match?.left_team_name, 'vs', match?.right_team_name);
-      console.log('[JOIN CONTEST] Platform:', platform);
-      console.log('[JOIN CONTEST] Platform Match ID:', platformMatchId, '(numeric:', numericMatchId, ')');
-      console.log('[JOIN CONTEST] Account ID:', account.mobileNumber || 'unknown');
-      console.log('[JOIN CONTEST] Sport Index:', match?.sport_index ?? 0);
+      console.log('[JOIN] Selected match:', match?.left_team_name, 'vs', match?.right_team_name);
+      console.log('[JOIN] Platform:', platform);
+      console.log('[JOIN] Platform Match ID:', platformMatchId, '(numeric:', numericMatchId, ')');
+      console.log('[JOIN] Account ID:', account.mobileNumber || 'unknown');
+      console.log('[JOIN] Sport Index:', match?.sport_index ?? 0);
 
       // Validate: matchId must be numeric
       if (isNaN(numericMatchId) || numericMatchId <= 0) {
-        console.error('[JOIN CONTEST] INVALID matchId:', matchId, '— not a valid numeric ID. This should be a platform match ID like 113672, not a display name.');
+        console.error('[JOIN] INVALID matchId:', matchId, '— not a valid numeric ID. This should be a platform match ID like 113672, not a display name.');
         errors.push({
           matchId: String(matchId),
           error: `Invalid match ID "${matchId}". Must be a numeric platform match ID.`,
@@ -367,8 +487,8 @@ export default function JoinContestDialog({
         account.my11circleChallenge || undefined,
       );
 
-      console.log('[JOIN CONTEST] Contest count:', result.contests.length);
-      console.log('[JOIN CONTEST] Error type:', result.errorType);
+      console.log('[JOIN] Contest count:', result.contests.length);
+      console.log('[JOIN] Error type:', result.errorType);
 
       if (result.errorType === 'auth') {
         anyTokenExpired = true;
@@ -394,11 +514,11 @@ export default function JoinContestDialog({
       // Validate: contest.matchId should match our matchId
       for (const contest of result.contests) {
         if (contest.matchId && contest.matchId !== platformMatchId) {
-          console.warn('[JOIN CONTEST] Contest matchId mismatch:', contest.matchId, '!==', platformMatchId, 'for contest:', contest.id);
+          console.warn('[JOIN] Contest matchId mismatch:', contest.matchId, '!==', platformMatchId, 'for contest:', contest.id);
         }
       }
 
-      console.log('[JOIN CONTEST] Normalized contests for match', platformMatchId, ':', result.contests.length);
+      console.log('[JOIN] Normalized contests for match', platformMatchId, ':', result.contests.length);
     }
 
     setContestsMap(newMap);
@@ -406,12 +526,14 @@ export default function JoinContestDialog({
     setContestTokenExpired(anyTokenExpired);
     setLoadingContests(false);
 
-    // If session expired and we have a connected account, auto-trigger refresh
-    if (anyTokenExpired && account.mobileNumber) {
-      console.log('[JOIN CONTEST] Token expired — auto-triggering session refresh');
-      handleSessionExpired();
+    // *** CRITICAL FIX: NEVER auto-trigger OTP on token expiry ***
+    // Only set the expired flag — user must manually click "Refresh Session"
+    if (anyTokenExpired) {
+      console.log('[JOIN] Token expired detected — showing session expired UI (NOT auto-triggering OTP)');
+      console.log('[JOIN] OTP required: YES (token expired)');
+      console.log('[JOIN] OTP request started: NO (waiting for user action)');
     }
-  }, [selectedMatchIds, platform, account, matches, contestsMap.size, handleSessionExpired]);
+  }, [selectedMatchIds, platform, account, matches, contestsMap.size]);
 
   const toggleContest = (id: string) => {
     setSelectedContestIds(prev => {
@@ -453,7 +575,7 @@ export default function JoinContestDialog({
     return count;
   }, [contestsMap]);
 
-  // ============ Join Execution ============
+  // ============ Join Execution — with retry using SAME token (NEVER restarts OTP) ============
   const executeJoin = useCallback(async () => {
     const selectedMatches = matches.filter(m => selectedMatchIds.has(m.id));
     const selectedContestsForJoin = new Map<string, JCContest[]>();
@@ -468,11 +590,31 @@ export default function JoinContestDialog({
       return;
     }
 
+    // === PRE-CHECK: Verify session before joining ===
+    console.log('[JOIN] === JOIN CONTEST PRE-CHECK ===');
+    console.log('[JOIN] Platform:', platform);
+    console.log('[JOIN] Account:', account?.mobileNumber ? account.mobileNumber.slice(0, 4) + '****' : 'NONE');
+    console.log('[JOIN] Existing session:', !!account?.authToken);
+    console.log('[JOIN] Token present:', !!account?.authToken);
+
+    if (!account?.authToken) {
+      console.log('[JOIN] No auth token — cannot join. OTP required: YES');
+      console.log('[JOIN] OTP request started: NO (user must initiate)');
+      setTeamsTokenExpired(true);
+      setStep('contests'); // Go back to contests step so user can see session expired
+      return;
+    }
+
+    console.log('[JOIN] Token valid: assumed valid (will verify on first join attempt)');
+    console.log('[JOIN] OTP required: NO');
+    console.log('[JOIN] Join request: starting...');
+
     setJoinItems(items);
     setProgress({ current: 0, total: items.length, status: 'joining' });
     setStep('joining');
 
     const updatedItems = [...items];
+    let anyAuthFailure = false; // Track if ANY join fails due to auth — but do NOT auto-OTP
 
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
@@ -481,43 +623,87 @@ export default function JoinContestDialog({
         idx === i ? { ...it, status: 'processing' } : it
       ));
 
-      try {
-        const match = matches.find(m => String(m.id) === String(item.matchId));
-        // Ensure matchId is numeric for the join API
-        const numericMatchId = typeof item.matchId === 'string' ? parseInt(item.matchId, 10) : item.matchId;
-        const res = await fetch('/api/fantasy/join-contest', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            fantasyApp: item.platform || platform,
-            matchId: numericMatchId,      // Numeric platform match ID
-            authToken: account?.authToken, // Platform session token from verify-otp
-            teamId: item.teamId,           // REAL platform team ID (from list-of-teams)
-            contestId: item.contestId,     // REAL platform contest ID
-            sportIndex: match?.sport_index ?? 0,
-            challenge: account?.my11circleChallenge || undefined,
-          }),
-        });
-        const data = await res.json();
+      // === RETRY LOGIC: Retry with SAME token, NEVER restart OTP ===
+      let joinSuccess = false;
+      let joinStatus: 'success' | 'already_joined' | 'fail' = 'fail';
+      let joinMessage = '';
 
-        const status = data.status === 'success' ? 'success'
-          : data.status === 'already_joined' ? 'already_joined' : 'fail';
+      for (let retry = 0; retry < MAX_JOIN_RETRIES; retry++) {
+        try {
+          const match = matches.find(m => String(m.id) === String(item.matchId));
+          // Ensure matchId is numeric for the join API
+          const numericMatchId = typeof item.matchId === 'string' ? parseInt(item.matchId, 10) : item.matchId;
 
-        updatedItems[i] = { ...updatedItems[i], status, message: data.message };
-        setJoinItems([...updatedItems]);
-      } catch {
-        updatedItems[i] = { ...updatedItems[i], status: 'fail', message: 'Network error' };
-        setJoinItems([...updatedItems]);
+          if (retry > 0) {
+            console.log('[JOIN] Retry:', retry, 'for', item.contestName, '/ Team:', item.teamName);
+            await new Promise(r => setTimeout(r, JOIN_RETRY_DELAY_MS));
+          }
+
+          const res = await fetch('/api/fantasy/join-contest', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fantasyApp: item.platform || platform,
+              matchId: numericMatchId,      // Numeric platform match ID
+              authToken: account?.authToken, // Platform session token from verify-otp (SAME token on retry)
+              teamId: item.teamId,           // REAL platform team ID (from list-of-teams)
+              contestId: item.contestId,     // REAL platform contest ID
+              sportIndex: match?.sport_index ?? 0,
+              challenge: account?.my11circleChallenge || undefined,
+            }),
+          });
+          const data = await res.json();
+
+          // === TOKEN INVALIDATION: Only on TRUE auth errors ===
+          // 401/403 or tokenExpired from the API → genuine auth failure
+          // Generic 4xx/5xx, network errors, rate limits → DO NOT invalidate token
+          if (data.tokenExpired || res.status === 401 || res.status === 403) {
+            console.log('[JOIN] Auth failure detected on join — marking token expired (NOT auto-OTP)');
+            anyAuthFailure = true;
+            joinStatus = 'fail';
+            joinMessage = 'Session expired. Please refresh your session and try again.';
+            break; // No point retrying with expired token
+          }
+
+          joinStatus = data.status === 'success' ? 'success'
+            : data.status === 'already_joined' ? 'already_joined' : 'fail';
+          joinMessage = data.message || '';
+
+          // Success or already_joined — no need to retry
+          if (joinStatus === 'success' || joinStatus === 'already_joined') {
+            joinSuccess = true;
+            break;
+          }
+
+          // 'fail' — retry if we have retries left
+          console.log('[JOIN] Join failed (attempt', retry + 1, '):', joinMessage);
+        } catch (err) {
+          joinMessage = 'Network error';
+          console.log('[JOIN] Network error (attempt', retry + 1, ')');
+          // Network error — retry with same token
+        }
       }
+
+      console.log('[JOIN] Final result:', joinStatus, joinMessage);
+
+      updatedItems[i] = { ...updatedItems[i], status: joinStatus, message: joinMessage };
+      setJoinItems([...updatedItems]);
 
       // Rate limit between joins
       await new Promise(r => setTimeout(r, 300));
     }
 
+    // If any auth failure was detected, show session expired on the contest step
+    // but DO NOT auto-trigger OTP — user must manually refresh
+    if (anyAuthFailure) {
+      setContestTokenExpired(true);
+      console.log('[JOIN] Auth failure during join — session expired flag set (user must manually refresh)');
+    }
+
     setResultItems([...updatedItems]);
     setProgress(prev => ({ ...prev, status: 'done' }));
     setStep('result');
-  }, [matches, selectedMatchIds, contestsMap, selectedContestIds, selectedTeamIds, platformTeams, platform, account]);
+  }, [matches, selectedMatchIds, contestsMap, selectedContestIds, selectedTeamIds, platformTeams, platform, account, MAX_JOIN_RETRIES, JOIN_RETRY_DELAY_MS]);
 
   // ============ Result Stats ============
   const resultStats = useMemo(() => {
@@ -578,6 +764,25 @@ export default function JoinContestDialog({
           {/* ===== STEP: MATCHES ===== */}
           {step === 'matches' && (
             <div className="space-y-4">
+              {/* Session Expired Banner (shown when pre-check fails on this step) */}
+              {sessionChecked && !sessionValid && !sessionRefreshState.active && (
+                <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+                  <div className="flex items-center gap-2">
+                    <AlertCircle className="w-5 h-5 text-red-500 shrink-0" />
+                    <div>
+                      <p className="text-sm font-semibold text-red-700">SESSION EXPIRED</p>
+                      <p className="text-xs text-red-600 mt-0.5">Your {platform === 'dream11' ? 'Dream11' : 'My11Circle'} session has expired. Refresh your session to continue.</p>
+                    </div>
+                  </div>
+                  {account?.mobileNumber ? (
+                    <button onClick={handleSessionExpired} className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-700 bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200">
+                      <KeyRound className="w-3 h-3" /> Refresh Session
+                    </button>
+                  ) : (
+                    <p className="text-xs text-red-500 mt-2">No mobile number stored. Please reconnect your account.</p>
+                  )}
+                </div>
+              )}
               {/* Platform Selection */}
               <div className="space-y-2">
                 <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Platform</p>
@@ -1139,7 +1344,11 @@ export default function JoinContestDialog({
                     </button>
                   </div>
                   <button
-                    onClick={() => { setSessionRefreshState({ active: false, step: 'verifying', message: '' }); setRefreshOtp(''); }}
+                    onClick={() => {
+                      setSessionRefreshState({ active: false, step: 'verifying', message: '' });
+                      setRefreshOtp('');
+                      otpRequestInProgressRef.current = false; // Clear guard on cancel
+                    }}
                     className="w-full text-center text-sm text-gray-500 hover:text-gray-700"
                   >
                     Cancel
@@ -1176,7 +1385,11 @@ export default function JoinContestDialog({
                       Try Again
                     </button>
                     <button
-                      onClick={() => { setSessionRefreshState({ active: false, step: 'verifying', message: '' }); setRefreshOtp(''); }}
+                      onClick={() => {
+                        setSessionRefreshState({ active: false, step: 'verifying', message: '' });
+                        setRefreshOtp('');
+                        otpRequestInProgressRef.current = false; // Clear guard on cancel
+                      }}
                       className="w-full py-3 rounded-xl border-2 border-gray-200 text-gray-700 font-semibold text-sm hover:border-gray-300 transition-all"
                     >
                       Cancel
@@ -1206,10 +1419,16 @@ export default function JoinContestDialog({
           </div>
           <div className="flex items-center gap-2">
             {step === 'matches' && (
-              <button onClick={() => {
+              <button onClick={async () => {
                 if (selectedMatchIds.size > 0 && availablePlatforms.length > 0) {
-                  setStep('teams');
-                  loadPlatformTeams();
+                  // Pre-check session validity before moving to teams step
+                  const isValid = await checkSessionValidity(platform);
+                  if (isValid) {
+                    setStep('teams');
+                    loadPlatformTeams();
+                  }
+                  // If not valid, the session expired UI will show on current step
+                  // User must manually refresh before proceeding
                 }
               }} disabled={selectedMatchIds.size === 0 || availablePlatforms.length === 0}
                 className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
@@ -1217,10 +1436,15 @@ export default function JoinContestDialog({
               </button>
             )}
             {step === 'teams' && (
-              <button onClick={() => {
+              <button onClick={async () => {
                 if (selectedTeamIds.size > 0) {
-                  setStep('contests');
-                  loadContests();
+                  // Pre-check session validity before moving to contests step
+                  const isValid = await checkSessionValidity(platform);
+                  if (isValid) {
+                    setStep('contests');
+                    loadContests();
+                  }
+                  // If not valid, the session expired UI will show on current step
                 }
               }} disabled={selectedTeamIds.size === 0}
                 className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
@@ -1228,7 +1452,14 @@ export default function JoinContestDialog({
               </button>
             )}
             {step === 'contests' && (
-              <button onClick={executeJoin} disabled={selectedContestIds.size === 0}
+              <button onClick={async () => {
+                // Pre-check session validity before joining
+                const isValid = await checkSessionValidity(platform);
+                if (isValid) {
+                  executeJoin();
+                }
+                // If not valid, session expired UI will show
+              }} disabled={selectedContestIds.size === 0}
                 className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
                 <Trophy className="w-4 h-4" />
                 JOIN ALL SELECTED ({selectedContestIds.size > 0 && selectedTeamIds.size > 0 ? selectedContestIds.size * selectedTeamIds.size : selectedContestIds.size})

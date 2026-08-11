@@ -1,0 +1,1249 @@
+     1→'use client';
+     2→
+     3→import React, { useState, useCallback, useMemo, useEffect } from 'react';
+     4→import {
+     5→  Trophy, X, CheckCircle2, Loader2, ChevronRight, ChevronLeft,
+     6→  AlertCircle, Users, DollarSign, Filter, RefreshCw, KeyRound,
+     7→} from 'lucide-react';
+     8→import {
+     9→  JCMatch, JCContest, JCTeam, JCJoinItem, JCProgress,
+    10→  JCContestFetchResult,
+    11→  parseContest, formatCurrency, getContestTypeColor,
+    12→  getExistingPlatformTeams, getPlatformContests, normalizeContests,
+    13→  buildJoinItems, getJoinKey,
+    14→  verifySession, initiateSessionRefresh, completeSessionRefresh,
+    15→} from '@/lib/join-contest-service';
+    16→
+    17→// ============ Step Enum ============
+    18→type Step = 'matches' | 'teams' | 'contests' | 'joining' | 'result';
+    19→
+    20→// ============ Contest Error State ============
+    21→interface ContestErrorState {
+    22→  matchId: string;
+    23→  error: string;
+    24→  errorType: 'auth' | 'network' | 'parse' | 'invalid_match' | 'api_fail';
+    25→}
+    26→
+    27→// ============ Props ============
+    28→interface JoinContestDialogProps {
+    29→  open: boolean;
+    30→  onClose: () => void;
+    31→  matches: JCMatch[];
+    32→  fantasyAccounts: Record<string, { authToken: string; mobileNumber: string; my11circleChallenge?: string | null } | null>;
+    33→  /** Callback to update the parent's fantasy account state after a successful token refresh */
+    34→  onAccountUpdate?: (platform: string, account: { authToken: string; mobileNumber: string; my11circleChallenge?: string | null; my11circleUserId?: string | null; linkedAt: string }) => void;
+    35→}
+    36→
+    37→// ============ Main Dialog ============
+    38→export default function JoinContestDialog({
+    39→  open, onClose, matches, fantasyAccounts, onAccountUpdate,
+    40→}: JoinContestDialogProps) {
+    41→  // Step state
+    42→  const [step, setStep] = useState<Step>('matches');
+    43→  const [platform, setPlatform] = useState<string>('dream11');
+    44→
+    45→  // Match selection
+    46→  const [selectedMatchIds, setSelectedMatchIds] = useState<Set<string | number>>(new Set());
+    47→
+    48→  // Team selection — EXISTING PLATFORM TEAMS
+    49→  const [platformTeams, setPlatformTeams] = useState<JCTeam[]>([]);
+    50→  const [selectedTeamIds, setSelectedTeamIds] = useState<Set<string | number>>(new Set());
+    51→  const [mixedTeamMode, setMixedTeamMode] = useState(false);
+    52→  const [loadingTeams, setLoadingTeams] = useState(false);
+    53→  const [teamsError, setTeamsError] = useState<string | null>(null);
+    54→  const [teamsTokenExpired, setTeamsTokenExpired] = useState(false);
+    55→
+    56→  // Contest selection — with proper error states
+    57→  const [contestsMap, setContestsMap] = useState<Map<string, JCContest[]>>(new Map());
+    58→  const [selectedContestIds, setSelectedContestIds] = useState<Set<string>>(new Set());
+    59→  const [loadingContests, setLoadingContests] = useState(false);
+    60→  const [contestErrors, setContestErrors] = useState<ContestErrorState[]>([]);
+    61→  const [contestTokenExpired, setContestTokenExpired] = useState(false);
+    62→
+    63→  // Join progress
+    64→  const [joinItems, setJoinItems] = useState<JCJoinItem[]>([]);
+    65→  const [progress, setProgress] = useState<JCProgress>({ current: 0, total: 0, status: 'idle' });
+    66→
+    67→  // Result
+    68→  const [resultItems, setResultItems] = useState<JCJoinItem[]>([]);
+    69→
+    70→  // Session refresh state
+    71→  const [sessionRefreshState, setSessionRefreshState] = useState<{
+    72→    active: boolean;
+    73→    step: 'verifying' | 'sending_otp' | 'entering_otp' | 'verifying_otp' | 'success' | 'failed';
+    74→    otpState?: string | null;
+    75→    challenge?: string | null;
+    76→    reasonCode?: string | null;
+    77→    message?: string;
+    78→  }>({ active: false, step: 'verifying', message: '' });
+    79→  const [refreshOtp, setRefreshOtp] = useState('');
+    80→
+    81→  // Use the LATEST token — after a successful refresh, use the new token
+    82→  const effectiveAccount = useMemo(() => {
+    83→    return fantasyAccounts[platform];
+    84→  }, [fantasyAccounts, platform]);
+    85→
+    86→  // Available platforms from linked accounts
+    87→  const availablePlatforms = useMemo(() => {
+    88→    const platforms: string[] = [];
+    89→    if (fantasyAccounts.dream11?.authToken) platforms.push('dream11');
+    90→    if (fantasyAccounts.my11circle?.authToken) platforms.push('my11circle');
+    91→    return platforms;
+    92→  }, [fantasyAccounts]);
+    93→
+    94→  const account = effectiveAccount;
+    95→
+    96→  // Reset on close
+    97→  const handleClose = () => {
+    98→    setStep('matches');
+    99→    setSelectedMatchIds(new Set());
+   100→    setPlatformTeams([]);
+   101→    setSelectedTeamIds(new Set());
+   102→    setMixedTeamMode(false);
+   103→    setLoadingTeams(false);
+   104→    setTeamsError(null);
+   105→    setTeamsTokenExpired(false);
+   106→    setContestsMap(new Map());
+   107→    setSelectedContestIds(new Set());
+   108→    setLoadingContests(false);
+   109→    setContestErrors([]);
+   110→    setContestTokenExpired(false);
+   111→    setJoinItems([]);
+   112→    setProgress({ current: 0, total: 0, status: 'idle' });
+   113→    setResultItems([]);
+   114→    setSessionRefreshState({ active: false, step: 'verifying', message: '' });
+   115→    setRefreshOtp('');
+   116→    onClose();
+   117→  };
+   118→
+   119→  // ============ Session Refresh Handlers ============
+   120→
+   121→  /**
+   122→   * Handle session expiry by initiating a token refresh flow.
+   123→   * This uses the existing connected account's mobile number to re-authenticate.
+   124→   * The wizard state (selected match, teams, contests) is PRESERVED.
+   125→   */
+   126→  const handleSessionExpired = useCallback(async () => {
+   127→    const acc = effectiveAccount;
+   128→    if (!acc?.mobileNumber) {
+   129→      console.error('[JOIN CONTEST] Cannot refresh session — no mobile number stored for account');
+   130→      setSessionRefreshState({
+   131→        active: true,
+   132→        step: 'failed',
+   133→        message: 'No mobile number stored for this account. Please reconnect manually.',
+   134→      });
+   135→      return;
+   136→    }
+   137→
+   138→    console.log('[JOIN CONTEST] Session expired — initiating refresh for', platform, acc.mobileNumber.slice(0, 4) + '****');
+   139→
+   140→    // Step 1: Send OTP
+   141→    setSessionRefreshState({ active: true, step: 'sending_otp', message: `Sending OTP to ${acc.mobileNumber}...` });
+   142→
+   143→    const refreshResult = await initiateSessionRefresh(platform, acc.mobileNumber);
+   144→
+   145→    if (!refreshResult.success) {
+   146→      console.error('[JOIN CONTEST] Session refresh OTP send failed:', refreshResult.message);
+   147→      setSessionRefreshState({
+   148→        active: true,
+   149→        step: 'failed',
+   150→        message: refreshResult.message || 'Failed to send OTP. Please try again.',
+   151→      });
+   152→      return;
+   153→    }
+   154→
+   155→    // Step 2: Wait for user to enter OTP
+   156→    console.log('[JOIN CONTEST] OTP sent — waiting for user to enter OTP');
+   157→    setSessionRefreshState({
+   158→      active: true,
+   159→      step: 'entering_otp',
+   160→      otpState: refreshResult.state,
+   161→      challenge: refreshResult.challenge,
+   162→      reasonCode: refreshResult.reasonCode,
+   163→      message: `OTP sent to ${acc.mobileNumber}. Enter the OTP to refresh your session.`,
+   164→    });
+   165→  }, [platform, effectiveAccount]);
+   166→
+   167→  /**
+   168→   * Complete the session refresh by verifying the OTP entered by the user.
+   169→   * On success, update the token in the parent state and retry the failed operation.
+   170→   */
+   171→  const handleCompleteRefresh = useCallback(async () => {
+   172→    if (!refreshOtp || refreshOtp.length < 4) return;
+   173→
+   174→    const acc = effectiveAccount;
+   175→    if (!acc?.mobileNumber) return;
+   176→
+   177→    console.log('[JOIN CONTEST] Verifying refresh OTP...');
+   178→    setSessionRefreshState(prev => ({ ...prev, step: 'verifying_otp', message: 'Verifying OTP...' }));
+   179→
+   180→    const result = await completeSessionRefresh(
+   181→      platform,
+   182→      acc.mobileNumber,
+   183→      refreshOtp,
+   184→      sessionRefreshState.otpState,
+   185→      sessionRefreshState.challenge,
+   186→      sessionRefreshState.reasonCode,
+   187→    );
+   188→
+   189→    if (!result.success || !result.token) {
+   190→      console.error('[JOIN CONTEST] Session refresh OTP verification failed:', result.message);
+   191→      setSessionRefreshState(prev => ({
+   192→        ...prev,
+   193→        step: 'failed',
+   194→        message: result.message || 'OTP verification failed. Please try again.',
+   195→      }));
+   196→      return;
+   197→    }
+   198→
+   199→    console.log('[JOIN CONTEST] Session refresh SUCCESS — new token obtained, length:', result.token.length);
+   200→
+   201→    // Update the parent's fantasy account state with the new token
+   202→    if (onAccountUpdate) {
+   203→      onAccountUpdate(platform, {
+   204→        authToken: result.token,
+   205→        mobileNumber: acc.mobileNumber,
+   206→        my11circleChallenge: result.my11circleChallenge || acc.my11circleChallenge,
+   207→        my11circleUserId: result.my11circleUserId || null,
+   208→        linkedAt: new Date().toISOString(),
+   209→      });
+   210→    }
+   211→
+   212→    // Mark refresh as successful
+   213→    setSessionRefreshState({
+   214→      active: true,
+   215→      step: 'success',
+   216→      message: 'Session refreshed successfully!',
+   217→    });
+   218→
+   219→    // Clear token expired flags
+   220→    setTeamsTokenExpired(false);
+   221→    setContestTokenExpired(false);
+   222→    setTeamsError(null);
+   223→    setContestErrors([]);
+   224→
+   225→    // After a brief delay, auto-retry the failed operation
+   226→    setTimeout(() => {
+   227→      setSessionRefreshState({ active: false, step: 'verifying', message: '' });
+   228→      setRefreshOtp('');
+   229→
+   230→      // Retry based on current step — preserve all selections
+   231→      if (step === 'teams') {
+   232→        loadPlatformTeams();
+   233→      } else if (step === 'contests') {
+   234→        loadContests();
+   235→      }
+   236→    }, 1500);
+   237→  }, [refreshOtp, platform, effectiveAccount, sessionRefreshState, onAccountUpdate, step]);
+   238→
+   239→  // ============ Match Selection ============
+   240→  const toggleMatch = (id: string | number) => {
+   241→    setSelectedMatchIds(prev => {
+   242→      const next = new Set(prev);
+   243→      next.has(id) ? next.delete(id) : next.add(id);
+   244→      return next;
+   245→    });
+   246→  };
+   247→
+   248→  const selectAllMatches = () => {
+   249→    setSelectedMatchIds(new Set(matches.map(m => m.id)));
+   250→  };
+   251→
+   252→  // ============ Load Existing Platform Teams ============
+   253→  const loadPlatformTeams = useCallback(async (selectedPlatform?: string) => {
+   254→    const plat = selectedPlatform || platform;
+   255→    const acc = fantasyAccounts[plat];
+   256→    if (!acc?.authToken) {
+   257→      setTeamsError('No connected account found. Connect your platform account to load existing teams.');
+   258→      setPlatformTeams([]);
+   259→      return;
+   260→    }
+   261→
+   262→    console.log('[JOIN CONTEST] Connected account detected — Platform:', plat, 'Mobile:', acc.mobileNumber?.slice(0, 4) + '****');
+   263→    setLoadingTeams(true);
+   264→    setTeamsError(null);
+   265→    setTeamsTokenExpired(false);
+   266→    // Preserve team selections on retry (only clear on first load)
+   267→    if (platformTeams.length === 0) {
+   268→      setSelectedTeamIds(new Set());
+   269→    }
+   270→
+   271→    const allTeams: JCTeam[] = [];
+   272→    let firstError: string | null = null;
+   273→    let anyTokenExpired = false;
+   274→
+   275→    for (const matchId of selectedMatchIds) {
+   276→      const result = await getExistingPlatformTeams(plat, matchId, acc.authToken);
+   277→      if (result.teams.length > 0) {
+   278→        allTeams.push(...result.teams);
+   279→      }
+   280→      if (result.tokenExpired) {
+   281→        anyTokenExpired = true;
+   282→        firstError = result.error || 'Session expired';
+   283→      } else if (result.error && !firstError) {
+   284→        firstError = result.error;
+   285→      }
+   286→    }
+   287→
+   288→    setPlatformTeams(allTeams);
+   289→    setTeamsError(allTeams.length === 0 ? firstError : null);
+   290→    setTeamsTokenExpired(anyTokenExpired);
+   291→    setLoadingTeams(false);
+   292→
+   293→    // If session expired and we have a connected account, auto-trigger refresh
+   294→    if (anyTokenExpired && acc.mobileNumber) {
+   295→      console.log('[JOIN CONTEST] Token expired — auto-triggering session refresh');
+   296→      handleSessionExpired();
+   297→    }
+   298→  }, [selectedMatchIds, platform, fantasyAccounts, platformTeams.length, handleSessionExpired]);
+   299→
+   300→  // ============ Team Selection ============
+   301→  const toggleTeam = (id: string | number) => {
+   302→    setSelectedTeamIds(prev => {
+   303→      const next = new Set(prev);
+   304→      next.has(id) ? next.delete(id) : next.add(id);
+   305→      return next;
+   306→    });
+   307→  };
+   308→
+   309→  const selectAllTeams = () => {
+   310→    setSelectedTeamIds(new Set(platformTeams.map(t => t.id)));
+   311→  };
+   312→
+   313→  const deselectAllTeams = () => {
+   314→    setSelectedTeamIds(new Set());
+   315→  };
+   316→
+   317→  // ============ Contest Loading — with proper error differentiation ============
+   318→  const loadContests = useCallback(async () => {
+   319→    if (!account?.authToken) return;
+   320→    setLoadingContests(true);
+   321→    setContestErrors([]);
+   322→    setContestTokenExpired(false);
+   323→    // Preserve contest selections on retry (only clear on first load)
+   324→    if (contestsMap.size === 0) {
+   325→      setSelectedContestIds(new Set());
+   326→    }
+   327→
+   328→    console.log('[JOIN CONTEST] Connected account detected — Platform:', platform, 'Mobile:', account.mobileNumber?.slice(0, 4) + '****');
+   329→
+   330→    const newMap = new Map<string, JCContest[]>();
+   331→    const errors: ContestErrorState[] = [];
+   332→    let anyTokenExpired = false;
+   333→
+   334→    for (const matchId of selectedMatchIds) {
+   335→      const match = matches.find(m => m.id === matchId);
+   336→
+   337→      // Use the match ID as the platform match ID.
+   338→      // The TG API returns numeric match IDs (e.g., 113672) that are compatible
+   339→      // with Dream11/My11Circle platform APIs.
+   340→      // CRITICAL: This must be a numeric ID, NOT a display name like "MO vs SUL".
+   341→      const platformMatchId = matchId;
+   342→      const numericMatchId = typeof matchId === 'string' ? parseInt(matchId, 10) : matchId;
+   343→
+   344→      console.log('[JOIN CONTEST] Selected match:', match?.left_team_name, 'vs', match?.right_team_name);
+   345→      console.log('[JOIN CONTEST] Platform:', platform);
+   346→      console.log('[JOIN CONTEST] Platform Match ID:', platformMatchId, '(numeric:', numericMatchId, ')');
+   347→      console.log('[JOIN CONTEST] Account ID:', account.mobileNumber || 'unknown');
+   348→      console.log('[JOIN CONTEST] Sport Index:', match?.sport_index ?? 0);
+   349→
+   350→      // Validate: matchId must be numeric
+   351→      if (isNaN(numericMatchId) || numericMatchId <= 0) {
+   352→        console.error('[JOIN CONTEST] INVALID matchId:', matchId, '— not a valid numeric ID. This should be a platform match ID like 113672, not a display name.');
+   353→        errors.push({
+   354→          matchId: String(matchId),
+   355→          error: `Invalid match ID "${matchId}". Must be a numeric platform match ID.`,
+   356→          errorType: 'invalid_match',
+   357→        });
+   358→        newMap.set(String(matchId), []);
+   359→        continue;
+   360→      }
+   361→
+   362→      const result: JCContestFetchResult = await getPlatformContests(
+   363→        platform,
+   364→        platformMatchId,
+   365→        account.authToken,
+   366→        match?.sport_index ?? 0,
+   367→        account.my11circleChallenge || undefined,
+   368→      );
+   369→
+   370→      console.log('[JOIN CONTEST] Contest count:', result.contests.length);
+   371→      console.log('[JOIN CONTEST] Error type:', result.errorType);
+   372→
+   373→      if (result.errorType === 'auth') {
+   374→        anyTokenExpired = true;
+   375→        errors.push({
+   376→          matchId: String(matchId),
+   377→          error: result.error || 'Session expired',
+   378→          errorType: 'auth',
+   379→        });
+   380→        // Still set empty array for this match
+   381→        newMap.set(String(matchId), []);
+   382→      } else if (result.errorType && result.errorType !== 'none') {
+   383→        errors.push({
+   384→          matchId: String(matchId),
+   385→          error: result.error || 'Failed to load contests',
+   386→          errorType: result.errorType,
+   387→        });
+   388→        newMap.set(String(matchId), []);
+   389→      } else {
+   390→        // Success (possibly 0 contests — that's a valid state)
+   391→        newMap.set(String(matchId), result.contests);
+   392→      }
+   393→
+   394→      // Validate: contest.matchId should match our matchId
+   395→      for (const contest of result.contests) {
+   396→        if (contest.matchId && contest.matchId !== platformMatchId) {
+   397→          console.warn('[JOIN CONTEST] Contest matchId mismatch:', contest.matchId, '!==', platformMatchId, 'for contest:', contest.id);
+   398→        }
+   399→      }
+   400→
+   401→      console.log('[JOIN CONTEST] Normalized contests for match', platformMatchId, ':', result.contests.length);
+   402→    }
+   403→
+   404→    setContestsMap(newMap);
+   405→    setContestErrors(errors);
+   406→    setContestTokenExpired(anyTokenExpired);
+   407→    setLoadingContests(false);
+   408→
+   409→    // If session expired and we have a connected account, auto-trigger refresh
+   410→    if (anyTokenExpired && account.mobileNumber) {
+   411→      console.log('[JOIN CONTEST] Token expired — auto-triggering session refresh');
+   412→      handleSessionExpired();
+   413→    }
+   414→  }, [selectedMatchIds, platform, account, matches, contestsMap.size, handleSessionExpired]);
+   415→
+   416→  const toggleContest = (id: string) => {
+   417→    setSelectedContestIds(prev => {
+   418→      const next = new Set(prev);
+   419→      next.has(id) ? next.delete(id) : next.add(id);
+   420→      return next;
+   421→    });
+   422→  };
+   423→
+   424→  const selectAllContests = () => {
+   425→    const allIds: string[] = [];
+   426→    for (const contests of contestsMap.values()) {
+   427→      for (const c of contests) {
+   428→        if (c.joinAvailable) allIds.push(c.id);
+   429→      }
+   430→    }
+   431→    setSelectedContestIds(new Set(allIds));
+   432→  };
+   433→
+   434→  const deselectAllContests = () => {
+   435→    setSelectedContestIds(new Set());
+   436→  };
+   437→
+   438→  // Total contest count across all matches
+   439→  const totalContestCount = useMemo(() => {
+   440→    let count = 0;
+   441→    for (const contests of contestsMap.values()) {
+   442→      count += contests.length;
+   443→    }
+   444→    return count;
+   445→  }, [contestsMap]);
+   446→
+   447→  // Total joinable contest count
+   448→  const totalJoinableCount = useMemo(() => {
+   449→    let count = 0;
+   450→    for (const contests of contestsMap.values()) {
+   451→      count += contests.filter(c => c.joinAvailable).length;
+   452→    }
+   453→    return count;
+   454→  }, [contestsMap]);
+   455→
+   456→  // ============ Join Execution ============
+   457→  const executeJoin = useCallback(async () => {
+   458→    const selectedMatches = matches.filter(m => selectedMatchIds.has(m.id));
+   459→    const selectedContestsForJoin = new Map<string, JCContest[]>();
+   460→    for (const [matchId, contests] of contestsMap.entries()) {
+   461→      selectedContestsForJoin.set(matchId, contests.filter(c => selectedContestIds.has(c.id)));
+   462→    }
+   463→
+   464→    const items = buildJoinItems(selectedMatches, selectedContestsForJoin, selectedTeamIds, platformTeams, platform);
+   465→
+   466→    if (items.length === 0) {
+   467→      setStep('result');
+   468→      return;
+   469→    }
+   470→
+   471→    setJoinItems(items);
+   472→    setProgress({ current: 0, total: items.length, status: 'joining' });
+   473→    setStep('joining');
+   474→
+   475→    const updatedItems = [...items];
+   476→
+   477→    for (let i = 0; i < items.length; i++) {
+   478→      const item = items[i];
+   479→      setProgress(prev => ({ ...prev, current: i + 1 }));
+   480→      setJoinItems(prev => prev.map((it, idx) =>
+   481→        idx === i ? { ...it, status: 'processing' } : it
+   482→      ));
+   483→
+   484→      try {
+   485→        const match = matches.find(m => String(m.id) === String(item.matchId));
+   486→        // Ensure matchId is numeric for the join API
+   487→        const numericMatchId = typeof item.matchId === 'string' ? parseInt(item.matchId, 10) : item.matchId;
+   488→        const res = await fetch('/api/fantasy/join-contest', {
+   489→          method: 'POST',
+   490→          headers: { 'Content-Type': 'application/json' },
+   491→          body: JSON.stringify({
+   492→            fantasyApp: item.platform || platform,
+   493→            matchId: numericMatchId,      // Numeric platform match ID
+   494→            authToken: account?.authToken, // Platform session token from verify-otp
+   495→            teamId: item.teamId,           // REAL platform team ID (from list-of-teams)
+   496→            contestId: item.contestId,     // REAL platform contest ID
+   497→            sportIndex: match?.sport_index ?? 0,
+   498→            challenge: account?.my11circleChallenge || undefined,
+   499→          }),
+   500→        });
+   501→        const data = await res.json();
+   502→
+   503→        const status = data.status === 'success' ? 'success'
+   504→          : data.status === 'already_joined' ? 'already_joined' : 'fail';
+   505→
+   506→        updatedItems[i] = { ...updatedItems[i], status, message: data.message };
+   507→        setJoinItems([...updatedItems]);
+   508→      } catch {
+   509→        updatedItems[i] = { ...updatedItems[i], status: 'fail', message: 'Network error' };
+   510→        setJoinItems([...updatedItems]);
+   511→      }
+   512→
+   513→      // Rate limit between joins
+   514→      await new Promise(r => setTimeout(r, 300));
+   515→    }
+   516→
+   517→    setResultItems([...updatedItems]);
+   518→    setProgress(prev => ({ ...prev, status: 'done' }));
+   519→    setStep('result');
+   520→  }, [matches, selectedMatchIds, contestsMap, selectedContestIds, selectedTeamIds, platformTeams, platform, account]);
+   521→
+   522→  // ============ Result Stats ============
+   523→  const resultStats = useMemo(() => {
+   524→    const items = resultItems.length > 0 ? resultItems : joinItems;
+   525→    return {
+   526→      total: items.length,
+   527→      success: items.filter(i => i.status === 'success').length,
+   528→      alreadyJoined: items.filter(i => i.status === 'already_joined').length,
+   529→      fail: items.filter(i => i.status === 'fail').length,
+   530→    };
+   531→  }, [resultItems, joinItems]);
+   532→
+   533→  if (!open) return null;
+   534→
+   535→  // ============ RENDER ============
+   536→  return (
+   537→    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={handleClose}>
+   538→      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+   539→        {/* Header */}
+   540→        <div className="flex items-center justify-between px-6 py-4 border-b bg-gradient-to-r from-green-600 to-emerald-600 text-white">
+   541→          <div className="flex items-center gap-3">
+   542→            <Trophy className="w-6 h-6" />
+   543→            <h2 className="text-lg font-bold">Join Contest</h2>
+   544→          </div>
+   545→          <button onClick={handleClose} className="p-1 hover:bg-white/20 rounded-lg transition-all">
+   546→            <X className="w-5 h-5" />
+   547→          </button>
+   548→        </div>
+   549→
+   550→        {/* Step Indicator */}
+   551→        <div className="flex items-center gap-1 px-6 py-3 bg-gray-50 border-b">
+   552→          {(['matches', 'teams', 'contests', 'joining', 'result'] as Step[]).map((s, i) => {
+   553→            const labels = ['Match', 'Teams', 'Contests', 'Join', 'Result'];
+   554→            const stepOrder = ['matches', 'teams', 'contests', 'joining', 'result'];
+   555→            const isActive = step === s;
+   556→            const isDone = stepOrder.indexOf(step) > i;
+   557→            return (
+   558→              <React.Fragment key={s}>
+   559→                {i > 0 && <ChevronRight className="w-3 h-3 text-gray-300" />}
+   560→                <div className={`flex items-center gap-1.5 text-xs font-semibold px-2 py-1 rounded-lg transition-all ${
+   561→                  isActive ? 'bg-green-100 text-green-700' : isDone ? 'text-green-500' : 'text-gray-400'
+   562→                }`}>
+   563→                  <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] ${
+   564→                    isActive ? 'bg-green-600 text-white' : isDone ? 'bg-green-200 text-green-600' : 'bg-gray-200 text-gray-500'
+   565→                  }`}>
+   566→                    {isDone ? '✓' : i + 1}
+   567→                  </div>
+   568→                  {labels[i]}
+   569→                </div>
+   570→              </React.Fragment>
+   571→            );
+   572→          })}
+   573→        </div>
+   574→
+   575→        {/* Content */}
+   576→        <div className="flex-1 overflow-y-auto p-6">
+   577→
+   578→          {/* ===== STEP: MATCHES ===== */}
+   579→          {step === 'matches' && (
+   580→            <div className="space-y-4">
+   581→              {/* Platform Selection */}
+   582→              <div className="space-y-2">
+   583→                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Platform</p>
+   584→                <div className="flex gap-2">
+   585→                  {availablePlatforms.map(p => (
+   586→                    <button key={p} onClick={() => setPlatform(p)}
+   587→                      className={`flex-1 rounded-xl border-2 p-3 text-center font-semibold text-sm transition-all ${
+   588→                        platform === p ? 'border-green-500 bg-green-50 text-green-700' : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300'
+   589→                      }`}>
+   590→                      {p === 'dream11' ? 'Dream11' : 'My11Circle'}
+   591→                    </button>
+   592→                  ))}
+   593→                </div>
+   594→                {availablePlatforms.length === 0 && (
+   595→                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-700">
+   596→                    ⚠️ No connected account found. Link your platform account first via Transfer.
+   597→                  </div>
+   598→                )}
+   599→              </div>
+   600→
+   601→              {/* Match List */}
+   602→              <div className="space-y-2">
+   603→                <div className="flex items-center justify-between">
+   604→                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Select Matches</p>
+   605→                  <button onClick={selectAllMatches} className="text-xs font-semibold text-green-600 hover:text-green-700">
+   606→                    Select All
+   607→                  </button>
+   608→                </div>
+   609→                {matches.length === 0 ? (
+   610→                  <p className="text-sm text-gray-400 text-center py-8">No upcoming matches</p>
+   611→                ) : (
+   612→                  <div className="space-y-2 max-h-80 overflow-y-auto">
+   613→                    {matches.map(match => {
+   614→                      const selected = selectedMatchIds.has(match.id);
+   615→                      return (
+   616→                        <button key={match.id} onClick={() => toggleMatch(match.id)}
+   617→                          className={`w-full text-left rounded-xl border-2 p-3 transition-all ${
+   618→                            selected ? 'border-green-500 bg-green-50' : 'border-gray-200 bg-white hover:border-gray-300'
+   619→                          }`}>
+   620→                          <div className="flex items-center gap-3">
+   621→                            <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
+   622→                              selected ? 'border-green-500 bg-green-500' : 'border-gray-300'
+   623→                            }`}>
+   624→                              {selected && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
+   625→                            </div>
+   626→                            <div className="flex-1">
+   627→                              <p className="font-semibold text-sm text-gray-900">
+   628→                                {match.left_team_name} vs {match.right_team_name}
+   629→                              </p>
+   630→                              <div className="flex items-center gap-2 text-xs text-gray-500 mt-0.5">
+   631→                                <span>{match.match_time}</span>
+   632→                                {match.lineup_out === 1 && <span className="text-green-600 font-medium">Lineup Out</span>}
+   633→                              </div>
+   634→                            </div>
+   635→                          </div>
+   636→                        </button>
+   637→                      );
+   638→                    })}
+   639→                  </div>
+   640→                )}
+   641→              </div>
+   642→            </div>
+   643→          )}
+   644→
+   645→          {/* ===== STEP: TEAMS — EXISTING PLATFORM TEAMS ===== */}
+   646→          {step === 'teams' && (
+   647→            <div className="space-y-4">
+   648→              {/* Loading State */}
+   649→              {loadingTeams && (
+   650→                <div className="flex flex-col items-center justify-center py-12">
+   651→                  <Loader2 className="w-8 h-8 animate-spin text-green-500" />
+   652→                  <p className="text-sm text-gray-500 mt-3">Loading existing teams from {platform === 'dream11' ? 'Dream11' : 'My11Circle'}...</p>
+   653→                </div>
+   654→              )}
+   655→
+   656→              {/* Error State */}
+   657→              {!loadingTeams && teamsError && !sessionRefreshState.active && (
+   658→                <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+   659→                  <div className="flex items-center gap-2">
+   660→                    <AlertCircle className="w-5 h-5 text-red-500 shrink-0" />
+   661→                    <div>
+   662→                      <p className="text-sm font-semibold text-red-700">
+   663→                        {teamsTokenExpired ? 'SESSION EXPIRED' : 'Error Loading Teams'}
+   664→                      </p>
+   665→                      <p className="text-xs text-red-600 mt-0.5">{teamsError}</p>
+   666→                    </div>
+   667→                  </div>
+   668→                  {teamsTokenExpired && account?.mobileNumber && (
+   669→                    <button onClick={handleSessionExpired} className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-700 bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200">
+   670→                      <KeyRound className="w-3 h-3" /> Refresh Session
+   671→                    </button>
+   672→                  )}
+   673→                  {teamsTokenExpired && !account?.mobileNumber && (
+   674→                    <p className="text-xs text-red-500 mt-2">No mobile number stored. Please reconnect your account.</p>
+   675→                  )}
+   676→                  <button onClick={() => loadPlatformTeams()} className="mt-2 flex items-center gap-1 text-xs font-semibold text-red-600 hover:text-red-700">
+   677→                    <RefreshCw className="w-3 h-3" /> Retry
+   678→                  </button>
+   679→                </div>
+   680→              )}
+   681→
+   682→              {/* No Account */}
+   683→              {!loadingTeams && !teamsError && !account?.authToken && (
+   684→                <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-center">
+   685→                  <p className="text-sm font-semibold text-amber-700">No connected account found</p>
+   686→                  <p className="text-xs text-amber-600 mt-1">Connect your {platform === 'dream11' ? 'Dream11' : 'My11Circle'} account to load existing teams.</p>
+   687→                </div>
+   688→              )}
+   689→
+   690→              {/* Teams List */}
+   691→              {!loadingTeams && account?.authToken && (
+   692→                <div className="space-y-2">
+   693→                  <div className="flex items-center justify-between">
+   694→                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+   695→                      Existing Teams ({platformTeams.length} available)
+   696→                    </p>
+   697→                    <div className="flex gap-2">
+   698→                      <button onClick={selectAllTeams} disabled={platformTeams.length === 0}
+   699→                        className="text-xs font-semibold text-green-600 hover:text-green-700 disabled:opacity-40">
+   700→                        Select All
+   701→                      </button>
+   702→                      <button onClick={deselectAllTeams} disabled={selectedTeamIds.size === 0}
+   703→                        className="text-xs font-semibold text-gray-500 hover:text-gray-700 disabled:opacity-40">
+   704→                        Deselect
+   705→                      </button>
+   706→                    </div>
+   707→                  </div>
+   708→
+   709→                  {/* Mixed Team Toggle */}
+   710→                  <button onClick={() => setMixedTeamMode(!mixedTeamMode)}
+   711→                    className={`w-full rounded-xl border-2 p-3 transition-all ${
+   712→                      mixedTeamMode ? 'border-purple-500 bg-purple-50' : 'border-gray-200 bg-white hover:border-gray-300'
+   713→                    }`}>
+   714→                    <div className="flex items-center gap-3">
+   715→                      <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${
+   716→                        mixedTeamMode ? 'bg-purple-500 text-white' : 'bg-gray-100 text-gray-500'
+   717→                      }`}>
+   718→                        <Filter className="w-5 h-5" />
+   719→                      </div>
+   720→                      <div className="flex-1">
+   721→                        <p className={`font-semibold text-sm ${mixedTeamMode ? 'text-purple-700' : 'text-gray-900'}`}>Mixed Team Mode</p>
+   722→                        <p className="text-xs text-gray-500">
+   723→                          {mixedTeamMode ? 'Combining teams from compatible platform accounts' : 'Enable to mix teams from compatible accounts'}
+   724→                        </p>
+   725→                      </div>
+   726→                      <div className={`w-10 h-6 rounded-full relative transition-all ${mixedTeamMode ? 'bg-purple-500' : 'bg-gray-300'}`}>
+   727→                        <div className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${mixedTeamMode ? 'left-[18px]' : 'left-0.5'}`} />
+   728→                      </div>
+   729→                    </div>
+   730→                  </button>
+   731→
+   732→                  {/* No Teams */}
+   733→                  {platformTeams.length === 0 && !teamsError && (
+   734→                    <div className="bg-gray-50 border border-gray-200 rounded-xl p-6 text-center">
+   735→                      <p className="text-sm text-gray-500">No existing teams found on this platform account.</p>
+   736→                      <p className="text-xs text-gray-400 mt-1">Create teams on {platform === 'dream11' ? 'Dream11' : 'My11Circle'} first, then join contests.</p>
+   737→                    </div>
+   738→                  )}
+   739→
+   740→                  {/* Team Cards */}
+   741→                  {platformTeams.length > 0 && (
+   742→                    <div className="space-y-2 max-h-72 overflow-y-auto">
+   743→                      {platformTeams.map(team => {
+   744→                        const selected = selectedTeamIds.has(team.id);
+   745→                        return (
+   746→                          <button key={team.id} onClick={() => toggleTeam(team.id)}
+   747→                            className={`w-full text-left rounded-xl border-2 p-3 transition-all ${
+   748→                              selected ? 'border-green-500 bg-green-50' : 'border-gray-200 bg-white hover:border-gray-300'
+   749→                            }`}>
+   750→                            <div className="flex items-center gap-3">
+   751→                              <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
+   752→                                selected ? 'border-green-500 bg-green-500' : 'border-gray-300'
+   753→                              }`}>
+   754→                                {selected && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
+   755→                              </div>
+   756→                              <div className="flex-1">
+   757→                                <p className="font-semibold text-sm text-gray-900">{team.name}</p>
+   758→                                <div className="flex items-center gap-2 text-xs text-gray-500 mt-0.5">
+   759→                                  <span>{team.playerCount || 11} Players</span>
+   760→                                  {team.captain?.name && <span>C: {team.captain.name}</span>}
+   761→                                  {team.viceCaptain?.name && <span>VC: {team.viceCaptain.name}</span>}
+   762→                                </div>
+   763→                              </div>
+   764→                              <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">
+   765→                                ID: {team.platformTeamId}
+   766→                              </span>
+   767→                            </div>
+   768→                          </button>
+   769→                        );
+   770→                      })}
+   771→                    </div>
+   772→                  )}
+   773→
+   774→                  {/* Selection Count */}
+   775→                  {selectedTeamIds.size > 0 && (
+   776→                    <p className="text-sm text-green-600 font-medium">
+   777→                      Selected: {selectedTeamIds.size} / {platformTeams.length}
+   778→                    </p>
+   779→                  )}
+   780→                </div>
+   781→              )}
+   782→            </div>
+   783→          )}
+   784→
+   785→          {/* ===== STEP: CONTESTS — with proper error/loading states ===== */}
+   786→          {step === 'contests' && (
+   787→            <div className="space-y-4">
+   788→              {/* LOADING STATE */}
+   789→              {loadingContests && (
+   790→                <div className="flex flex-col items-center justify-center py-12">
+   791→                  <Loader2 className="w-8 h-8 animate-spin text-green-500" />
+   792→                  <p className="text-sm text-gray-500 mt-3">LOADING CONTESTS...</p>
+   793→                  <p className="text-xs text-gray-400 mt-1">Fetching contests from {platform === 'dream11' ? 'Dream11' : 'My11Circle'}</p>
+   794→                </div>
+   795→              )}
+   796→
+   797→              {/* SESSION EXPIRED */}
+   798→              {!loadingContests && contestTokenExpired && !sessionRefreshState.active && (
+   799→                <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+   800→                  <div className="flex items-center gap-2">
+   801→                    <AlertCircle className="w-5 h-5 text-red-500 shrink-0" />
+   802→                    <div>
+   803→                      <p className="text-sm font-semibold text-red-700">SESSION EXPIRED</p>
+   804→                      <p className="text-xs text-red-600 mt-0.5">Your {platform === 'dream11' ? 'Dream11' : 'My11Circle'} session has expired.</p>
+   805→                    </div>
+   806→                  </div>
+   807→                  {account?.mobileNumber ? (
+   808→                    <button onClick={handleSessionExpired} className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-700 bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200">
+   809→                      <KeyRound className="w-3 h-3" /> Refresh Session
+   810→                    </button>
+   811→                  ) : (
+   812→                    <p className="text-xs text-red-500 mt-2">No mobile number stored. Please reconnect your account.</p>
+   813→                  )}
+   814→                  <button onClick={loadContests} className="mt-2 flex items-center gap-1 text-xs font-semibold text-red-600 hover:text-red-700">
+   815→                    <RefreshCw className="w-3 h-3" /> Retry
+   816→                  </button>
+   817→                </div>
+   818→              )}
+   819→
+   820→              {/* INVALID MATCH ID */}
+   821→              {!loadingContests && !contestTokenExpired && contestErrors.some(e => e.errorType === 'invalid_match') && (
+   822→                <div className="bg-orange-50 border border-orange-200 rounded-xl p-4">
+   823→                  <div className="flex items-center gap-2">
+   824→                    <AlertCircle className="w-5 h-5 text-orange-500 shrink-0" />
+   825→                    <div>
+   826→                      <p className="text-sm font-semibold text-orange-700">INVALID MATCH</p>
+   827→                      <p className="text-xs text-orange-600 mt-0.5">The match ID is not a valid numeric platform match ID.</p>
+   828→                    </div>
+   829→                  </div>
+   830→                  {contestErrors.filter(e => e.errorType === 'invalid_match').map((err, i) => (
+   831→                    <p key={i} className="text-xs text-orange-500 mt-1 ml-7">{err.error}</p>
+   832→                  ))}
+   833→                  <p className="text-xs text-orange-500 mt-2">Match IDs must be numeric (e.g., 113672), not display names like "MO vs SUL".</p>
+   834→                </div>
+   835→              )}
+   836→
+   837→              {/* API/NETWORK ERRORS — HTTP 404 is NEVER silently converted to "0 contests" */}
+   838→              {!loadingContests && !contestTokenExpired && contestErrors.length > 0 && totalContestCount === 0 && (
+   839→                <div className="space-y-3">
+   840→                  {contestErrors.map((err, i) => {
+   841→                    const match = matches.find(m => String(m.id) === err.matchId);
+   842→                    const isInvalidMatch = err.errorType === 'invalid_match';
+   843→                    if (isInvalidMatch) return null; // Shown in dedicated section above
+   844→                    return (
+   845→                      <div key={i} className="bg-red-50 border border-red-200 rounded-xl p-4">
+   846→                        <div className="flex items-center gap-2">
+   847→                          <AlertCircle className="w-5 h-5 text-red-500 shrink-0" />
+   848→                          <div>
+   849→                            <p className="text-sm font-semibold text-red-700">
+   850→                              {err.error.includes('404') ? 'HTTP 404 — CONTEST API NOT FOUND' : 'UNABLE TO LOAD CONTESTS'}
+   851→                            </p>
+   852→                            <p className="text-xs text-red-600 mt-0.5">
+   853→                              {match ? `${match.left_team_name} vs ${match.right_team_name}` : `Match ${err.matchId}`}
+   854→                            </p>
+   855→                            <p className="text-xs text-red-500 mt-0.5">{err.error}</p>
+   856→                          </div>
+   857→                        </div>
+   858→                        <button onClick={loadContests} className="mt-2 flex items-center gap-1 text-xs font-semibold text-red-600 hover:text-red-700">
+   859→                          <RefreshCw className="w-3 h-3" /> Retry
+   860→                        </button>
+   861→                      </div>
+   862→                    );
+   863→                  })}
+   864→                </div>
+   865→              )}
+   866→
+   867→              {/* CONTESTS LIST (when not loading and we have data or genuine zero) */}
+   868→              {!loadingContests && !contestTokenExpired && (totalContestCount > 0 || contestErrors.length === 0) && (
+   869→                <div className="space-y-4">
+   870→                  {/* Select All / Deselect header */}
+   871→                  {totalContestCount > 0 && (
+   872→                    <div className="flex items-center justify-between">
+   873→                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+   874→                        CONTESTS ({totalContestCount})
+   875→                      </p>
+   876→                      <div className="flex gap-2">
+   877→                        <button onClick={selectAllContests} disabled={totalJoinableCount === 0}
+   878→                          className="text-xs font-semibold text-green-600 hover:text-green-700 disabled:opacity-40">
+   879→                          Select All
+   880→                        </button>
+   881→                        <button onClick={deselectAllContests} disabled={selectedContestIds.size === 0}
+   882→                          className="text-xs font-semibold text-gray-500 hover:text-gray-700 disabled:opacity-40">
+   883→                          Deselect
+   884→                        </button>
+   885→                      </div>
+   886→                    </div>
+   887→                  )}
+   888→
+   889→                  {/* Per-match contest groups */}
+   890→                  {Array.from(contestsMap.entries()).map(([matchId, contests]) => {
+   891→                    const match = matches.find(m => String(m.id) === matchId);
+   892→                    const matchError = contestErrors.find(e => e.matchId === matchId);
+   893→                    return (
+   894→                      <div key={matchId} className="space-y-2">
+   895→                        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+   896→                          {match?.left_team_name || '?'} vs {match?.right_team_name || '?'}
+   897→                          <span className="ml-2 text-gray-400">({contests.length} contests)</span>
+   898→                        </p>
+   899→
+   900→                        {/* Error for this specific match (partial failure) — HTTP 404 shows diagnostic info */}
+   901→                        {matchError && contests.length === 0 && (
+   902→                          <div className="bg-red-50 border border-red-200 rounded-xl p-3">
+   903→                            <div className="flex items-center gap-2">
+   904→                              <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
+   905→                              <div>
+   906→                                <p className="text-xs font-semibold text-red-700">
+   907→                                  {matchError.error.includes('404') ? 'HTTP 404 — CONTEST API NOT FOUND' : 'UNABLE TO LOAD CONTESTS'}
+   908→                                </p>
+   909→                                <p className="text-[11px] text-red-600 mt-0.5">{matchError.error}</p>
+   910→                              </div>
+   911→                            </div>
+   912→                            <button onClick={loadContests} className="mt-1.5 flex items-center gap-1 text-[11px] font-semibold text-red-600 hover:text-red-700">
+   913→                              <RefreshCw className="w-3 h-3" /> Retry
+   914→                            </button>
+   915→                          </div>
+   916→                        )}
+   917→
+   918→                        {/* Genuine zero contests */}
+   919→                        {!matchError && contests.length === 0 && (
+   920→                          <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 text-center">
+   921→                            <p className="text-sm text-gray-500">NO CONTESTS AVAILABLE FOR THIS MATCH</p>
+   922→                            <p className="text-xs text-gray-400 mt-1">This match may not have any joinable contests on {platform === 'dream11' ? 'Dream11' : 'My11Circle'}.</p>
+   923→                          </div>
+   924→                        )}
+   925→
+   926→                        {/* Contest Cards */}
+   927→                        {contests.length > 0 && (
+   928→                          <div className="space-y-2">
+   929→                            {contests.map(contest => {
+   930→                              const selected = selectedContestIds.has(contest.id);
+   931→                              return (
+   932→                                <button key={contest.id} onClick={() => toggleContest(contest.id)}
+   933→                                  className={`w-full text-left rounded-xl border-2 p-3 transition-all ${
+   934→                                    selected ? 'border-green-500 bg-green-50' : 'border-gray-200 bg-white hover:border-gray-300'
+   935→                                  } ${!contest.joinAvailable ? 'opacity-50' : ''}`}>
+   936→                                  <div className="flex items-center gap-3">
+   937→                                    <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
+   938→                                      selected ? 'border-green-500 bg-green-500' : 'border-gray-300'
+   939→                                    }`}>
+   940→                                      {selected && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
+   941→                                    </div>
+   942→                                    <div className="flex-1 min-w-0">
+   943→                                      <div className="flex items-center gap-2">
+   944→                                        <p className="font-semibold text-sm text-gray-900 truncate">{contest.name}</p>
+   945→                                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded shrink-0 ${getContestTypeColor(contest.type)}`}>
+   946→                                          {contest.type}
+   947→                                        </span>
+   948→                                      </div>
+   949→                                      <div className="flex items-center gap-3 text-xs text-gray-500 mt-1">
+   950→                                        <span className="flex items-center gap-0.5"><DollarSign className="w-3 h-3" />{formatCurrency(contest.entryFee)}</span>
+   951→                                        <span>Prize: {formatCurrency(contest.prizePool)}</span>
+   952→                                        <span className="flex items-center gap-0.5"><Users className="w-3 h-3" />{contest.filledSpots}/{contest.totalSpots}</span>
+   953→                                      </div>
+   954→                                      <div className="flex items-center gap-2 mt-0.5">
+   955→                                        {contest.remainingSpots > 0 && (
+   956→                                          <p className="text-[10px] text-green-600">{contest.remainingSpots} spots remaining</p>
+   957→                                        )}
+   958→                                        {!contest.joinAvailable && (
+   959→                                          <p className="text-[10px] text-red-500">Full</p>
+   960→                                        )}
+   961→                                        {contest.joinAvailable && (
+   962→                                          <p className="text-[10px] text-green-600 font-medium">JOIN AVAILABLE</p>
+   963→                                        )}
+   964→                                      </div>
+   965→                                    </div>
+   966→                                    <span className="text-[9px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded shrink-0" title="Platform Contest ID">
+   967→                                      {contest.contestId}
+   968→                                    </span>
+   969→                                  </div>
+   970→                                </button>
+   971→                              );
+   972→                            })}
+   973→                          </div>
+   974→                        )}
+   975→                      </div>
+   976→                    );
+   977→                  })}
+   978→
+   979→                  {/* Selected contest count */}
+   980→                  {selectedContestIds.size > 0 && (
+   981→                    <p className="text-sm text-green-600 font-medium">
+   982→                      Selected: {selectedContestIds.size} contest{selectedContestIds.size !== 1 ? 's' : ''}
+   983→                    </p>
+   984→                  )}
+   985→
+   986→                  {/* Zero contests overall (genuine) */}
+   987→                  {totalContestCount === 0 && contestErrors.length === 0 && (
+   988→                    <div className="bg-gray-50 border border-gray-200 rounded-xl p-6 text-center">
+   989→                      <p className="text-sm text-gray-500">NO CONTESTS AVAILABLE</p>
+   990→                      <p className="text-xs text-gray-400 mt-1">None of the selected matches have joinable contests on {platform === 'dream11' ? 'Dream11' : 'My11Circle'} right now.</p>
+   991→                    </div>
+   992→                  )}
+   993→                </div>
+   994→              )}
+   995→            </div>
+   996→          )}
+   997→
+   998→          {/* ===== STEP: JOINING ===== */}
+   999→          {step === 'joining' && (
+  1000→            <div className="space-y-4">
+  1001→              <div className="bg-green-50 border border-green-200 rounded-xl p-4">
+  1002→                <div className="flex items-center justify-between mb-2">
+  1003→                  <span className="text-sm font-semibold text-green-700">Joining contests...</span>
+  1004→                  <span className="text-sm font-bold text-green-700">{progress.current}/{progress.total}</span>
+  1005→                </div>
+  1006→                <div className="w-full bg-green-200 rounded-full h-3 overflow-hidden">
+  1007→                  <div className="bg-green-600 h-3 rounded-full transition-all duration-300"
+  1008→                    style={{ width: `${(progress.current / Math.max(progress.total, 1)) * 100}%` }} />
+  1009→                </div>
+  1010→                <div className="flex justify-between mt-2 text-xs">
+  1011→                  <span className="text-green-600 font-medium">✓ {resultStats.success} joined</span>
+  1012→                  <span className="text-amber-600 font-medium">⊙ {resultStats.alreadyJoined} already</span>
+  1013→                  <span className="text-red-500 font-medium">✗ {resultStats.fail} failed</span>
+  1014→                </div>
+  1015→              </div>
+  1016→              <div className="max-h-56 overflow-y-auto space-y-1.5">
+  1017→                {joinItems.map((item, i) => (
+  1018→                  <div key={i} className="flex items-center gap-2 text-xs py-1 px-2 rounded-lg bg-gray-50">
+  1019→                    {item.status === 'pending' && <div className="w-3.5 h-3.5 rounded-full bg-gray-200 shrink-0" />}
+  1020→                    {item.status === 'processing' && <Loader2 className="w-3.5 h-3.5 animate-spin text-green-500 shrink-0" />}
+  1021→                    {item.status === 'success' && <CheckCircle2 className="w-3.5 h-3.5 text-green-500 shrink-0" />}
+  1022→                    {item.status === 'already_joined' && <AlertCircle className="w-3.5 h-3.5 text-amber-500 shrink-0" />}
+  1023→                    {item.status === 'fail' && <X className="w-3.5 h-3.5 text-red-500 shrink-0" />}
+  1024→                    <span className="text-gray-600 truncate">{item.matchName}</span>
+  1025→                    <span className="text-gray-400">→</span>
+  1026→                    <span className="text-gray-700 font-medium truncate">{item.contestName}</span>
+  1027→                    <span className="text-gray-400">→</span>
+  1028→                    <span className="truncate">{item.teamName}</span>
+  1029→                    {item.message && item.status !== 'success' && (
+  1030→                      <span className="text-gray-400 truncate ml-auto">{item.message}</span>
+  1031→                    )}
+  1032→                  </div>
+  1033→                ))}
+  1034→              </div>
+  1035→            </div>
+  1036→          )}
+  1037→
+  1038→          {/* ===== STEP: RESULT ===== */}
+  1039→          {step === 'result' && (
+  1040→            <div className="space-y-4">
+  1041→              <div className="text-center py-4">
+  1042→                <div className="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-3">
+  1043→                  <Trophy className="w-8 h-8 text-green-600" />
+  1044→                </div>
+  1045→                <h3 className="text-xl font-bold text-gray-900">JOIN COMPLETE</h3>
+  1046→              </div>
+  1047→              <div className="grid grid-cols-4 gap-2">
+  1048→                <div className="bg-gray-50 rounded-xl p-3 text-center">
+  1049→                  <p className="text-lg font-bold text-gray-900">{resultStats.total}</p>
+  1050→                  <p className="text-[10px] text-gray-500 uppercase">Total</p>
+  1051→                </div>
+  1052→                <div className="bg-green-50 rounded-xl p-3 text-center">
+  1053→                  <p className="text-lg font-bold text-green-600">{resultStats.success}</p>
+  1054→                  <p className="text-[10px] text-green-600 uppercase">Joined</p>
+  1055→                </div>
+  1056→                <div className="bg-amber-50 rounded-xl p-3 text-center">
+  1057→                  <p className="text-lg font-bold text-amber-600">{resultStats.alreadyJoined}</p>
+  1058→                  <p className="text-[10px] text-amber-600 uppercase">Already</p>
+  1059→                </div>
+  1060→                <div className="bg-red-50 rounded-xl p-3 text-center">
+  1061→                  <p className="text-lg font-bold text-red-500">{resultStats.fail}</p>
+  1062→                  <p className="text-[10px] text-red-500 uppercase">Failed</p>
+  1063→                </div>
+  1064→              </div>
+  1065→              <div className="max-h-48 overflow-y-auto space-y-2">
+  1066→                {(() => {
+  1067→                  const byMatch = new Map<string, JCJoinItem[]>();
+  1068→                  for (const item of (resultItems.length > 0 ? resultItems : joinItems)) {
+  1069→                    const key = String(item.matchId);
+  1070→                    if (!byMatch.has(key)) byMatch.set(key, []);
+  1071→                    byMatch.get(key)!.push(item);
+  1072→                  }
+  1073→                  return Array.from(byMatch.entries()).map(([matchId, items]) => (
+  1074→                    <div key={matchId} className="bg-gray-50 rounded-xl p-3">
+  1075→                      <p className="text-xs font-semibold text-gray-700 mb-1">{items[0].matchName}</p>
+  1076→                      {items.map((item, i) => (
+  1077→                        <div key={i} className="flex items-center gap-1.5 text-[11px] py-0.5">
+  1078→                          {item.status === 'success' && <CheckCircle2 className="w-3 h-3 text-green-500" />}
+  1079→                          {item.status === 'already_joined' && <AlertCircle className="w-3 h-3 text-amber-500" />}
+  1080→                          {item.status === 'fail' && <X className="w-3 h-3 text-red-500" />}
+  1081→                          <span className="text-gray-600">{item.contestName}</span>
+  1082→                          <span className="text-gray-400">— {item.teamName}</span>
+  1083→                          {item.message && <span className="text-gray-400 ml-auto">{item.message}</span>}
+  1084→                        </div>
+  1085→                      ))}
+  1086→                    </div>
+  1087→                  ));
+  1088→                })()}
+  1089→              </div>
+  1090→            </div>
+  1091→          )}
+  1092→        </div>
+  1093→
+  1094→        {/* Session Refresh Overlay */}
+  1095→        {sessionRefreshState.active && (
+  1096→          <div className="absolute inset-0 z-20 bg-white/95 flex items-center justify-center">
+  1097→            <div className="max-w-sm w-full mx-4 space-y-4">
+  1098→              {/* Verifying / Sending OTP */}
+  1099→              {(sessionRefreshState.step === 'verifying' || sessionRefreshState.step === 'sending_otp' || sessionRefreshState.step === 'verifying_otp') && (
+  1100→                <div className="text-center space-y-3">
+  1101→                  <div className="w-14 h-14 rounded-full bg-blue-50 flex items-center justify-center mx-auto">
+  1102→                    <Loader2 className="w-7 h-7 animate-spin text-blue-500" />
+  1103→                  </div>
+  1104→                  <h3 className="text-lg font-bold text-gray-900">
+  1105→                    {sessionRefreshState.step === 'verifying' ? 'Verifying Session...' :
+  1106→                     sessionRefreshState.step === 'sending_otp' ? 'Sending OTP...' :
+  1107→                     'Verifying OTP...'}
+  1108→                  </h3>
+  1109→                  <p className="text-sm text-gray-500">{sessionRefreshState.message}</p>
+  1110→                </div>
+  1111→              )}
+  1112→
+  1113→              {/* Enter OTP */}
+  1114→              {sessionRefreshState.step === 'entering_otp' && (
+  1115→                <div className="space-y-3">
+  1116→                  <div className="text-center">
+  1117→                    <div className="w-14 h-14 rounded-full bg-blue-50 flex items-center justify-center mx-auto">
+  1118→                      <KeyRound className="w-7 h-7 text-blue-500" />
+  1119→                    </div>
+  1120→                    <h3 className="text-lg font-bold text-gray-900 mt-3">Refresh Session</h3>
+  1121→                    <p className="text-sm text-gray-500 mt-1">{sessionRefreshState.message}</p>
+  1122→                  </div>
+  1123→                  <div className="space-y-2">
+  1124→                    <input
+  1125→                      type="text"
+  1126→                      value={refreshOtp}
+  1127→                      onChange={(e) => setRefreshOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+  1128→                      placeholder="Enter OTP"
+  1129→                      className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl text-center text-lg font-bold tracking-[0.5em] focus:border-blue-500 focus:outline-none"
+  1130→                      autoFocus
+  1131→                      onKeyDown={(e) => { if (e.key === 'Enter' && refreshOtp.length >= 4) handleCompleteRefresh(); }}
+  1132→                    />
+  1133→                    <button
+  1134→                      onClick={handleCompleteRefresh}
+  1135→                      disabled={refreshOtp.length < 4}
+  1136→                      className="w-full py-3 rounded-xl bg-blue-600 text-white font-semibold text-sm hover:bg-blue-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+  1137→                    >
+  1138→                      Verify OTP
+  1139→                    </button>
+  1140→                  </div>
+  1141→                  <button
+  1142→                    onClick={() => { setSessionRefreshState({ active: false, step: 'verifying', message: '' }); setRefreshOtp(''); }}
+  1143→                    className="w-full text-center text-sm text-gray-500 hover:text-gray-700"
+  1144→                  >
+  1145→                    Cancel
+  1146→                  </button>
+  1147→                </div>
+  1148→              )}
+  1149→
+  1150→              {/* Success */}
+  1151→              {sessionRefreshState.step === 'success' && (
+  1152→                <div className="text-center space-y-3">
+  1153→                  <div className="w-14 h-14 rounded-full bg-green-50 flex items-center justify-center mx-auto">
+  1154→                    <CheckCircle2 className="w-7 h-7 text-green-500" />
+  1155→                  </div>
+  1156→                  <h3 className="text-lg font-bold text-green-700">Session Refreshed!</h3>
+  1157→                  <p className="text-sm text-gray-500">Retrying with new session...</p>
+  1158→                </div>
+  1159→              )}
+  1160→
+  1161→              {/* Failed */}
+  1162→              {sessionRefreshState.step === 'failed' && (
+  1163→                <div className="space-y-3">
+  1164→                  <div className="text-center">
+  1165→                    <div className="w-14 h-14 rounded-full bg-red-50 flex items-center justify-center mx-auto">
+  1166→                      <AlertCircle className="w-7 h-7 text-red-500" />
+  1167→                    </div>
+  1168→                    <h3 className="text-lg font-bold text-red-700 mt-3">Session Refresh Failed</h3>
+  1169→                    <p className="text-sm text-gray-500 mt-1">{sessionRefreshState.message}</p>
+  1170→                  </div>
+  1171→                  <div className="space-y-2">
+  1172→                    <button
+  1173→                      onClick={handleSessionExpired}
+  1174→                      className="w-full py-3 rounded-xl bg-blue-600 text-white font-semibold text-sm hover:bg-blue-700 transition-all"
+  1175→                    >
+  1176→                      Try Again
+  1177→                    </button>
+  1178→                    <button
+  1179→                      onClick={() => { setSessionRefreshState({ active: false, step: 'verifying', message: '' }); setRefreshOtp(''); }}
+  1180→                      className="w-full py-3 rounded-xl border-2 border-gray-200 text-gray-700 font-semibold text-sm hover:border-gray-300 transition-all"
+  1181→                    >
+  1182→                      Cancel
+  1183→                    </button>
+  1184→                  </div>
+  1185→                </div>
+  1186→              )}
+  1187→            </div>
+  1188→          </div>
+  1189→        )}
+  1190→
+  1191→        {/* Footer Buttons */}
+  1192→        <div className="px-6 py-4 border-t bg-gray-50 flex items-center justify-between">
+  1193→          <div>
+  1194→            {step !== 'matches' && step !== 'joining' && step !== 'result' && (
+  1195→              <button onClick={() => {
+  1196→                const prev: Record<Step, Step | null> = {
+  1197→                  matches: null, teams: 'matches', contests: 'teams',
+  1198→                  joining: null, result: null,
+  1199→                };
+  1200→                const p = prev[step];
+  1201→                if (p) setStep(p);
+  1202→              }} className="flex items-center gap-1 text-sm text-gray-600 hover:text-gray-800 font-medium">
+  1203→                <ChevronLeft className="w-4 h-4" /> Back
+  1204→              </button>
+  1205→            )}
+  1206→          </div>
+  1207→          <div className="flex items-center gap-2">
+  1208→            {step === 'matches' && (
+  1209→              <button onClick={() => {
+  1210→                if (selectedMatchIds.size > 0 && availablePlatforms.length > 0) {
+  1211→                  setStep('teams');
+  1212→                  loadPlatformTeams();
+  1213→                }
+  1214→              }} disabled={selectedMatchIds.size === 0 || availablePlatforms.length === 0}
+  1215→                className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
+  1216→                Next <ChevronRight className="w-4 h-4" />
+  1217→              </button>
+  1218→            )}
+  1219→            {step === 'teams' && (
+  1220→              <button onClick={() => {
+  1221→                if (selectedTeamIds.size > 0) {
+  1222→                  setStep('contests');
+  1223→                  loadContests();
+  1224→                }
+  1225→              }} disabled={selectedTeamIds.size === 0}
+  1226→                className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
+  1227→                Next <ChevronRight className="w-4 h-4" />
+  1228→              </button>
+  1229→            )}
+  1230→            {step === 'contests' && (
+  1231→              <button onClick={executeJoin} disabled={selectedContestIds.size === 0}
+  1232→                className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
+  1233→                <Trophy className="w-4 h-4" />
+  1234→                JOIN ALL SELECTED ({selectedContestIds.size > 0 && selectedTeamIds.size > 0 ? selectedContestIds.size * selectedTeamIds.size : selectedContestIds.size})
+  1235→              </button>
+  1236→            )}
+  1237→            {step === 'result' && (
+  1238→              <button onClick={handleClose}
+  1239→                className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all">
+  1240→                Done
+  1241→              </button>
+  1242→            )}
+  1243→          </div>
+  1244→        </div>
+  1245→      </div>
+  1246→    </div>
+  1247→  );
+  1248→}
+  1249→
