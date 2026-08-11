@@ -1,0 +1,632 @@
+     1→'use client';
+     2→
+     3→import React, { useState, useCallback, useMemo } from 'react';
+     4→import {
+     5→  Trophy, X, CheckCircle2, Loader2, ChevronRight, ChevronLeft,
+     6→  AlertCircle, Users, DollarSign, Filter, Search,
+     7→} from 'lucide-react';
+     8→import {
+     9→  JCMatch, JCContest, JCTeam, JCJoinItem, JCProgress,
+    10→  parseContest, formatCurrency, getContestTypeColor,
+    11→  generatedTeamToJCTeam, buildJoinItems, getJoinKey,
+    12→} from '@/lib/join-contest-service';
+    13→import { TGPlayer, GeneratedTeam } from '@/lib/tg-api';
+    14→
+    15→// ============ Step Enum ============
+    16→type Step = 'matches' | 'teams' | 'contests' | 'joining' | 'result';
+    17→
+    18→// ============ Props ============
+    19→interface JoinContestDialogProps {
+    20→  open: boolean;
+    21→  onClose: () => void;
+    22→  matches: JCMatch[];
+    23→  generatedTeams: GeneratedTeam[];
+    24→  fantasyAccounts: Record<string, { authToken: string; mobileNumber: string; my11circleChallenge?: string | null }>;
+    25→}
+    26→
+    27→// ============ Main Dialog ============
+    28→export default function JoinContestDialog({
+    29→  open, onClose, matches, generatedTeams, fantasyAccounts,
+    30→}: JoinContestDialogProps) {
+    31→  // Step state
+    32→  const [step, setStep] = useState<Step>('matches');
+    33→  const [platform, setPlatform] = useState<string>('dream11');
+    34→
+    35→  // Match selection
+    36→  const [selectedMatchIds, setSelectedMatchIds] = useState<Set<string | number>>(new Set());
+    37→
+    38→  // Team selection
+    39→  const [selectedTeamIds, setSelectedTeamIds] = useState<Set<string | number>>(new Set());
+    40→  const [mixedTeamMode, setMixedTeamMode] = useState(false);
+    41→
+    42→  // Contest selection
+    43→  const [contestsMap, setContestsMap] = useState<Map<string, JCContest[]>>(new Map());
+    44→  const [selectedContestIds, setSelectedContestIds] = useState<Set<string>>(new Set());
+    45→  const [loadingContests, setLoadingContests] = useState(false);
+    46→
+    47→  // Join progress
+    48→  const [joinItems, setJoinItems] = useState<JCJoinItem[]>([]);
+    49→  const [progress, setProgress] = useState<JCProgress>({ current: 0, total: 0, status: 'idle' });
+    50→
+    51→  // Result
+    52→  const [resultItems, setResultItems] = useState<JCJoinItem[]>([]);
+    53→
+    54→  // Reset on close
+    55→  const handleClose = () => {
+    56→    setStep('matches');
+    57→    setSelectedMatchIds(new Set());
+    58→    setSelectedTeamIds(new Set());
+    59→    setMixedTeamMode(false);
+    60→    setContestsMap(new Map());
+    61→    setSelectedContestIds(new Set());
+    62→    setJoinItems([]);
+    63→    setProgress({ current: 0, total: 0, status: 'idle' });
+    64→    setResultItems([]);
+    65→    onClose();
+    66→  };
+    67→
+    68→  // Available platforms from linked accounts
+    69→  const availablePlatforms = useMemo(() => {
+    70→    const platforms: string[] = [];
+    71→    if (fantasyAccounts.dream11?.authToken) platforms.push('dream11');
+    72→    if (fantasyAccounts.my11circle?.authToken) platforms.push('my11circle');
+    73→    return platforms;
+    74→  }, [fantasyAccounts]);
+    75→
+    76→  const account = fantasyAccounts[platform];
+    77→
+    78→  // ============ Match Selection ============
+    79→  const toggleMatch = (id: string | number) => {
+    80→    setSelectedMatchIds(prev => {
+    81→      const next = new Set(prev);
+    82→      next.has(id) ? next.delete(id) : next.add(id);
+    83→      return next;
+    84→    });
+    85→  };
+    86→
+    87→  const selectAllMatches = () => {
+    88→    setSelectedMatchIds(new Set(matches.map(m => m.id)));
+    89→  };
+    90→
+    91→  // ============ Team Selection ============
+    92→  const jcTeams = useMemo(() => {
+    93→    const selectedMatch = matches.find(m => selectedMatchIds.has(m.id));
+    94→    return generatedTeams.map((t, i) => generatedTeamToJCTeam(t, i, selectedMatch?.id));
+    95→  }, [generatedTeams, selectedMatchIds, matches]);
+    96→
+    97→  const toggleTeam = (id: string | number) => {
+    98→    setSelectedTeamIds(prev => {
+    99→      const next = new Set(prev);
+   100→      next.has(id) ? next.delete(id) : next.add(id);
+   101→      return next;
+   102→    });
+   103→  };
+   104→
+   105→  const selectAllTeams = () => {
+   106→    setSelectedTeamIds(new Set(jcTeams.map(t => t.id)));
+   107→  };
+   108→
+   109→  // ============ Contest Loading ============
+   110→  const loadContests = useCallback(async () => {
+   111→    if (!account?.authToken) return;
+   112→    setLoadingContests(true);
+   113→    const newMap = new Map<string, JCContest[]>();
+   114→
+   115→    for (const matchId of selectedMatchIds) {
+   116→      const match = matches.find(m => m.id === matchId);
+   117→      try {
+   118→        const res = await fetch('/api/fantasy/list-contests', {
+   119→          method: 'POST',
+   120→          headers: { 'Content-Type': 'application/json' },
+   121→          body: JSON.stringify({
+   122→            fantasyApp: platform,
+   123→            matchId,
+   124→            authToken: account.authToken,
+   125→            sportIndex: match?.sport_index ?? 0,
+   126→          }),
+   127→        });
+   128→        const data = await res.json();
+   129→        if (data.status === 'success' && Array.isArray(data.data?.contests)) {
+   130→          newMap.set(String(matchId), data.data.contests.map((c: Record<string, unknown>) => parseContest(c)));
+   131→        } else {
+   132→          newMap.set(String(matchId), []);
+   133→        }
+   134→      } catch {
+   135→        newMap.set(String(matchId), []);
+   136→      }
+   137→    }
+   138→
+   139→    setContestsMap(newMap);
+   140→    setLoadingContests(false);
+   141→  }, [selectedMatchIds, platform, account, matches]);
+   142→
+   143→  const toggleContest = (id: string) => {
+   144→    setSelectedContestIds(prev => {
+   145→      const next = new Set(prev);
+   146→      next.has(id) ? next.delete(id) : next.add(id);
+   147→      return next;
+   148→    });
+   149→  };
+   150→
+   151→  // ============ Join Execution ============
+   152→  const executeJoin = useCallback(async () => {
+   153→    const selectedMatches = matches.filter(m => selectedMatchIds.has(m.id));
+   154→    const selectedContestsForJoin = new Map<string, JCContest[]>();
+   155→    for (const [matchId, contests] of contestsMap.entries()) {
+   156→      selectedContestsForJoin.set(matchId, contests.filter(c => selectedContestIds.has(c.id)));
+   157→    }
+   158→
+   159→    const items = buildJoinItems(selectedMatches, selectedContestsForJoin, selectedTeamIds, jcTeams, platform);
+   160→
+   161→    if (items.length === 0) {
+   162→      setStep('result');
+   163→      return;
+   164→    }
+   165→
+   166→    setJoinItems(items);
+   167→    setProgress({ current: 0, total: items.length, status: 'joining' });
+   168→    setStep('joining');
+   169→
+   170→    let current = 0;
+   171→    const updatedItems = [...items];
+   172→
+   173→    for (let i = 0; i < items.length; i++) {
+   174→      const item = items[i];
+   175→      current = i + 1;
+   176→      setProgress(prev => ({ ...prev, current }));
+   177→      setJoinItems(prev => prev.map((it, idx) =>
+   178→        idx === i ? { ...it, status: 'processing' } : it
+   179→      ));
+   180→
+   181→      try {
+   182→        const match = matches.find(m => String(m.id) === String(item.matchId));
+   183→        const res = await fetch('/api/fantasy/join-contest', {
+   184→          method: 'POST',
+   185→          headers: { 'Content-Type': 'application/json' },
+   186→          body: JSON.stringify({
+   187→            fantasyApp: platform,
+   188→            matchId: item.matchId,
+   189→            authToken: account?.authToken,
+   190→            teamId: item.teamId,
+   191→            contestId: item.contestId,
+   192→            sportIndex: match?.sport_index ?? 0,
+   193→          }),
+   194→        });
+   195→        const data = await res.json();
+   196→
+   197→        const status = data.status === 'success' ? 'success'
+   198→          : data.status === 'already_joined' ? 'already_joined' : 'fail';
+   199→
+   200→        updatedItems[i] = { ...updatedItems[i], status, message: data.message };
+   201→        setJoinItems([...updatedItems]);
+   202→      } catch {
+   203→        updatedItems[i] = { ...updatedItems[i], status: 'fail', message: 'Network error' };
+   204→        setJoinItems([...updatedItems]);
+   205→      }
+   206→
+   207→      // Rate limit between joins
+   208→      await new Promise(r => setTimeout(r, 300));
+   209→    }
+   210→
+   211→    setResultItems([...updatedItems]);
+   212→    setProgress(prev => ({ ...prev, status: 'done' }));
+   213→    setStep('result');
+   214→  }, [matches, selectedMatchIds, contestsMap, selectedContestIds, selectedTeamIds, jcTeams, platform, account]);
+   215→
+   216→  // ============ Result Stats ============
+   217→  const resultStats = useMemo(() => {
+   218→    const items = resultItems.length > 0 ? resultItems : joinItems;
+   219→    return {
+   220→      total: items.length,
+   221→      success: items.filter(i => i.status === 'success').length,
+   222→      alreadyJoined: items.filter(i => i.status === 'already_joined').length,
+   223→      fail: items.filter(i => i.status === 'fail').length,
+   224→    };
+   225→  }, [resultItems, joinItems]);
+   226→
+   227→  if (!open) return null;
+   228→
+   229→  // ============ RENDER ============
+   230→  return (
+   231→    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={handleClose}>
+   232→      <div
+   233→        className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col"
+   234→        onClick={e => e.stopPropagation()}
+   235→      >
+   236→        {/* Header */}
+   237→        <div className="flex items-center justify-between px-6 py-4 border-b bg-gradient-to-r from-green-600 to-emerald-600 text-white">
+   238→          <div className="flex items-center gap-3">
+   239→            <Trophy className="w-6 h-6" />
+   240→            <h2 className="text-lg font-bold">Join Contest</h2>
+   241→          </div>
+   242→          <button onClick={handleClose} className="p-1 hover:bg-white/20 rounded-lg transition-all">
+   243→            <X className="w-5 h-5" />
+   244→          </button>
+   245→        </div>
+   246→
+   247→        {/* Step Indicator */}
+   248→        <div className="flex items-center gap-1 px-6 py-3 bg-gray-50 border-b">
+   249→          {(['matches', 'teams', 'contests', 'joining', 'result'] as Step[]).map((s, i) => {
+   250→            const labels = ['Match', 'Teams', 'Contests', 'Join', 'Result'];
+   251→            const stepOrder = ['matches', 'teams', 'contests', 'joining', 'result'];
+   252→            const isActive = step === s;
+   253→            const isDone = stepOrder.indexOf(step) > i;
+   254→            return (
+   255→              <React.Fragment key={s}>
+   256→                {i > 0 && <ChevronRight className="w-3 h-3 text-gray-300" />}
+   257→                <div className={`flex items-center gap-1.5 text-xs font-semibold px-2 py-1 rounded-lg transition-all ${
+   258→                  isActive ? 'bg-green-100 text-green-700' : isDone ? 'text-green-500' : 'text-gray-400'
+   259→                }`}>
+   260→                  <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] ${
+   261→                    isActive ? 'bg-green-600 text-white' : isDone ? 'bg-green-200 text-green-600' : 'bg-gray-200 text-gray-500'
+   262→                  }`}>
+   263→                    {isDone ? '✓' : i + 1}
+   264→                  </div>
+   265→                  {labels[i]}
+   266→                </div>
+   267→              </React.Fragment>
+   268→            );
+   269→          })}
+   270→        </div>
+   271→
+   272→        {/* Content */}
+   273→        <div className="flex-1 overflow-y-auto p-6">
+   274→          {/* ===== STEP: MATCHES ===== */}
+   275→          {step === 'matches' && (
+   276→            <div className="space-y-4">
+   277→              {/* Platform Selection */}
+   278→              <div className="space-y-2">
+   279→                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Platform</p>
+   280→                <div className="flex gap-2">
+   281→                  {availablePlatforms.map(p => (
+   282→                    <button key={p} onClick={() => setPlatform(p)}
+   283→                      className={`flex-1 rounded-xl border-2 p-3 text-center font-semibold text-sm transition-all ${
+   284→                        platform === p ? 'border-green-500 bg-green-50 text-green-700' : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300'
+   285→                      }`}
+   286→                    >
+   287→                      {p === 'dream11' ? 'Dream11' : 'My11Circle'}
+   288→                    </button>
+   289→                  ))}
+   290→                </div>
+   291→                {availablePlatforms.length === 0 && (
+   292→                  <p className="text-sm text-amber-600">⚠️ Link a fantasy account first via Transfer</p>
+   293→                )}
+   294→              </div>
+   295→
+   296→              {/* Match List */}
+   297→              <div className="space-y-2">
+   298→                <div className="flex items-center justify-between">
+   299→                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Select Matches</p>
+   300→                  <button onClick={selectAllMatches}
+   301→                    className="text-xs font-semibold text-green-600 hover:text-green-700">
+   302→                    Select All
+   303→                  </button>
+   304→                </div>
+   305→                {matches.length === 0 ? (
+   306→                  <p className="text-sm text-gray-400 text-center py-8">No upcoming matches</p>
+   307→                ) : (
+   308→                  <div className="space-y-2 max-h-80 overflow-y-auto">
+   309→                    {matches.map(match => {
+   310→                      const selected = selectedMatchIds.has(match.id);
+   311→                      return (
+   312→                        <button key={match.id} onClick={() => toggleMatch(match.id)}
+   313→                          className={`w-full text-left rounded-xl border-2 p-3 transition-all ${
+   314→                            selected ? 'border-green-500 bg-green-50' : 'border-gray-200 bg-white hover:border-gray-300'
+   315→                          }`}>
+   316→                          <div className="flex items-center gap-3">
+   317→                            <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
+   318→                              selected ? 'border-green-500 bg-green-500' : 'border-gray-300'
+   319→                            }`}>
+   320→                              {selected && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
+   321→                            </div>
+   322→                            <div className="flex-1">
+   323→                              <p className="font-semibold text-sm text-gray-900">
+   324→                                {match.left_team_name} vs {match.right_team_name}
+   325→                              </p>
+   326→                              <div className="flex items-center gap-2 text-xs text-gray-500 mt-0.5">
+   327→                                <span>{match.match_time}</span>
+   328→                                {match.lineup_out === 1 && <span className="text-green-600 font-medium">Lineup Out</span>}
+   329→                              </div>
+   330→                            </div>
+   331→                          </div>
+   332→                        </button>
+   333→                      );
+   334→                    })}
+   335→                  </div>
+   336→                )}
+   337→              </div>
+   338→            </div>
+   339→          )}
+   340→
+   341→          {/* ===== STEP: TEAMS ===== */}
+   342→          {step === 'teams' && (
+   343→            <div className="space-y-4">
+   344→              <div className="flex items-center justify-between">
+   345→                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+   346→                  Select Teams ({jcTeams.length} available)
+   347→                </p>
+   348→                <button onClick={selectAllTeams}
+   349→                  className="text-xs font-semibold text-green-600 hover:text-green-700">
+   350→                  Select All
+   351→                </button>
+   352→              </div>
+   353→
+   354→              {/* Mixed Team Toggle */}
+   355→              <button onClick={() => setMixedTeamMode(!mixedTeamMode)}
+   356→                className={`w-full rounded-xl border-2 p-3 transition-all ${
+   357→                  mixedTeamMode ? 'border-purple-500 bg-purple-50' : 'border-gray-200 bg-white hover:border-gray-300'
+   358→                }`}>
+   359→                <div className="flex items-center gap-3">
+   360→                  <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${
+   361→                    mixedTeamMode ? 'bg-purple-500 text-white' : 'bg-gray-100 text-gray-500'
+   362→                  }`}>
+   363→                    <Filter className="w-5 h-5" />
+   364→                  </div>
+   365→                  <div className="flex-1">
+   366→                    <p className={`font-semibold text-sm ${mixedTeamMode ? 'text-purple-700' : 'text-gray-900'}`}>
+   367→                      Mixed Team Mode
+   368→                    </p>
+   369→                    <p className="text-xs text-gray-500">
+   370→                      {mixedTeamMode ? 'Teams can be combined across compatible match pools' : 'Enable to mix teams from compatible matches'}
+   371→                    </p>
+   372→                  </div>
+   373→                  <div className={`w-10 h-6 rounded-full relative transition-all ${mixedTeamMode ? 'bg-purple-500' : 'bg-gray-300'}`}>
+   374→                    <div className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${mixedTeamMode ? 'left-4.5' : 'left-0.5'}`} />
+   375→                  </div>
+   376→                </div>
+   377→              </button>
+   378→
+   379→              {/* Team Grid */}
+   380→              <div className="grid grid-cols-2 gap-2 max-h-72 overflow-y-auto">
+   381→                {jcTeams.map(team => {
+   382→                  const selected = selectedTeamIds.has(team.id);
+   383→                  return (
+   384→                    <button key={team.id} onClick={() => toggleTeam(team.id)}
+   385→                      className={`rounded-xl border-2 p-2.5 text-left transition-all ${
+   386→                        selected ? 'border-green-500 bg-green-50' : 'border-gray-200 bg-white hover:border-gray-300'
+   387→                      }`}>
+   388→                      <div className="flex items-center gap-2">
+   389→                        <div className={`w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 ${
+   390→                          selected ? 'border-green-500 bg-green-500' : 'border-gray-300'
+   391→                        }`}>
+   392→                          {selected && <CheckCircle2 className="w-3 h-3 text-white" />}
+   393→                        </div>
+   394→                        <div>
+   395→                          <p className="text-sm font-medium text-gray-900">{team.name}</p>
+   396→                          <p className="text-[10px] text-gray-500">C: {team.captain.name} | VC: {team.viceCaptain.name}</p>
+   397→                        </div>
+   398→                      </div>
+   399→                    </button>
+   400→                  );
+   401→                })}
+   402→              </div>
+   403→
+   404→              {selectedTeamIds.size > 0 && (
+   405→                <p className="text-sm text-green-600 font-medium">{selectedTeamIds.size} team(s) selected</p>
+   406→              )}
+   407→            </div>
+   408→          )}
+   409→
+   410→          {/* ===== STEP: CONTESTS ===== */}
+   411→          {step === 'contests' && (
+   412→            <div className="space-y-4">
+   413→              {loadingContests ? (
+   414→                <div className="flex flex-col items-center justify-center py-12">
+   415→                  <Loader2 className="w-8 h-8 animate-spin text-green-500" />
+   416→                  <p className="text-sm text-gray-500 mt-3">Loading contests...</p>
+   417→                </div>
+   418→              ) : (
+   419→                Array.from(contestsMap.entries()).map(([matchId, contests]) => {
+   420→                  const match = matches.find(m => String(m.id) === matchId);
+   421→                  return (
+   422→                    <div key={matchId} className="space-y-2">
+   423→                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+   424→                        {match?.left_team_name} vs {match?.right_team_name}
+   425→                      </p>
+   426→                      {contests.length === 0 ? (
+   427→                        <p className="text-sm text-gray-400 py-4 text-center">No contests available</p>
+   428→                      ) : (
+   429→                        <div className="space-y-2">
+   430→                          {contests.map(contest => {
+   431→                            const selected = selectedContestIds.has(contest.id);
+   432→                            return (
+   433→                              <button key={contest.id} onClick={() => toggleContest(contest.id)}
+   434→                                className={`w-full text-left rounded-xl border-2 p-3 transition-all ${
+   435→                                  selected ? 'border-green-500 bg-green-50' : 'border-gray-200 bg-white hover:border-gray-300'
+   436→                                } ${!contest.joinAvailable ? 'opacity-50' : ''}`}>
+   437→                                <div className="flex items-center gap-3">
+   438→                                  <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
+   439→                                    selected ? 'border-green-500 bg-green-500' : 'border-gray-300'
+   440→                                  }`}>
+   441→                                    {selected && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
+   442→                                  </div>
+   443→                                  <div className="flex-1">
+   444→                                    <div className="flex items-center gap-2">
+   445→                                      <p className="font-semibold text-sm text-gray-900">{contest.name}</p>
+   446→                                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${getContestTypeColor(contest.type)}`}>
+   447→                                        {contest.type}
+   448→                                      </span>
+   449→                                    </div>
+   450→                                    <div className="flex items-center gap-3 text-xs text-gray-500 mt-1">
+   451→                                      <span className="flex items-center gap-0.5"><DollarSign className="w-3 h-3" />{formatCurrency(contest.entryFee)}</span>
+   452→                                      <span>Prize: {formatCurrency(contest.prizePool)}</span>
+   453→                                      <span className="flex items-center gap-0.5"><Users className="w-3 h-3" />{contest.filledSpots}/{contest.totalSpots}</span>
+   454→                                    </div>
+   455→                                    {contest.remainingSpots > 0 && (
+   456→                                      <p className="text-[10px] text-green-600 mt-0.5">{contest.remainingSpots} spots remaining</p>
+   457→                                    )}
+   458→                                    {!contest.joinAvailable && (
+   459→                                      <p className="text-[10px] text-red-500 mt-0.5">Full</p>
+   460→                                    )}
+   461→                                  </div>
+   462→                                </div>
+   463→                              </button>
+   464→                            );
+   465→                          })}
+   466→                        </div>
+   467→                      )}
+   468→                    </div>
+   469→                  );
+   470→                })
+   471→              )}
+   472→            </div>
+   473→          )}
+   474→
+   475→          {/* ===== STEP: JOINING ===== */}
+   476→          {step === 'joining' && (
+   477→            <div className="space-y-4">
+   478→              {/* Progress Bar */}
+   479→              <div className="bg-green-50 border border-green-200 rounded-xl p-4">
+   480→                <div className="flex items-center justify-between mb-2">
+   481→                  <span className="text-sm font-semibold text-green-700">Joining contests...</span>
+   482→                  <span className="text-sm font-bold text-green-700">{progress.current}/{progress.total}</span>
+   483→                </div>
+   484→                <div className="w-full bg-green-200 rounded-full h-3 overflow-hidden">
+   485→                  <div className="bg-green-600 h-3 rounded-full transition-all duration-300"
+   486→                    style={{ width: `${(progress.current / Math.max(progress.total, 1)) * 100}%` }} />
+   487→                </div>
+   488→                <div className="flex justify-between mt-2 text-xs">
+   489→                  <span className="text-green-600 font-medium">✓ {resultStats.success} joined</span>
+   490→                  <span className="text-amber-600 font-medium">⊙ {resultStats.alreadyJoined} already</span>
+   491→                  <span className="text-red-500 font-medium">✗ {resultStats.fail} failed</span>
+   492→                </div>
+   493→              </div>
+   494→
+   495→              {/* Per-item Status */}
+   496→              <div className="max-h-56 overflow-y-auto space-y-1.5">
+   497→                {joinItems.map((item, i) => (
+   498→                  <div key={i} className="flex items-center gap-2 text-xs py-1 px-2 rounded-lg bg-gray-50">
+   499→                    {item.status === 'pending' && <div className="w-3.5 h-3.5 rounded-full bg-gray-200 shrink-0" />}
+   500→                    {item.status === 'processing' && <Loader2 className="w-3.5 h-3.5 animate-spin text-green-500 shrink-0" />}
+   501→                    {item.status === 'success' && <CheckCircle2 className="w-3.5 h-3.5 text-green-500 shrink-0" />}
+   502→                    {item.status === 'already_joined' && <AlertCircle className="w-3.5 h-3.5 text-amber-500 shrink-0" />}
+   503→                    {item.status === 'fail' && <X className="w-3.5 h-3.5 text-red-500 shrink-0" />}
+   504→                    <span className="text-gray-600 truncate">{item.matchName}</span>
+   505→                    <span className="text-gray-400">→</span>
+   506→                    <span className="text-gray-700 font-medium truncate">{item.contestName}</span>
+   507→                    <span className="text-gray-400">→</span>
+   508→                    <span className="truncate">{item.teamName}</span>
+   509→                    {item.message && item.status !== 'success' && (
+   510→                      <span className="text-gray-400 truncate ml-auto">{item.message}</span>
+   511→                    )}
+   512→                  </div>
+   513→                ))}
+   514→              </div>
+   515→            </div>
+   516→          )}
+   517→
+   518→          {/* ===== STEP: RESULT ===== */}
+   519→          {step === 'result' && (
+   520→            <div className="space-y-4">
+   521→              <div className="text-center py-4">
+   522→                <div className="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-3">
+   523→                  <Trophy className="w-8 h-8 text-green-600" />
+   524→                </div>
+   525→                <h3 className="text-xl font-bold text-gray-900">JOIN COMPLETE</h3>
+   526→              </div>
+   527→
+   528→              <div className="grid grid-cols-4 gap-2">
+   529→                <div className="bg-gray-50 rounded-xl p-3 text-center">
+   530→                  <p className="text-lg font-bold text-gray-900">{resultStats.total}</p>
+   531→                  <p className="text-[10px] text-gray-500 uppercase">Total</p>
+   532→                </div>
+   533→                <div className="bg-green-50 rounded-xl p-3 text-center">
+   534→                  <p className="text-lg font-bold text-green-600">{resultStats.success}</p>
+   535→                  <p className="text-[10px] text-green-600 uppercase">Joined</p>
+   536→                </div>
+   537→                <div className="bg-amber-50 rounded-xl p-3 text-center">
+   538→                  <p className="text-lg font-bold text-amber-600">{resultStats.alreadyJoined}</p>
+   539→                  <p className="text-[10px] text-amber-600 uppercase">Already</p>
+   540→                </div>
+   541→                <div className="bg-red-50 rounded-xl p-3 text-center">
+   542→                  <p className="text-lg font-bold text-red-500">{resultStats.fail}</p>
+   543→                  <p className="text-[10px] text-red-500 uppercase">Failed</p>
+   544→                </div>
+   545→              </div>
+   546→
+   547→              {/* Per-match details */}
+   548→              <div className="max-h-48 overflow-y-auto space-y-2">
+   549→                {(() => {
+   550→                  const byMatch = new Map<string, JCJoinItem[]>();
+   551→                  for (const item of (resultItems.length > 0 ? resultItems : joinItems)) {
+   552→                    const key = String(item.matchId);
+   553→                    if (!byMatch.has(key)) byMatch.set(key, []);
+   554→                    byMatch.get(key'!).push(item);
+   555→                  }
+   556→                  return Array.from(byMatch.entries()).map(([matchId, items]) => (
+   557→                    <div key={matchId} className="bg-gray-50 rounded-xl p-3">
+   558→                      <p className="text-xs font-semibold text-gray-700 mb-1">{items[0].matchName}</p>
+   559→                      {items.map((item, i) => (
+   560→                        <div key={i} className="flex items-center gap-1.5 text-[11px] py-0.5">
+   561→                          {item.status === 'success' && <CheckCircle2 className="w-3 h-3 text-green-500" />}
+   562→                          {item.status === 'already_joined' && <AlertCircle className="w-3 h-3 text-amber-500" />}
+   563→                          {item.status === 'fail' && <X className="w-3 h-3 text-red-500" />}
+   564→                          <span className="text-gray-600">{item.contestName}</span>
+   565→                          <span className="text-gray-400">— {item.teamName}</span>
+   566→                          {item.message && <span className="text-gray-400 ml-auto">{item.message}</span>}
+   567→                        </div>
+   568→                      ))}
+   569→                    </div>
+   570→                  ));
+   571→                })()}
+   572→              </div>
+   573→            </div>
+   574→          )}
+   575→        </div>
+   576→
+   577→        {/* Footer Buttons */}
+   578→        <div className="px-6 py-4 border-t bg-gray-50 flex items-center justify-between">
+   579→          <div>
+   580→            {step !== 'matches' && step !== 'joining' && step !== 'result' && (
+   581→              <button onClick={() => {
+   582→                const prev: Record<Step, Step | null> = {
+   583→                  matches: null, teams: 'matches', contests: 'teams',
+   584→                  joining: null, result: null,
+   585→                };
+   586→                const p = prev[step];
+   587→                if (p) setStep(p);
+   588→              }} className="flex items-center gap-1 text-sm text-gray-600 hover:text-gray-800 font-medium">
+   589→                <ChevronLeft className="w-4 h-4" /> Back
+   590→              </button>
+   591→            )}
+   592→          </div>
+   593→          <div className="flex items-center gap-2">
+   594→            {step === 'matches' && (
+   595→              <button onClick={() => {
+   596→                if (selectedMatchIds.size > 0 && availablePlatforms.length > 0) setStep('teams');
+   597→              }} disabled={selectedMatchIds.size === 0 || availablePlatforms.length === 0}
+   598→                className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
+   599→                Next <ChevronRight className="w-4 h-4" />
+   600→              </button>
+   601→            )}
+   602→            {step === 'teams' && (
+   603→              <button onClick={() => {
+   604→                if (selectedTeamIds.size > 0) {
+   605→                  setStep('contests');
+   606→                  loadContests();
+   607→                }
+   608→              }} disabled={selectedTeamIds.size === 0}
+   609→                className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
+   610→                Next <ChevronRight className="w-4 h-4" />
+   611→              </button>
+   612→            )}
+   613→            {step === 'contests' && (
+   614→              <button onClick={executeJoin} disabled={selectedContestIds.size === 0}
+   615→                className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
+   616→                <Trophy className=""w-4 h-4" />
+   617→                JOIN ALL SELECTED ({selectedCont6stIds.size * selectedTeamIds.size})
+   618→              </button>
+   619→            )}
+   620→            {step === 'result' && (
+   621→              <button onClick={handleClose}
+   622→                className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all">
+   623→                Done
+   624→              </button>
+   625→            )}
+   626→          </div>
+   627→        </div>
+   628→      </div>
+   629→    </div>
+   630→  );
+   631→}
+   632→
