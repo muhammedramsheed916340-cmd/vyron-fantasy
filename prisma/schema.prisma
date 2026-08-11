@@ -47,6 +47,7 @@ model TransferLog {
   platform    String                              // dream11 | my11circle
   matchId     String
   transferType String                             // new | edit | replace_all
+  contestId   String?                             // contest ID if joining a specific contest
   teamCount   Int      @default(0)
   successCount Int     @default(0)
   failCount   Int      @default(0)

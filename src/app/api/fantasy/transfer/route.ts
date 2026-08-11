@@ -13,6 +13,7 @@ interface TransferRequestBody {
   captain: number;
   vice_captain: number;
   id?: string | number;
+  contestId?: string;
   my11circleChallenge?: string;
   licenseAccountId?: string;
 }
@@ -31,6 +32,7 @@ export async function POST(request: NextRequest) {
       captain,
       vice_captain,
       id,
+      contestId,
       my11circleChallenge,
       licenseAccountId,
     } = body;
@@ -85,6 +87,11 @@ export async function POST(request: NextRequest) {
     if (type === 'edit' && id) {
       payload.id = id;
     }
+    // Include contestId if provided — this joins the team to a specific contest
+    // on the target platform (Dream11/My11Circle) when creating/editing the team
+    if (contestId) {
+      payload.contestId = contestId;
+    }
     // Use case-insensitive check for my11circle challenge token
     if (fantasyApp.toLowerCase() === 'my11circle' && my11circleChallenge) {
       payload.my11circleChallenge = my11circleChallenge;
@@ -119,6 +126,7 @@ export async function POST(request: NextRequest) {
             platform: fantasyApp,
             matchId: String(matchId),
             transferType: type,
+            contestId: contestId || null,
             teamCount: 1,
             successCount: data.status === 'success' ? 1 : 0,
             failCount: data.status === 'success' ? 0 : 1,
