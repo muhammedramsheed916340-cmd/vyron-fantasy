@@ -55,7 +55,7 @@ import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { useToast } from '@/hooks/use-toast'
-import { TGPlayer, GeneratedTeam, generateTeams, generateExtraTeams, autoSelectExtraPlayers, autoReplacePlayer, ExtraTeamGenInput, getRoleName, getRoleShort, PLAYER_ROLES, getLineupMode, getEligiblePlayers, isPlayerEligible, validateTeamForLineup, RoleCombination, CombinationMode, getAllValidCombinations, getCompatibleCombinations, autoSelectCombination, validateCombination, isCombinationCompatibleWithFixed, MIN_WK, MAX_WK, MIN_BAT, MAX_BAT, MIN_AR, MAX_AR, MIN_BOWL, MAX_BOWL, normalizePlatformName, resolvePlatformPlayerId } from '@/lib/tg-api'
+import { TGPlayer, GeneratedTeam, generateTeams, generateExtraTeams, autoSelectExtraPlayers, autoReplacePlayer, ExtraTeamGenInput, getRoleName, getRoleShort, PLAYER_ROLES, getLineupMode, getEligiblePlayers, isPlayerEligible, validateTeamForLineup, RoleCombination, CombinationMode, getAllValidCombinations, getCompatibleCombinations, autoSelectCombination, validateCombination, isCombinationCompatibleWithFixed, MIN_WK, MAX_WK, MIN_BAT, MAX_BAT, MIN_AR, MAX_AR, MIN_BOWL, MAX_BOWL, normalizePlatformName, resolvePlatformPlayerId, GenerationDebugInfo, GenerationResult, deduplicateAndValidateTeams, makeTeamSignature } from '@/lib/tg-api'
 import JoinContestDialog from '@/components/join-contest/JoinContestDialog'
 import { JCMatch } from '@/lib/join-contest-service'
 
@@ -634,6 +634,20 @@ export default function Home() {
   // Lineup-aware team validation state
   const [invalidTeams, setInvalidTeams] = useState<Map<number, { player: TGPlayer; reason: string }[]>>(new Map())
 
+  // Generation context — tracks current settings to invalidate stale results
+  const [generationContext, setGenerationContext] = useState<{
+    mode: 'normal' | 'extra';
+    category: string | null;
+    combinationMode: CombinationMode;
+    teamCount: number;
+  }>({ mode: 'normal', category: null, combinationMode: 'auto', teamCount: 20 })
+
+  // Generation debug info — displayed in UI
+  const [generationDebug, setGenerationDebug] = useState<GenerationDebugInfo | null>(null)
+
+  // Valid teams after lineup filtering — only these go to transfer/join
+  const [validTeams, setValidTeams] = useState<GeneratedTeam[]>([])
+
   // Avoid players for normal mode
   const [normalAvoidPlayers, setNormalAvoidPlayers] = useState<TGPlayer[]>([])
 
@@ -659,6 +673,24 @@ export default function Home() {
 
   const generatedTeamsRef = useRef<HTMLDivElement>(null)
   const { toast } = useToast()
+
+  // Invalidate generated teams when generation context changes
+  useEffect(() => {
+    const current = { mode: genMode, category: selectedCategory, combinationMode, teamCount: selectedTeamCount };
+    if (
+      current.mode !== generationContext.mode ||
+      current.category !== generationContext.category ||
+      current.combinationMode !== generationContext.combinationMode ||
+      current.teamCount !== generationContext.teamCount
+    ) {
+      // Context changed — invalidate previous results
+      setGeneratedTeams([]);
+      setInvalidTeams(new Map());
+      setValidTeams([]);
+      setGenerationDebug(null);
+      setGenerationContext(current);
+    }
+  }, [genMode, selectedCategory, combinationMode, selectedTeamCount, generationContext])
 
   // Fetch matches
   const loadMatches = useCallback(async (sport: string) => {
@@ -869,44 +901,69 @@ export default function Home() {
     setGenerating(true)
     setGeneratedTeams([])
     setInvalidTeams(new Map())
+    setValidTeams([])
+    setGenerationDebug(null)
+
+    // Use a unique seed that differs from Extra generation
+    const normalSeed = Date.now() + 1
 
     // Use setTimeout to show loading state
     setTimeout(() => {
-      const teams = generateTeams(
+      const result = generateTeams(
         matchDetail.left_team_players,
         matchDetail.right_team_players,
         selectedCategory,
         selectedTeamCount,
-        Date.now(),
+        normalSeed,
         avoidIds,
         activeCombination,
+        combinationMode,
       )
-      setGeneratedTeams(teams)
+      const rawTeams = result.teams
+      const debug = result.debug
 
-      // Validate each team for lineup eligibility
+      // Deduplicate and validate teams against lineup
+      const dedupResult = deduplicateAndValidateTeams(rawTeams, allPlayers, avoidIds)
+
+      // Use ONLY valid teams for transfer/join — invalid teams are excluded
+      setGeneratedTeams(dedupResult.valid)
+      setValidTeams(dedupResult.valid)
+      setGenerationDebug({
+        ...debug,
+        generatedTeams: rawTeams.length,
+        duplicateRemoved: dedupResult.duplicateCount,
+        invalidLineupRemoved: dedupResult.invalidLineupCount,
+        validTeams: dedupResult.valid.length,
+      })
+
+      // Build invalid teams map for display
       const newInvalidTeams = new Map<number, { player: TGPlayer; reason: string }[]>()
-      for (let i = 0; i < teams.length; i++) {
-        const validation = validateTeamForLineup(teams[i], allPlayers, avoidIds)
+      for (let i = 0; i < dedupResult.invalid.length; i++) {
+        const team = dedupResult.invalid[i]
+        const validation = validateTeamForLineup(team, allPlayers, avoidIds)
         if (!validation.valid) {
-          newInvalidTeams.set(i, validation.invalidPlayers)
+          newInvalidTeams.set(dedupResult.valid.length + i, validation.invalidPlayers)
         }
       }
       setInvalidTeams(newInvalidTeams)
 
       setGenerating(false)
-      if (teams.length === 0) {
+      if (dedupResult.valid.length === 0) {
         const allP = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
         const lineupMode = getLineupMode(allP)
         const playingCount = allP.filter(p => p.playing === 1).length
         if (lineupMode === 'after' || playingCount > 0) {
-          toast({ title: `0 teams generated. Lineup has ${playingCount} confirmed players. Try changing combination or removing avoid players.`, variant: 'destructive' })
+          toast({ title: `0 valid teams. Lineup has ${playingCount} confirmed players. Try changing combination or removing avoid players.`, variant: 'destructive' })
         } else {
-          toast({ title: '0 teams generated. Not enough valid player combinations. Try different category or combination.', variant: 'destructive' })
+          toast({ title: '0 valid teams generated. Not enough valid player combinations. Try different category or combination.', variant: 'destructive' })
         }
-      } else if (newInvalidTeams.size > 0) {
-        toast({ title: `${teams.length} teams generated, but ${newInvalidTeams.size} have invalid players after lineup check`, variant: 'destructive' })
+      } else if (dedupResult.invalidLineupCount > 0 || dedupResult.duplicateCount > 0) {
+        const msgs: string[] = []
+        if (dedupResult.duplicateCount > 0) msgs.push(`${dedupResult.duplicateCount} duplicates removed`)
+        if (dedupResult.invalidLineupCount > 0) msgs.push(`${dedupResult.invalidLineupCount} invalid after lineup check`)
+        toast({ title: `${dedupResult.valid.length} valid teams (${msgs.join(', ')})` })
       } else {
-        toast({ title: `${teams.length} teams generated successfully!` })
+        toast({ title: `${dedupResult.valid.length} teams generated successfully!` })
       }
 
       // Scroll to teams
@@ -1000,9 +1057,14 @@ export default function Home() {
     setGenerating(true)
     setGeneratedTeams([])
     setInvalidTeams(new Map())
+    setValidTeams([])
+    setGenerationDebug(null)
+
+    // Extra generation uses a different seed from Normal to ensure different teams
+    const extraSeed = Date.now() + 99999
 
     setTimeout(() => {
-      const teams = generateExtraTeams({
+      const result = generateExtraTeams({
         fixedPlayers: extraFixedPlayers,
         captainOptions: extraCaptainOptions,
         viceCaptainOptions: extraViceCaptainOptions,
@@ -1010,31 +1072,51 @@ export default function Home() {
         rightPlayers: matchDetail.right_team_players,
         category: selectedCategory,
         count: requestedCount,
-        seed: Date.now(),
+        seed: extraSeed,
         avoidPlayerIds: avoidIds,
         combination: activeCombination,
+        combinationMode,
       })
 
-      setGeneratedTeams(teams)
+      const rawTeams = result.teams
+      const debug = result.debug
 
-      // Validate each team for lineup eligibility
+      // Deduplicate and validate teams against lineup
+      const dedupResult = deduplicateAndValidateTeams(rawTeams, allPlayers, avoidIds)
+
+      // Use ONLY valid teams for transfer/join
+      setGeneratedTeams(dedupResult.valid)
+      setValidTeams(dedupResult.valid)
+      setGenerationDebug({
+        ...debug,
+        generatedTeams: rawTeams.length,
+        duplicateRemoved: dedupResult.duplicateCount,
+        invalidLineupRemoved: dedupResult.invalidLineupCount,
+        validTeams: dedupResult.valid.length,
+      })
+
+      // Build invalid teams map for display
       const newInvalidTeams = new Map<number, { player: TGPlayer; reason: string }[]>()
-      for (let i = 0; i < teams.length; i++) {
-        const validation = validateTeamForLineup(teams[i], allPlayers, avoidIds)
+      for (let i = 0; i < dedupResult.invalid.length; i++) {
+        const team = dedupResult.invalid[i]
+        const validation = validateTeamForLineup(team, allPlayers, avoidIds)
         if (!validation.valid) {
-          newInvalidTeams.set(i, validation.invalidPlayers)
+          newInvalidTeams.set(dedupResult.valid.length + i, validation.invalidPlayers)
         }
       }
       setInvalidTeams(newInvalidTeams)
 
       setGenerating(false)
 
-      if (teams.length === 0) {
+      if (dedupResult.valid.length === 0) {
         toast({ title: 'Could not generate valid teams with these fixed players. Try different combinations.', variant: 'destructive' })
-      } else if (teams.length < requestedCount) {
-        toast({ title: `${teams.length} of ${requestedCount} extra teams generated (limited unique combinations)`, variant: 'destructive' })
+      } else if (dedupResult.valid.length < requestedCount) {
+        const extra: string[] = []
+        if (dedupResult.duplicateCount > 0) extra.push(`${dedupResult.duplicateCount} duplicates removed`)
+        if (dedupResult.invalidLineupCount > 0) extra.push(`${dedupResult.invalidLineupCount} invalid lineup`)
+        toast({ title: `${dedupResult.valid.length} of ${requestedCount} valid extra teams${extra.length > 0 ? ` (${extra.join(', ')})` : ''}`, variant: 'destructive' })
       } else {
-        toast({ title: `${teams.length} extra teams generated!` })
+        toast({ title: `${dedupResult.valid.length} extra teams generated!` })
       }
 
       setTimeout(() => {
@@ -1265,11 +1347,16 @@ export default function Home() {
           ...normalAvoidPlayers.map(p => p.pl_id),
           ...extraAvoidPlayers.map(p => p.pl_id),
         ])
+        // Re-deduplicate and validate
+        const dedupResult = deduplicateAndValidateTeams(generatedTeams, allPlayers, avoidIds)
+        setGeneratedTeams(dedupResult.valid)
+        setValidTeams(dedupResult.valid)
         const newInvalidTeams = new Map<number, { player: TGPlayer; reason: string }[]>()
-        for (let i = 0; i < generatedTeams.length; i++) {
-          const validation = validateTeamForLineup(generatedTeams[i], allPlayers, avoidIds)
+        for (let i = 0; i < dedupResult.invalid.length; i++) {
+          const team = dedupResult.invalid[i]
+          const validation = validateTeamForLineup(team, allPlayers, avoidIds)
           if (!validation.valid) {
-            newInvalidTeams.set(i, validation.invalidPlayers)
+            newInvalidTeams.set(dedupResult.valid.length + i, validation.invalidPlayers)
           }
         }
         setInvalidTeams(newInvalidTeams)
@@ -1431,12 +1518,13 @@ export default function Home() {
   }
 
   // Handle team transfer - real per-team API calls, no clipboard, no window.open
+  // IMPORTANT: Only transfers validTeams (after lineup validation + deduplication)
   const handleTransfer = async () => {
-    if (!transferPlatform || generatedTeams.length === 0) return
+    if (!transferPlatform || validTeams.length === 0) return
 
     const platformName = transferPlatform === 'dream11' ? 'Dream11' : 'My11Circle'
     const account = fantasyAccounts[transferPlatform]
-    const total = generatedTeams.length
+    const total = validTeams.length
 
     // Check if user has authenticated with this platform
     if (!account?.authToken) {
@@ -1511,7 +1599,7 @@ export default function Home() {
     const transferType = transferOption === 'replace' ? 'edit' : 'new'
 
     // In replace mode, only process as many teams as we have selected to replace
-    const teamsToProcess = transferOption === 'replace' ? Math.min(selectedReplaceIds.size, generatedTeams.length) : generatedTeams.length
+    const teamsToProcess = transferOption === 'replace' ? Math.min(selectedReplaceIds.size, validTeams.length) : validTeams.length
 
     // Transfer safety: Validate all teams for lineup eligibility before transferring
     if (matchDetail) {
@@ -1522,7 +1610,7 @@ export default function Home() {
       ])
       const invalidTeamIndices: number[] = []
       for (let i = 0; i < teamsToProcess; i++) {
-        const team = generatedTeams[i]
+        const team = validTeams[i]
         const validation = validateTeamForLineup(team, allPlayers, avoidIds)
         if (!validation.valid) {
           invalidTeamIndices.push(i)
@@ -1562,7 +1650,7 @@ export default function Home() {
 
     // Process teams sequentially with rate limiting
     for (let i = 0; i < teamsToProcess; i++) {
-      const team = generatedTeams[i]
+      const team = validTeams[i]
 
       // Mark this team as processing
       setTransferResults(prev => prev.map((r, idx) =>
@@ -3065,10 +3153,15 @@ export default function Home() {
                     <div ref={generatedTeamsRef} className="mb-4">
                       <div className="flex items-center justify-between mb-2">
                         <p className="text-sm font-semibold text-gray-700">
-                          Generated Teams ({generatedTeams.length})
+                          Generated Teams ({validTeams.length} valid{generationDebug && generationDebug.generatedTeams !== validTeams.length ? ` / ${generationDebug.generatedTeams} raw` : ''})
                           {invalidTeams.size > 0 && (
                             <span className="ml-2 text-xs text-red-500 font-normal">
                               ({invalidTeams.size} invalid after lineup check)
+                            </span>
+                          )}
+                          {generationDebug && generationDebug.duplicateRemoved > 0 && (
+                            <span className="ml-2 text-xs text-amber-500 font-normal">
+                              ({generationDebug.duplicateRemoved} duplicates removed)
                             </span>
                           )}
                         </p>
@@ -3109,6 +3202,27 @@ export default function Home() {
                     </div>
                   )}
 
+                  {/* Generation Debug Info */}
+                  {generationDebug && (
+                    <div className="mb-3 bg-gray-50 border border-gray-200 rounded-lg p-2">
+                      <p className="text-[10px] font-bold text-gray-500 mb-1">GENERATION DEBUG</p>
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[9px] text-gray-600">
+                        <span>Mode: <b>{generationDebug.generationMode}</b></span>
+                        <span>Category: <b>{generationDebug.category}</b></span>
+                        <span>Combination: <b>{generationDebug.combinationMode}</b></span>
+                        <span>Strategy: <b className="text-[#6C63FF]">{generationDebug.strategyUsed}</b></span>
+                        <span>Requested: <b>{generationDebug.requestedTeams}</b></span>
+                        <span>Generated: <b>{generationDebug.generatedTeams}</b></span>
+                        <span>Duplicates Removed: <b className="text-amber-600">{generationDebug.duplicateRemoved}</b></span>
+                        <span>Invalid Lineup: <b className="text-red-600">{generationDebug.invalidLineupRemoved}</b></span>
+                        <span>Valid Teams: <b className="text-green-600">{generationDebug.validTeams}</b></span>
+                        <span>Lineup: <b>{generationDebug.lineupMode}</b></span>
+                        <span>Eligible: <b>{generationDebug.eligiblePlayers}/{generationDebug.totalPlayers}</b></span>
+                        <span>Seed: <b>{generationDebug.seed}</b></span>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Fantasy Platform Transfer Buttons */}
                   <div className="mb-3">
                     <p className="text-sm font-semibold text-gray-700 mb-2">3. Transfer to Fantasy Platform</p>
@@ -3116,7 +3230,7 @@ export default function Home() {
                       {selectedMatch.fantasy_list.includes('dream11') && (
                         <Button
                           className="w-full bg-[#e74c3c] hover:bg-[#c0392b] text-white h-11 text-sm font-semibold"
-                          disabled={generatedTeams.length === 0}
+                          disabled={validTeams.length === 0}
                           onClick={() => {
                             setTransferPlatform('dream11')
                             setTransferOption('new')
@@ -3125,13 +3239,13 @@ export default function Home() {
                           }}
                         >
                           <Share2 className="w-4 h-4 mr-2" />
-                          Transfer to Dream11 {generatedTeams.length > 0 ? `(${generatedTeams.length} teams)` : ''}
+                          Transfer to Dream11 {validTeams.length > 0 ? `(${validTeams.length} teams)` : ''}
                         </Button>
                       )}
                       {selectedMatch.fantasy_list.includes('my11circle') && (
                         <Button
                           className="w-full bg-[#2196f3] hover:bg-[#1e88e5] text-white h-11 text-sm font-semibold"
-                          disabled={generatedTeams.length === 0}
+                          disabled={validTeams.length === 0}
                           onClick={() => {
                             setTransferPlatform('my11circle')
                             setTransferOption('new')
@@ -3140,7 +3254,7 @@ export default function Home() {
                           }}
                         >
                           <Share2 className="w-4 h-4 mr-2" />
-                          Transfer to My11Circle {generatedTeams.length > 0 ? `(${generatedTeams.length} teams)` : ''}
+                          Transfer to My11Circle {validTeams.length > 0 ? `(${validTeams.length} teams)` : ''}
                         </Button>
                       )}
                     </div>
@@ -3151,13 +3265,13 @@ export default function Home() {
                     <p className="text-sm font-semibold text-gray-700 mb-2">4. Join Contest</p>
                     <Button
                       className="w-full bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white h-12 text-sm font-bold shadow-lg shadow-green-600/20"
-                      disabled={generatedTeams.length === 0}
+                      disabled={validTeams.length === 0}
                       onClick={() => setShowJoinContestDialog(true)}
                     >
                       <Trophy className="w-5 h-5 mr-2" />
-                      JOIN CONTEST {generatedTeams.length > 0 ? `(${generatedTeams.length} teams)` : ''}
+                      JOIN CONTEST {validTeams.length > 0 ? `(${validTeams.length} teams)` : ''}
                     </Button>
-                    {generatedTeams.length === 0 && (
+                    {validTeams.length === 0 && (
                       <p className="text-xs text-gray-400 mt-1">Generate teams first to join contests</p>
                     )}
                   </div>
@@ -3352,7 +3466,7 @@ export default function Home() {
               )}
               <div>
                 <h3 className="text-lg font-bold text-gray-900">Transfer to {transferPlatform === 'dream11' ? 'Dream11' : 'My11Circle'}</h3>
-                <p className="text-sm text-gray-500">{generatedTeams.length} teams ready to transfer</p>
+                <p className="text-sm text-gray-500">{validTeams.length} teams ready to transfer</p>
               </div>
             </div>
 
@@ -3406,7 +3520,7 @@ export default function Home() {
                   </div>
                   <div>
                     <p className={`font-semibold text-sm ${transferOption === 'new' ? 'text-[#6C63FF]' : 'text-gray-900'}`}>New Team</p>
-                    <p className="text-xs text-gray-500 mt-0.5">Create {generatedTeams.length} new team{generatedTeams.length > 1 ? 's' : ''} on {transferPlatform === 'dream11' ? 'Dream11' : 'My11Circle'}</p>
+                    <p className="text-xs text-gray-500 mt-0.5">Create {validTeams.length} new team{validTeams.length > 1 ? 's' : ''} on {transferPlatform === 'dream11' ? 'Dream11' : 'My11Circle'}</p>
                   </div>
                   {transferOption === 'new' && (
                     <CheckCircle2 className="w-5 h-5 text-[#6C63FF] shrink-0 ml-auto" />
@@ -3432,7 +3546,7 @@ export default function Home() {
                   </div>
                   <div>
                     <p className={`font-semibold text-sm ${transferOption === 'existing' ? 'text-[#00bfa5]' : 'text-gray-900'}`}>Existing Team</p>
-                    <p className="text-xs text-gray-500 mt-0.5">Add players to your existing team{generatedTeams.length > 1 ? 's' : ''} on the platform</p>
+                    <p className="text-xs text-gray-500 mt-0.5">Add players to your existing team{validTeams.length > 1 ? 's' : ''} on the platform</p>
                   </div>
                   {transferOption === 'existing' && (
                     <CheckCircle2 className="w-5 h-5 text-[#00bfa5] shrink-0 ml-auto" />
@@ -3464,7 +3578,7 @@ export default function Home() {
                   </div>
                   <div>
                     <p className={`font-semibold text-sm ${transferOption === 'replace' ? 'text-[#f44336]' : 'text-gray-900'}`}>Replace Team</p>
-                    <p className="text-xs text-gray-500 mt-0.5">Replace existing team{generatedTeams.length > 1 ? 's' : ''} with generated team{generatedTeams.length > 1 ? 's' : ''}</p>
+                    <p className="text-xs text-gray-500 mt-0.5">Replace existing team{validTeams.length > 1 ? 's' : ''} with generated team{validTeams.length > 1 ? 's' : ''}</p>
                   </div>
                   {transferOption === 'replace' && (
                     <CheckCircle2 className="w-5 h-5 text-[#f44336] shrink-0 ml-auto" />
@@ -3505,20 +3619,20 @@ export default function Home() {
                 ) : (
                   <>
                     <div className="bg-blue-50 border border-blue-200 rounded-lg p-2 text-xs text-blue-700">
-                      Select up to {Math.min(generatedTeams.length, existingTeams.length)} existing team{Math.min(generatedTeams.length, existingTeams.length) > 1 ? 's' : ''} to replace with your generated teams
+                      Select up to {Math.min(validTeams.length, existingTeams.length)} existing team{Math.min(validTeams.length, existingTeams.length) > 1 ? 's' : ''} to replace with your generated teams
                     </div>
                     {/* Select All / Deselect All buttons */}
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => {
-                          const maxSelectable = Math.min(generatedTeams.length, existingTeams.length)
+                          const maxSelectable = Math.min(validTeams.length, existingTeams.length)
                           const allIds = existingTeams.slice(0, maxSelectable).map(t => t.id)
                           setSelectedReplaceIds(new Set(allIds))
                         }}
-                        disabled={selectedReplaceIds.size === Math.min(generatedTeams.length, existingTeams.length)}
+                        disabled={selectedReplaceIds.size === Math.min(validTeams.length, existingTeams.length)}
                         className="flex-1 py-1.5 rounded-lg text-xs font-semibold border-2 border-[#f44336]/30 bg-[#f44336]/5 text-[#f44336] hover:bg-[#f44336]/10 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                       >
-                        Select All ({Math.min(generatedTeams.length, existingTeams.length)})
+                        Select All ({Math.min(validTeams.length, existingTeams.length)})
                       </button>
                       <button
                         onClick={() => setSelectedReplaceIds(new Set())}
@@ -3531,7 +3645,7 @@ export default function Home() {
                     <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
                       {existingTeams.map((team) => {
                         const isSelected = selectedReplaceIds.has(team.id)
-                        const maxSelectable = Math.min(generatedTeams.length, existingTeams.length)
+                        const maxSelectable = Math.min(validTeams.length, existingTeams.length)
                         return (
                           <button
                             key={team.id}
@@ -3575,7 +3689,7 @@ export default function Home() {
                     </div>
                     {selectedReplaceIds.size > 0 && (
                       <div className="bg-[#f44336]/5 border border-[#f44336]/20 rounded-lg p-2 text-xs">
-                        <span className="text-[#f44336] font-semibold">{selectedReplaceIds.size}</span> of {Math.min(generatedTeams.length, existingTeams.length)} teams selected —
+                        <span className="text-[#f44336] font-semibold">{selectedReplaceIds.size}</span> of {Math.min(validTeams.length, existingTeams.length)} teams selected —
                         each selected team will be replaced by a generated team
                       </div>
                     )}
@@ -3590,7 +3704,7 @@ export default function Home() {
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-gray-600">Teams</span>
                   <span className="font-semibold text-gray-900">
-                    {transferOption === 'replace' ? Math.min(selectedReplaceIds.size, generatedTeams.length) : generatedTeams.length}
+                    {transferOption === 'replace' ? Math.min(selectedReplaceIds.size, validTeams.length) : validTeams.length}
                   </span>
                 </div>
                 <div className="flex items-center justify-between text-sm mt-1">
@@ -3780,7 +3894,7 @@ export default function Home() {
                 <Share2 className="w-4 h-4 mr-2" />
                 {transferOption === 'replace'
                   ? `Replace ${selectedReplaceIds.size} Team${selectedReplaceIds.size !== 1 ? 's' : ''}`
-                  : `Transfer ${generatedTeams.length} Team${generatedTeams.length > 1 ? 's' : ''} (${transferOption === 'new' ? 'New' : 'Existing'})`
+                  : `Transfer ${validTeams.length} Team${validTeams.length > 1 ? 's' : ''} (${transferOption === 'new' ? 'New' : 'Existing'})`
                 }
               </Button>
             )}

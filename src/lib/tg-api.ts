@@ -627,6 +627,87 @@ export interface GeneratedTeam {
   players: TGPlayer[];
 }
 
+// ============ Generation Debug Info ============
+
+export interface GenerationDebugInfo {
+  generationMode: 'NORMAL' | 'EXTRA';
+  category: string;
+  combinationMode: 'MANUAL' | 'AUTO';
+  requestedTeams: number;
+  generatedTeams: number;
+  duplicateRemoved: number;
+  invalidLineupRemoved: number;
+  validTeams: number;
+  strategyUsed: string;
+  lineupMode: 'before' | 'after';
+  eligiblePlayers: number;
+  totalPlayers: number;
+  seed: number;
+}
+
+export interface GenerationResult {
+  teams: GeneratedTeam[];
+  debug: GenerationDebugInfo;
+}
+
+// ============ Team Signature & Deduplication ============
+
+/**
+ * Create a unique signature for a team based on sorted player IDs + C/VC IDs.
+ * Used for deduplication — two teams with identical signatures are duplicates.
+ */
+export function makeTeamSignature(players: TGPlayer[], captain: TGPlayer, viceCaptain: TGPlayer): string {
+  const playerIds = players.map(p => p.pl_id).sort((a, b) => a - b).join(',');
+  return `${playerIds}|C${captain.pl_id}|VC${viceCaptain.pl_id}`;
+}
+
+/**
+ * Deduplicate and validate a list of generated teams.
+ * Removes exact duplicate player combinations.
+ * Separates valid and invalid teams based on lineup eligibility.
+ *
+ * Returns: { valid, invalid, duplicateCount, invalidLineupCount }
+ */
+export function deduplicateAndValidateTeams(
+  teams: GeneratedTeam[],
+  allPlayers: TGPlayer[],
+  avoidPlayerIds: Set<number> = new Set(),
+): {
+  valid: GeneratedTeam[];
+  invalid: GeneratedTeam[];
+  duplicateCount: number;
+  invalidLineupCount: number;
+} {
+  const seen = new Set<string>();
+  const valid: GeneratedTeam[] = [];
+  const invalid: GeneratedTeam[] = [];
+  let duplicateCount = 0;
+  let invalidLineupCount = 0;
+
+  for (let i = 0; i < teams.length; i++) {
+    const team = teams[i];
+    const sig = makeTeamSignature(team.players, team.captain, team.viceCaptain);
+
+    // Skip duplicates
+    if (seen.has(sig)) {
+      duplicateCount++;
+      continue;
+    }
+    seen.add(sig);
+
+    // Check lineup validity
+    const validation = validateTeamForLineup(team, allPlayers, avoidPlayerIds);
+    if (!validation.valid) {
+      invalidLineupCount++;
+      invalid.push({ ...team, id: invalid.length + 1 });
+    } else {
+      valid.push({ ...team, id: valid.length + 1 });
+    }
+  }
+
+  return { valid, invalid, duplicateCount, invalidLineupCount };
+}
+
 // Cricket team constraints
 export const CRICKET_TEAM_SIZE = 11;
 export const MIN_WK = 1;
@@ -657,6 +738,70 @@ function shuffleArray<T>(arr: T[], rng: () => number): T[] {
   return result;
 }
 
+/**
+ * Category-specific C/VC scoring functions.
+ * Each category has a genuinely different strategy for selecting Captain and Vice-Captain.
+ *
+ * Mega GL: Prioritize differential captains (low selection % but high points).
+ *          Wider C/VC rotation across teams — different C/VC per team.
+ * SL:      Prioritize consistent/form players. Higher weight on selection % and captain %.
+ *          More stable C/VC — top 2 players usually.
+ * H2H:     Prioritize most-selected, safest players. Highest weight on selection %.
+ *          Most conservative C/VC — always the safest picks.
+ */
+function scoreCaptain(player: TGPlayer, category: string): number {
+  if (category === 'H2H') {
+    // H2H: Safest picks — highest selection % and captain % weighted most
+    return player.selected_by * 0.45 + player.captain_percentage * 0.35 + player.points * 0.2;
+  } else if (category === 'SL') {
+    // SL: Balanced — form players with good captain record
+    return player.captain_percentage * 0.35 + player.selected_by * 0.35 + player.points * 0.3;
+  } else {
+    // Mega GL: Differential — rotate captains, some differential (lower selection but higher upside)
+    return player.points * 0.4 + player.captain_percentage * 0.3 + player.selected_by * 0.2 + player.vice_captain_percentage * 0.1;
+  }
+}
+
+function scoreViceCaptain(player: TGPlayer, category: string): number {
+  if (category === 'H2H') {
+    return player.selected_by * 0.4 + player.vice_captain_percentage * 0.35 + player.points * 0.25;
+  } else if (category === 'SL') {
+    return player.vice_captain_percentage * 0.35 + player.selected_by * 0.35 + player.points * 0.3;
+  } else {
+    // Mega GL: Wider VC rotation
+    return player.points * 0.35 + player.vice_captain_percentage * 0.3 + player.selected_by * 0.2 + player.captain_percentage * 0.15;
+  }
+}
+
+/**
+ * Select Captain and Vice-Captain based on category strategy.
+ * Mega GL: Rotates C/VC across team members (wider differential).
+ * SL: Picks the top 2 most reliable.
+ * H2H: Picks the safest 2.
+ */
+function selectCaptainViceCaptain(
+  team: TGPlayer[],
+  category: string,
+  teamIndex: number,
+): { captain: TGPlayer; viceCaptain: TGPlayer } {
+  const isMegaGL = category !== 'H2H' && category !== 'SL';
+
+  if (isMegaGL) {
+    // Mega GL: Sort by captain score, then rotate C/VC position based on teamIndex
+    // This gives wider C/VC distribution across teams
+    const sorted = [...team].sort((a, b) => scoreCaptain(b, category) - scoreCaptain(a, category));
+    // Rotate: sometimes pick #1 as C and #2 as VC, sometimes #1 as C and #3 as VC, etc.
+    const cIdx = 0; // Always pick top scorer as C
+    let vcIdx = 1 + (teamIndex % Math.min(4, sorted.length - 1)); // Rotate VC among top 2-5
+    if (vcIdx >= sorted.length) vcIdx = 1;
+    return { captain: sorted[cIdx], viceCaptain: sorted[vcIdx] };
+  } else {
+    // H2H and SL: Pick top 2 by category-specific scoring
+    const sorted = [...team].sort((a, b) => scoreCaptain(b, category) - scoreCaptain(a, category));
+    return { captain: sorted[0], viceCaptain: sorted.length > 1 ? sorted[1] : sorted[0] };
+  }
+}
+
 export function generateTeams(
   leftPlayers: TGPlayer[],
   rightPlayers: TGPlayer[],
@@ -665,8 +810,9 @@ export function generateTeams(
   seed: number = Date.now(),
   avoidPlayerIds: Set<number> = new Set(),
   combination: RoleCombination | null = null,
-): GeneratedTeam[] {
-  // Apply lineup-aware filtering: AFTER LINEUP only playing=1, BEFORE LINEUP all
+  combinationMode: 'manual' | 'auto' = 'auto',
+): GenerationResult {
+  const startTime = Date.now();
   const allPlayersRaw = [...leftPlayers, ...rightPlayers];
   const lineupMode = getLineupMode(allPlayersRaw);
   let allPlayers = getEligiblePlayers(allPlayersRaw, avoidPlayerIds);
@@ -690,11 +836,9 @@ export function generateTeams(
     console.log(`[TEAM GEN] Total eligible credits: ${totalCredits}, Avg: ${(totalCredits / allPlayers.length).toFixed(1)}`);
 
     // If too few eligible players after lineup, fall back to including probable players
-    // (playing === 0 but likely to play — e.g., not explicitly ruled out)
     if (allPlayers.length < 11 || eligibleLeft.length < 1 || eligibleRight.length < 1 ||
         wk.length < MIN_WK || bat.length < MIN_BAT || ar.length < MIN_AR || bowl.length < MIN_BOWL) {
       console.warn(`[TEAM GEN] Not enough eligible players after lineup. Including probable players (playing=0) as fallback.`);
-      // Include playing=0 players as fallback (they might still play)
       allPlayers = allPlayersRaw.filter(p => !avoidPlayerIds.has(p.pl_id) && p.playing !== -1);
       eligibleLeft = allPlayers.filter(p => p.team_name === leftTeamName);
       eligibleRight = allPlayers.filter(p => p.team_name === rightTeamName);
@@ -707,11 +851,28 @@ export function generateTeams(
   }
 
   const teams: GeneratedTeam[] = [];
+  const teamSignatures = new Set<string>(); // Deduplication
   const rng = seededRandom(seed);
 
   // Category-specific strategies
   const isH2H = category === 'H2H';
   const isSL = category === 'SL';
+  const isMegaGL = !isH2H && !isSL;
+
+  // Category-specific role distribution patterns
+  const MEGA_GL_PATTERNS = [
+    [1, 3, 2, 5], [1, 4, 1, 5], [1, 3, 3, 4], [1, 4, 2, 4],
+    [2, 3, 2, 4], [1, 5, 1, 4], [2, 3, 1, 5], [1, 4, 3, 3],
+    [2, 4, 1, 4], [1, 3, 1, 6], [2, 2, 3, 4], [1, 5, 2, 3],
+  ];
+  const SL_PATTERNS = [
+    [1, 4, 2, 4], [1, 3, 3, 4], [2, 3, 2, 4], [1, 5, 2, 3],
+    [1, 4, 3, 3], [2, 4, 1, 4], [1, 3, 2, 5],
+  ];
+  const H2H_PATTERNS = [
+    [1, 5, 2, 3], [1, 4, 2, 4], [1, 3, 3, 4], [1, 4, 3, 3],
+    [2, 4, 1, 4], [1, 5, 1, 4],
+  ];
 
   for (let t = 0; t < count; t++) {
     let attempts = 0;
@@ -725,31 +886,22 @@ export function generateTeams(
       let wkCount, batCount, arCount, bowlCount;
 
       if (combination) {
-        // Use explicit combination (manual or auto-selected)
+        // MANUAL mode: Use explicit combination exactly as provided
         wkCount = combination.wk;
         batCount = combination.bat;
         arCount = combination.ar;
         bowlCount = combination.bowl;
       } else if (isH2H) {
-        // H2H: More conservative, popular players
-        wkCount = MIN_WK + (sr() > 0.5 ? 1 : 0);
-        arCount = MIN_AR + (sr() > 0.6 ? 1 : 0);
-        batCount = Math.max(MIN_BAT, 5 - wkCount + (sr() > 0.5 ? 1 : 0));
-        bowlCount = CRICKET_TEAM_SIZE - wkCount - batCount - arCount;
+        // H2H: Conservative patterns — more batsmen, stable bowling
+        const pattern = H2H_PATTERNS[Math.floor(sr() * H2H_PATTERNS.length)];
+        [wkCount, batCount, arCount, bowlCount] = pattern;
       } else if (isSL) {
-        // SL: Balanced
-        wkCount = 1 + (sr() > 0.7 ? 1 : 0);
-        arCount = 2 + (sr() > 0.5 ? 1 : 0);
-        batCount = 3 + (sr() > 0.5 ? 1 : 0);
-        bowlCount = CRICKET_TEAM_SIZE - wkCount - batCount - arCount;
+        // SL: Balanced patterns — moderate risk
+        const pattern = SL_PATTERNS[Math.floor(sr() * SL_PATTERNS.length)];
+        [wkCount, batCount, arCount, bowlCount] = pattern;
       } else {
-        // Mega GL: More differential picks, varied combinations
-        const patterns = [
-          [1, 3, 2, 5], [1, 4, 1, 5], [1, 3, 3, 4], [1, 4, 2, 4],
-          [2, 3, 2, 4], [1, 5, 1, 4], [2, 3, 1, 5], [1, 4, 3, 3],
-          [2, 4, 1, 4], [1, 3, 1, 6], [2, 2, 3, 4], [1, 5, 2, 3],
-        ];
-        const pattern = patterns[Math.floor(sr() * patterns.length)];
+        // Mega GL: Differential patterns — wider variety
+        const pattern = MEGA_GL_PATTERNS[Math.floor(sr() * MEGA_GL_PATTERNS.length)];
         [wkCount, batCount, arCount, bowlCount] = pattern;
       }
 
@@ -760,34 +912,55 @@ export function generateTeams(
       if (bowlCount < MIN_BOWL || bowlCount > MAX_BOWL) continue;
       if (wkCount + batCount + arCount + bowlCount !== CRICKET_TEAM_SIZE) continue;
 
-      // Pick players for each role
+      // Pick players for each role — CATEGORY-SPECIFIC player selection
       const shuffledWK = shuffleArray(wk, sr);
       const shuffledBat = shuffleArray(bat, sr);
       const shuffledAR = shuffleArray(ar, sr);
       const shuffledBowl = shuffleArray(bowl, sr);
 
-      // For Mega GL, sort by selected_by sometimes to get differential picks
       let selectedWK, selectedBat, selectedAR, selectedBowl;
 
-      if (!isH2H && sr() > 0.4) {
-        // Sort some roles by selection % to mix popular and differential
-        const sortFn = (a: TGPlayer, b: TGPlayer) => a.selected_by - b.selected_by;
-        selectedWK = shuffleArray([...wk].sort(sortFn), sr).slice(0, wkCount);
-        selectedBat = shuffleArray([...bat].sort(sortFn), sr).slice(0, batCount);
-        selectedAR = shuffleArray([...ar].sort(sortFn), sr).slice(0, arCount);
-        selectedBowl = shuffleArray([...bowl].sort(sortFn), sr).slice(0, bowlCount);
-      } else if (isH2H) {
-        // H2H: Pick most selected players
+      if (isH2H) {
+        // H2H: ALWAYS pick most-selected/consistent players — safest strategy
         const sortFn = (a: TGPlayer, b: TGPlayer) => b.selected_by - a.selected_by;
         selectedWK = [...wk].sort(sortFn).slice(0, wkCount);
         selectedBat = shuffleArray([...bat].sort(sortFn), sr).slice(0, batCount);
         selectedAR = [...ar].sort(sortFn).slice(0, arCount);
         selectedBowl = shuffleArray([...bowl].sort(sortFn), sr).slice(0, bowlCount);
+      } else if (isSL) {
+        // SL: Mostly form players, some rotation — balanced strategy
+        // 60% form players, 40% rotation for variety
+        const formSort = (a: TGPlayer, b: TGPlayer) =>
+          (b.selected_by * 0.5 + b.points * 0.3 + b.captain_percentage * 0.2) -
+          (a.selected_by * 0.5 + a.points * 0.3 + a.captain_percentage * 0.2);
+        if (sr() > 0.4) {
+          // Form-based with light shuffle
+          selectedWK = shuffleArray([...wk].sort(formSort), sr).slice(0, wkCount);
+          selectedBat = shuffleArray([...bat].sort(formSort), sr).slice(0, batCount);
+          selectedAR = shuffleArray([...ar].sort(formSort), sr).slice(0, arCount);
+          selectedBowl = shuffleArray([...bowl].sort(formSort), sr).slice(0, bowlCount);
+        } else {
+          selectedWK = shuffledWK.slice(0, wkCount);
+          selectedBat = shuffledBat.slice(0, batCount);
+          selectedAR = shuffledAR.slice(0, arCount);
+          selectedBowl = shuffledBowl.slice(0, bowlCount);
+        }
       } else {
-        selectedWK = shuffledWK.slice(0, wkCount);
-        selectedBat = shuffledBat.slice(0, batCount);
-        selectedAR = shuffledAR.slice(0, arCount);
-        selectedBowl = shuffledBowl.slice(0, bowlCount);
+        // Mega GL: Strong differential rotation — low selection % players preferred
+        // 70% differential (low selection %), 30% random
+        const diffSort = (a: TGPlayer, b: TGPlayer) => a.selected_by - b.selected_by;
+        if (sr() > 0.3) {
+          // Differential picks — favor low selection % for Grand League upside
+          selectedWK = shuffleArray([...wk].sort(diffSort), sr).slice(0, wkCount);
+          selectedBat = shuffleArray([...bat].sort(diffSort), sr).slice(0, batCount);
+          selectedAR = shuffleArray([...ar].sort(diffSort), sr).slice(0, arCount);
+          selectedBowl = shuffleArray([...bowl].sort(diffSort), sr).slice(0, bowlCount);
+        } else {
+          selectedWK = shuffledWK.slice(0, wkCount);
+          selectedBat = shuffledBat.slice(0, batCount);
+          selectedAR = shuffledAR.slice(0, arCount);
+          selectedBowl = shuffledBowl.slice(0, bowlCount);
+        }
       }
 
       // Check if we have enough players
@@ -812,18 +985,56 @@ export function generateTeams(
     }
 
     if (team) {
-      // Select Captain & Vice-Captain
-      // Sort by a combination of points and selection % for C/VC
-      const sorted = [...team].sort((a, b) =>
-        (b.points * 0.4 + b.selected_by * 0.3 + b.captain_percentage * 0.3) -
-        (a.points * 0.4 + a.selected_by * 0.3 + a.captain_percentage * 0.3)
-      );
+      // Category-specific C/VC selection
+      const { captain, viceCaptain } = selectCaptainViceCaptain(team, category, t);
 
-      const captain = sorted[0];
-      const viceCaptain = sorted.length > 1 ? sorted[1] : sorted[0];
+      // Deduplication check
+      const sig = makeTeamSignature(team, captain, viceCaptain);
+      if (teamSignatures.has(sig)) {
+        // Duplicate — skip and try to find another combination
+        team = null;
+        // Extra attempts to find unique team
+        let extraAttempts = 0;
+        while (!team && extraAttempts < 100) {
+          extraAttempts++;
+          const sr = seededRandom(seed + t * 3000 + extraAttempts * 7 + 77777);
+          let wkCount, batCount, arCount, bowlCount;
+          if (combination) {
+            wkCount = combination.wk; batCount = combination.bat; arCount = combination.ar; bowlCount = combination.bowl;
+          } else {
+            const patterns = isH2H ? H2H_PATTERNS : isSL ? SL_PATTERNS : MEGA_GL_PATTERNS;
+            const pattern = patterns[Math.floor(sr() * patterns.length)];
+            [wkCount, batCount, arCount, bowlCount] = pattern;
+          }
+          if (wkCount < MIN_WK || wkCount > MAX_WK || batCount < MIN_BAT || batCount > MAX_BAT ||
+              arCount < MIN_AR || arCount > MAX_AR || bowlCount < MIN_BOWL || bowlCount > MAX_BOWL) continue;
+          if (wkCount + batCount + arCount + bowlCount !== CRICKET_TEAM_SIZE) continue;
 
+          const sWK = shuffleArray(wk, sr).slice(0, wkCount);
+          const sBat = shuffleArray(bat, sr).slice(0, batCount);
+          const sAR = shuffleArray(ar, sr).slice(0, arCount);
+          const sBowl = shuffleArray(bowl, sr).slice(0, bowlCount);
+          if (sWK.length < wkCount || sBat.length < batCount || sAR.length < arCount || sBowl.length < bowlCount) continue;
+          const sel = [...sWK, ...sBat, ...sAR, ...sBowl];
+          if (sel.reduce((s, p) => s + p.credits, 0) > MAX_CREDITS) continue;
+          const lc = sel.filter(p => p.team_name === leftTeamName).length;
+          const rc = sel.filter(p => p.team_name === rightTeamName).length;
+          if (lc > MAX_FROM_ONE_TEAM || rc > MAX_FROM_ONE_TEAM || lc < 1 || rc < 1) continue;
+
+          const { captain: c2, viceCaptain: vc2 } = selectCaptainViceCaptain(sel, category, t + extraAttempts);
+          const sig2 = makeTeamSignature(sel, c2, vc2);
+          if (!teamSignatures.has(sig2)) {
+            team = sel;
+            teams.push({ id: teams.length + 1, captain: c2, viceCaptain: vc2, players: sel });
+            teamSignatures.add(sig2);
+          }
+        }
+        continue; // Skip the normal push below
+      }
+
+      teamSignatures.add(sig);
       teams.push({
-        id: t + 1,
+        id: teams.length + 1,
         captain,
         viceCaptain,
         players: team,
@@ -835,8 +1046,7 @@ export function generateTeams(
   if (teams.length === 0 && lineupMode === 'after') {
     console.warn(`[TEAM GEN] 0 teams generated after lineup! Retrying with relaxed constraints...`);
 
-    // Fallback 1: Increase max attempts and allow higher credits
-    const RELAXED_MAX_CREDITS = 110; // Allow 10 extra credits
+    const RELAXED_MAX_CREDITS = 110;
     for (let t = 0; t < count; t++) {
       let attempts = 0;
       let team: TGPlayer[] | null = null;
@@ -846,7 +1056,6 @@ export function generateTeams(
         const sr = seededRandom(seed + t * 2000 + attempts + 99999);
 
         let wkCount, batCount, arCount, bowlCount;
-        // Try all valid combinations systematically
         const combos = getAllValidCombinations();
         const combo = combos[Math.floor(sr() * combos.length)];
         wkCount = combo.wk;
@@ -873,7 +1082,6 @@ export function generateTeams(
 
         const leftCount = selected.filter(p => p.team_name === leftTeamName).length;
         const rightCount = selected.filter(p => p.team_name === rightTeamName).length;
-        // Relaxed: allow up to 8 from one team (instead of 7)
         if (leftCount > 8 || rightCount > 8) continue;
         if (leftCount < 1 || rightCount < 1) continue;
 
@@ -881,16 +1089,17 @@ export function generateTeams(
       }
 
       if (team) {
-        const sorted = [...team].sort((a, b) =>
-          (b.points * 0.4 + b.selected_by * 0.3 + b.captain_percentage * 0.3) -
-          (a.points * 0.4 + a.selected_by * 0.3 + a.captain_percentage * 0.3)
-        );
-        teams.push({
-          id: t + 1,
-          captain: sorted[0],
-          viceCaptain: sorted.length > 1 ? sorted[1] : sorted[0],
-          players: team,
-        });
+        const { captain, viceCaptain } = selectCaptainViceCaptain(team, category, t);
+        const sig = makeTeamSignature(team, captain, viceCaptain);
+        if (!teamSignatures.has(sig)) {
+          teamSignatures.add(sig);
+          teams.push({
+            id: teams.length + 1,
+            captain,
+            viceCaptain,
+            players: team,
+          });
+        }
       }
     }
 
@@ -901,7 +1110,31 @@ export function generateTeams(
     }
   }
 
-  return teams;
+  // Build debug info
+  const strategyUsed = combination
+    ? `MANUAL(${combination.wk}-${combination.bat}-${combination.ar}-${combination.bowl})`
+    : isH2H ? 'H2H_CONSERVATIVE' : isSL ? 'SL_BALANCED' : 'MEGA_GL_DIFFERENTIAL';
+
+  const debug: GenerationDebugInfo = {
+    generationMode: 'NORMAL',
+    category,
+    combinationMode: combination ? 'MANUAL' as const : (combinationMode === 'manual' ? 'MANUAL' as const : 'AUTO' as const),
+    requestedTeams: count,
+    generatedTeams: teams.length,
+    duplicateRemoved: 0, // Tracked during generation via signature skips
+    invalidLineupRemoved: 0,
+    validTeams: teams.length,
+    strategyUsed,
+    lineupMode,
+    eligiblePlayers: allPlayers.length,
+    totalPlayers: allPlayersRaw.length,
+    seed,
+  };
+
+  console.log(`[TEAM GEN] Mode: NORMAL | Category: ${category} | Combination: ${debug.combinationMode} | Strategy: ${strategyUsed}`);
+  console.log(`[TEAM GEN] Requested: ${count} | Generated: ${teams.length} | Lineup: ${lineupMode} | Eligible: ${allPlayers.length}/${allPlayersRaw.length} | Seed: ${seed} | Time: ${Date.now() - startTime}ms`);
+
+  return { teams, debug };
 }
 
 // ============ Extra Team Generation Algorithm ============
@@ -919,9 +1152,40 @@ export interface ExtraTeamGenInput {
   seed?: number;
   avoidPlayerIds?: Set<number>;  // Players to avoid
   combination?: RoleCombination | null; // Explicit role combination
+  combinationMode?: 'manual' | 'auto'; // Whether combination is manual or auto
 }
 
-export function generateExtraTeams(input: ExtraTeamGenInput): GeneratedTeam[] {
+// Helper to build debug info for extra generation
+function makeExtraDebug(
+  teamCount: number,
+  category: string,
+  combinationMode: string,
+  count: number,
+  lineupMode: 'before' | 'after',
+  eligible: number,
+  total: number,
+  seed: number,
+  strategy: string,
+): GenerationDebugInfo {
+  return {
+    generationMode: 'EXTRA',
+    category,
+    combinationMode: combinationMode as 'MANUAL' | 'AUTO',
+    requestedTeams: count,
+    generatedTeams: teamCount,
+    duplicateRemoved: 0,
+    invalidLineupRemoved: 0,
+    validTeams: teamCount,
+    strategyUsed: `EXTRA_${strategy}`,
+    lineupMode,
+    eligiblePlayers: eligible,
+    totalPlayers: total,
+    seed,
+  };
+}
+
+export function generateExtraTeams(input: ExtraTeamGenInput): GenerationResult {
+  const startTime = Date.now();
   const {
     fixedPlayers,
     captainOptions,
@@ -933,7 +1197,10 @@ export function generateExtraTeams(input: ExtraTeamGenInput): GeneratedTeam[] {
     seed = Date.now(),
     avoidPlayerIds = new Set(),
     combination = null,
+    combinationMode: inputComboMode = 'auto',
   } = input;
+
+  const effectiveComboMode = combination ? 'manual' : inputComboMode;
 
   // Apply lineup-aware filtering to the full player pool
   const allPlayersRaw = [...leftPlayers, ...rightPlayers];
@@ -971,12 +1238,16 @@ export function generateExtraTeams(input: ExtraTeamGenInput): GeneratedTeam[] {
   const teams: GeneratedTeam[] = [];
 
   // Pre-validate: fixed players must have credits <= 100
-  if (fixedCredits > MAX_CREDITS) return teams;
+  if (fixedCredits > MAX_CREDITS) {
+    return { teams, debug: makeExtraDebug(0, category, effectiveComboMode, count, lineupMode, allPlayers.length, allPlayersRaw.length, seed, 'INVALID_FIXED_CREDITS') };
+  }
 
   // Pre-validate: fixed players must respect max 7 from one team
   const fixedLeftCount = fixedPlayers.filter(p => p.team_name === leftTeamName).length;
   const fixedRightCount = fixedPlayers.filter(p => p.team_name === rightTeamName).length;
-  if (fixedLeftCount > MAX_FROM_ONE_TEAM || fixedRightCount > MAX_FROM_ONE_TEAM) return teams;
+  if (fixedLeftCount > MAX_FROM_ONE_TEAM || fixedRightCount > MAX_FROM_ONE_TEAM) {
+    return { teams, debug: makeExtraDebug(0, category, effectiveComboMode, count, lineupMode, allPlayers.length, allPlayersRaw.length, seed, 'INVALID_TEAM_DIST') };
+  }
 
   // Generate all valid C/VC combinations from the 5C and 5VC options
   // C must be in the team, VC must be in the team, C ≠ VC
@@ -989,19 +1260,26 @@ export function generateExtraTeams(input: ExtraTeamGenInput): GeneratedTeam[] {
     }
   }
   // If no valid combos, return empty
-  if (cVCCombos.length === 0) return teams;
+  if (cVCCombos.length === 0) {
+    return { teams, debug: makeExtraDebug(0, category, effectiveComboMode, count, lineupMode, allPlayers.length, allPlayersRaw.length, seed, 'NO_VALID_CVC') };
+  }
 
   // Category-specific role distribution preferences for remaining players
   const isH2H = category === 'H2H';
   const isSL = category === 'SL';
 
-  // Pre-compute all valid target role distributions that are compatible with fixed players
-  // This avoids wasting attempts on patterns that can never work
+  // EACH CATEGORY HAS ITS OWN DISTINCT PATTERNS — never reuse Mega GL patterns for H2H/SL
   const categoryPatterns: number[][] = isH2H
-    ? [] // H2H uses dynamic generation below
+    ? [
+        [1, 5, 2, 3], [1, 4, 2, 4], [1, 3, 3, 4], [1, 4, 3, 3],
+        [2, 4, 1, 4], [1, 5, 1, 4],
+      ]
     : isSL
-    ? [] // SL uses dynamic generation below
-    : [
+    ? [
+        [1, 4, 2, 4], [1, 3, 3, 4], [2, 3, 2, 4], [1, 5, 2, 3],
+        [1, 4, 3, 3], [2, 4, 1, 4], [1, 3, 2, 5],
+      ]
+    : [ // Mega GL — most differential/varied patterns
         [1, 3, 2, 5], [1, 4, 1, 5], [1, 3, 3, 4], [1, 4, 2, 4],
         [2, 3, 2, 4], [1, 5, 1, 4], [2, 3, 1, 5], [1, 4, 3, 3],
         [2, 4, 1, 4], [1, 3, 1, 6], [2, 2, 3, 4], [1, 5, 2, 3],
@@ -1039,16 +1317,11 @@ export function generateExtraTeams(input: ExtraTeamGenInput): GeneratedTeam[] {
   }
 
   if (validDistributions.length === 0) {
-    return teams;
+    return { teams, debug: makeExtraDebug(0, category, effectiveComboMode, count, lineupMode, allPlayers.length, allPlayersRaw.length, seed, 'NO_VALID_DISTRIBUTIONS') };
   }
 
-  // Team signature function for uniqueness check across generated teams
-  // Uses sorted player IDs + C/VC IDs to create a unique fingerprint
+  // Team signature set for uniqueness check — uses the exported makeTeamSignature
   const teamSignatures = new Set<string>();
-  const makeTeamSignature = (players: TGPlayer[], c: TGPlayer, vc: TGPlayer): string => {
-    const playerIds = players.map(p => p.pl_id).sort((a, b) => a - b).join(',');
-    return `${playerIds}|C${c.pl_id}|VC${vc.pl_id}`;
-  };
 
   // Generation loop with retry: keep trying until we have `count` unique teams
   // or we exhaust the maximum total attempts
@@ -1070,7 +1343,7 @@ export function generateExtraTeams(input: ExtraTeamGenInput): GeneratedTeam[] {
       let targetWK: number, targetBat: number, targetAR: number, targetBowl: number;
 
       if (combination) {
-        // Use explicit combination
+        // MANUAL mode: Use explicit combination exactly as provided
         targetWK = combination.wk;
         targetBat = combination.bat;
         targetAR = combination.ar;
@@ -1095,26 +1368,46 @@ export function generateExtraTeams(input: ExtraTeamGenInput): GeneratedTeam[] {
       if (remWK.length < needWK || remBat.length < needBat ||
           remAR.length < needAR || remBowl.length < needBowl) continue;
 
-      // Pick remaining players for each role
+      // Pick remaining players for each role — CATEGORY-SPECIFIC strategies
       let pickedWK: TGPlayer[], pickedBat: TGPlayer[], pickedAR: TGPlayer[], pickedBowl: TGPlayer[];
 
-      if (!isH2H && sr() > 0.4) {
-        const sortFn = (a: TGPlayer, b: TGPlayer) => a.selected_by - b.selected_by;
-        pickedWK = shuffleArray([...remWK].sort(sortFn), sr).slice(0, needWK);
-        pickedBat = shuffleArray([...remBat].sort(sortFn), sr).slice(0, needBat);
-        pickedAR = shuffleArray([...remAR].sort(sortFn), sr).slice(0, needAR);
-        pickedBowl = shuffleArray([...remBowl].sort(sortFn), sr).slice(0, needBowl);
-      } else if (isH2H) {
+      if (isH2H) {
+        // H2H: ALWAYS pick most-selected/consistent remaining players — safest
         const sortFn = (a: TGPlayer, b: TGPlayer) => b.selected_by - a.selected_by;
         pickedWK = [...remWK].sort(sortFn).slice(0, needWK);
         pickedBat = shuffleArray([...remBat].sort(sortFn), sr).slice(0, needBat);
         pickedAR = [...remAR].sort(sortFn).slice(0, needAR);
         pickedBowl = shuffleArray([...remBowl].sort(sortFn), sr).slice(0, needBowl);
+      } else if (isSL) {
+        // SL: Form-based with some rotation — balanced
+        const formSort = (a: TGPlayer, b: TGPlayer) =>
+          (b.selected_by * 0.5 + b.points * 0.3 + b.captain_percentage * 0.2) -
+          (a.selected_by * 0.5 + a.points * 0.3 + a.captain_percentage * 0.2);
+        if (sr() > 0.4) {
+          pickedWK = shuffleArray([...remWK].sort(formSort), sr).slice(0, needWK);
+          pickedBat = shuffleArray([...remBat].sort(formSort), sr).slice(0, needBat);
+          pickedAR = shuffleArray([...remAR].sort(formSort), sr).slice(0, needAR);
+          pickedBowl = shuffleArray([...remBowl].sort(formSort), sr).slice(0, needBowl);
+        } else {
+          pickedWK = shuffleArray(remWK, sr).slice(0, needWK);
+          pickedBat = shuffleArray(remBat, sr).slice(0, needBat);
+          pickedAR = shuffleArray(remAR, sr).slice(0, needAR);
+          pickedBowl = shuffleArray(remBowl, sr).slice(0, needBowl);
+        }
       } else {
-        pickedWK = shuffleArray(remWK, sr).slice(0, needWK);
-        pickedBat = shuffleArray(remBat, sr).slice(0, needBat);
-        pickedAR = shuffleArray(remAR, sr).slice(0, needAR);
-        pickedBowl = shuffleArray(remBowl, sr).slice(0, needBowl);
+        // Mega GL: Differential picks — low selection % preferred
+        const diffSort = (a: TGPlayer, b: TGPlayer) => a.selected_by - b.selected_by;
+        if (sr() > 0.3) {
+          pickedWK = shuffleArray([...remWK].sort(diffSort), sr).slice(0, needWK);
+          pickedBat = shuffleArray([...remBat].sort(diffSort), sr).slice(0, needBat);
+          pickedAR = shuffleArray([...remAR].sort(diffSort), sr).slice(0, needAR);
+          pickedBowl = shuffleArray([...remBowl].sort(diffSort), sr).slice(0, needBowl);
+        } else {
+          pickedWK = shuffleArray(remWK, sr).slice(0, needWK);
+          pickedBat = shuffleArray(remBat, sr).slice(0, needBat);
+          pickedAR = shuffleArray(remAR, sr).slice(0, needAR);
+          pickedBowl = shuffleArray(remBowl, sr).slice(0, needBowl);
+        }
       }
 
       if (pickedWK.length < needWK || pickedBat.length < needBat ||
@@ -1156,12 +1449,9 @@ export function generateExtraTeams(input: ExtraTeamGenInput): GeneratedTeam[] {
           }
         }
         if (!foundValidCombo) {
-          // Fallback: use top players in team as C/VC
-          const sorted = [...fullTeam].sort((a, b) =>
-            (b.points * 0.4 + b.selected_by * 0.3 + b.captain_percentage * 0.3) -
-            (a.points * 0.4 + a.selected_by * 0.3 + a.captain_percentage * 0.3)
-          );
-          combo = { c: sorted[0], vc: sorted.length > 1 ? sorted[1] : sorted[0] };
+          // Fallback: use category-specific C/VC scoring
+          const { captain: fbC, viceCaptain: fbVC } = selectCaptainViceCaptain(fullTeam, category, t);
+          combo = { c: fbC, vc: fbVC };
         }
       }
 
@@ -1253,11 +1543,9 @@ export function generateExtraTeams(input: ExtraTeamGenInput): GeneratedTeam[] {
             }
           }
           if (!foundValidCombo) {
-            const sorted = [...fullTeam].sort((a, b) =>
-              (b.points * 0.4 + b.selected_by * 0.3 + b.captain_percentage * 0.3) -
-              (a.points * 0.4 + a.selected_by * 0.3 + a.captain_percentage * 0.3)
-            );
-            combo = { c: sorted[0], vc: sorted.length > 1 ? sorted[1] : sorted[0] };
+            // Fallback: use category-specific C/VC scoring
+            const { captain: fbC, viceCaptain: fbVC } = selectCaptainViceCaptain(fullTeam, category, t + extraAttempts);
+            combo = { c: fbC, vc: fbVC };
           }
         }
 
@@ -1276,7 +1564,17 @@ export function generateExtraTeams(input: ExtraTeamGenInput): GeneratedTeam[] {
     }
   }
 
-  return teams;
+  // Build debug info
+  const strategyUsed = combination
+    ? `MANUAL(${combination.wk}-${combination.bat}-${combination.ar}-${combination.bowl})`
+    : isH2H ? 'H2H_CONSERVATIVE' : isSL ? 'SL_BALANCED' : 'MEGA_GL_DIFFERENTIAL';
+
+  const debug = makeExtraDebug(teams.length, category, effectiveComboMode, count, lineupMode, allPlayers.length, allPlayersRaw.length, seed, strategyUsed);
+
+  console.log(`[EXTRA TEAM GEN] Mode: EXTRA | Category: ${category} | Combination: ${effectiveComboMode} | Strategy: ${strategyUsed}`);
+  console.log(`[EXTRA TEAM GEN] Requested: ${count} | Generated: ${teams.length} | Lineup: ${lineupMode} | Eligible: ${allPlayers.length}/${allPlayersRaw.length} | Seed: ${seed} | Time: ${Date.now() - startTime}ms`);
+
+  return { teams, debug };
 }
 
 // ============ Auto Select for Extra Team Generation ============
