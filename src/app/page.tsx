@@ -650,11 +650,8 @@ export default function Home() {
   const [adminLicenseSearch, setAdminLicenseSearch] = useState('')
   const [adminTransferLogs, setAdminTransferLogs] = useState<any[]>([])
 
-  // User License state
+  // License state (kept for admin panel compatibility)
   const [userLicense, setUserLicense] = useState<{ valid: boolean; license?: { key: string; type: string; status: string; expiresAt: string | null; assignedTo: string | null } } | null>(null)
-  const [licenseKeyInput, setLicenseKeyInput] = useState('')
-  const [licenseActivating, setLicenseActivating] = useState(false)
-  const [showLicenseDialog, setShowLicenseDialog] = useState(false)
 
   const generatedTeamsRef = useRef<HTMLDivElement>(null)
   const { toast } = useToast()
@@ -3298,39 +3295,7 @@ export default function Home() {
               </div>
             </div>
 
-            {/* License Check */}
-            {!userLicense?.valid ? (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                <div className="flex items-center gap-2 mb-2">
-                  <Lock className="w-4 h-4 text-red-600" />
-                  <span className="text-sm font-bold text-red-700">🔒 TRANSFER LOCKED</span>
-                </div>
-                <p className="text-xs text-red-600 mb-3">An active license is required to use team transfer.</p>
-                <button
-                  onClick={() => setShowLicenseDialog(true)}
-                  className="w-full py-2 bg-[#6C63FF] text-white text-sm font-semibold rounded-lg hover:bg-[#5a52e0] transition-colors flex items-center justify-center gap-2"
-                >
-                  <KeyRound className="w-4 h-4" />
-                  ACTIVATE LICENSE
-                </button>
-              </div>
-            ) : (
-              <div className="bg-green-50 border border-green-200 rounded-lg p-2.5">
-                <div className="flex items-center gap-2">
-                  <Unlock className="w-4 h-4 text-green-600" />
-                  <span className="text-sm text-green-700 font-semibold">✓ License Active</span>
-                </div>
-                <div className="flex items-center gap-3 mt-1 ml-6">
-                  <span className="text-xs text-green-600 font-medium">{userLicense.license?.type === 'THREE_MONTHS' ? '3 Months' : userLicense.license?.type === 'SIX_MONTHS' ? '6 Months' : userLicense.license?.type === 'LIFETIME' ? 'Lifetime' : 'Monthly'}</span>
-                  {userLicense.license?.expiresAt && (
-                    <span className="text-xs text-green-600">Expires: {new Date(userLicense.license.expiresAt).toLocaleDateString()}</span>
-                  )}
-                  {userLicense.license?.type === 'LIFETIME' && (
-                    <span className="text-xs text-green-600">Never expires</span>
-                  )}
-                </div>
-              </div>
-            )}
+            {/* Transfer is open — no license required */}
 
             {/* Auth status check */}
             {!fantasyAccounts[transferPlatform!]?.authToken ? (
@@ -3359,7 +3324,6 @@ export default function Home() {
             )}
 
             {/* Transfer Options */}
-            {userLicense?.valid ? (
             <div className="space-y-2">
               <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Select Transfer Option</p>
 
@@ -3447,11 +3411,7 @@ export default function Home() {
                 </div>
               </button>
             </div>
-            ) : (
-              <div className="text-center py-4 text-gray-400 text-sm">
-                Activate a license to unlock transfer options
-              </div>
-            )}
+
 
             {/* Replace Team: Existing Teams Selection UI */}
             {transferOption === 'replace' && (
@@ -3753,7 +3713,7 @@ export default function Home() {
             {transferProgress.status === 'idle' && (
               <Button
                 className="w-full bg-[#6C63FF] hover:bg-[#5B54E0] text-white h-12 text-sm font-semibold"
-                disabled={transferring || !fantasyAccounts[transferPlatform!]?.authToken || (transferOption === 'replace' && selectedReplaceIds.size === 0) || !userLicense?.valid}
+                disabled={transferring || !fantasyAccounts[transferPlatform!]?.authToken || (transferOption === 'replace' && selectedReplaceIds.size === 0)}
                 onClick={handleTransfer}
               >
                 <Share2 className="w-4 h-4 mr-2" />
@@ -4110,78 +4070,6 @@ export default function Home() {
             >
               {adminLoggingIn ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
               {adminLoggingIn ? 'Verifying...' : 'Login'}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* ============ LICENSE ACTIVATION DIALOG ============ */}
-      <Dialog open={showLicenseDialog} onOpenChange={setShowLicenseDialog}>
-        <DialogContent className="max-w-sm">
-          <DialogTitle className="sr-only">Activate License</DialogTitle>
-          <div className="space-y-4 p-2">
-            <div className="flex flex-col items-center gap-2">
-              <KeyRound className="w-10 h-10 text-[#6C63FF]" />
-              <h3 className="text-lg font-bold text-gray-900">ACTIVATE LICENSE</h3>
-              <p className="text-xs text-gray-500 text-center">Enter your license key to unlock team transfer</p>
-            </div>
-            <div>
-              <label className="text-xs font-medium text-gray-500 mb-1 block">License Key</label>
-              <input
-                type="text"
-                value={licenseKeyInput}
-                onChange={(e) => setLicenseKeyInput(e.target.value.toUpperCase())}
-                className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm font-mono tracking-wider text-center focus:outline-none focus:ring-2 focus:ring-[#6C63FF]"
-                placeholder="VYRON-XXXX-XXXX-XXXX"
-                autoFocus
-              />
-            </div>
-            {userLicense?.valid && userLicense.license && (
-              <div className="bg-green-50 border border-green-200 rounded-lg p-2.5">
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-green-600" />
-                  <span className="text-sm text-green-700 font-medium">Active: {userLicense.license.type === 'THREE_MONTHS' ? '3 Months' : userLicense.license.type === 'SIX_MONTHS' ? '6 Months' : userLicense.license.type === 'LIFETIME' ? 'Lifetime' : 'Monthly'}</span>
-                </div>
-              </div>
-            )}
-            <Button
-              onClick={async () => {
-                if (!licenseKeyInput) return
-                setLicenseActivating(true)
-                try {
-                  const accounts = JSON.parse(localStorage.getItem('vyron_fantasy_accounts') || '{}')
-                  let accountId: string | null = null
-                  for (const p of ['dream11', 'my11circle']) {
-                    if (accounts[p]?.mobileNumber) {
-                      accountId = accounts[p].mobileNumber
-                      break
-                    }
-                  }
-                  const res = await fetch('/api/license/activate', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ licenseKey: licenseKeyInput, accountId }),
-                  })
-                  const data = await res.json()
-                  if (data.status === 'success') {
-                    localStorage.setItem('vyron_license_key', licenseKeyInput)
-                    toast({ title: '✓ License activated successfully!' })
-                    setLicenseKeyInput('')
-                    setShowLicenseDialog(false)
-                    validateUserLicense()
-                  } else {
-                    toast({ title: data.message || 'Invalid license', variant: 'destructive' })
-                  }
-                } catch {
-                  toast({ title: 'Activation failed', variant: 'destructive' })
-                }
-                setLicenseActivating(false)
-              }}
-              disabled={licenseActivating || !licenseKeyInput}
-              className="w-full bg-[#6C63FF] hover:bg-[#5a52e0] text-white"
-            >
-              {licenseActivating ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
-              {licenseActivating ? 'Activating...' : 'Activate'}
             </Button>
           </div>
         </DialogContent>
