@@ -55,7 +55,7 @@ import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { useToast } from '@/hooks/use-toast'
-import { TGPlayer, GeneratedTeam, generateTeams, generateExtraTeams, autoSelectExtraPlayers, autoReplacePlayer, ExtraTeamGenInput, getRoleName, getRoleShort, PLAYER_ROLES, getLineupMode, getEligiblePlayers, isPlayerEligible, validateTeamForLineup, RoleCombination, CombinationMode, getAllValidCombinations, getCompatibleCombinations, autoSelectCombination, validateCombination, isCombinationCompatibleWithFixed, MIN_WK, MAX_WK, MIN_BAT, MAX_BAT, MIN_AR, MAX_AR, MIN_BOWL, MAX_BOWL } from '@/lib/tg-api'
+import { TGPlayer, GeneratedTeam, generateTeams, generateExtraTeams, autoSelectExtraPlayers, autoReplacePlayer, ExtraTeamGenInput, getRoleName, getRoleShort, PLAYER_ROLES, getLineupMode, getEligiblePlayers, isPlayerEligible, validateTeamForLineup, RoleCombination, CombinationMode, getAllValidCombinations, getCompatibleCombinations, autoSelectCombination, validateCombination, isCombinationCompatibleWithFixed, MIN_WK, MAX_WK, MIN_BAT, MAX_BAT, MIN_AR, MAX_AR, MIN_BOWL, MAX_BOWL, normalizePlatformName, resolvePlatformPlayerId } from '@/lib/tg-api'
 
 // Types
 interface Match {
@@ -1538,11 +1538,13 @@ export default function Home() {
     let successCount = 0
     let failCount = 0
 
-    // Helper: get platform-specific player ID from fantasy_id_list
-    const getPlatformPlayerId = (player: TGPlayer, platform: string): number | null => {
-      if (!player.fantasy_id_list) return null
-      const found = player.fantasy_id_list.find(f => f.name === platform)
-      return found ? found.id : null
+    // Platform ID resolution uses resolvePlatformPlayerId from tg-api.ts
+    // which handles case-insensitive matching (e.g., "Dream11" vs "dream11")
+
+    // Helper: get available platform names from a player's fantasy_id_list (for debug)
+    const getAvailablePlatforms = (player: TGPlayer): string[] => {
+      if (!player.fantasy_id_list) return []
+      return player.fantasy_id_list.map(f => f.name)
     }
 
     // Process teams sequentially with rate limiting
@@ -1557,25 +1559,40 @@ export default function Home() {
 
       // Map players to platform-specific IDs
       const playerIds: number[] = []
+      const failedMappings: string[] = []
       let allValid = true
       for (const player of team.players) {
-        const platformId = getPlatformPlayerId(player, transferPlatform)
+        const platformId = resolvePlatformPlayerId(player, transferPlatform)
         if (platformId === null) {
           allValid = false
+          const available = getAvailablePlatforms(player)
+          failedMappings.push(`${player.name} (has: [${available.join(', ')}], needs: ${transferPlatform})`)
           break
         }
         playerIds.push(platformId)
       }
 
-      const captainId = getPlatformPlayerId(team.captain, transferPlatform)
-      const vicecaptainId = getPlatformPlayerId(team.viceCaptain, transferPlatform)
+      const captainId = resolvePlatformPlayerId(team.captain, transferPlatform)
+      const vicecaptainId = resolvePlatformPlayerId(team.viceCaptain, transferPlatform)
 
-      if (!allValid || captainId === null || vicecaptainId === null) {
-        // Player mapping failed for this team
+      if (captainId === null) {
+        allValid = false
+        const available = getAvailablePlatforms(team.captain)
+        failedMappings.push(`C: ${team.captain.name} (has: [${available.join(', ')}], needs: ${transferPlatform})`)
+      }
+      if (vicecaptainId === null) {
+        allValid = false
+        const available = getAvailablePlatforms(team.viceCaptain)
+        failedMappings.push(`VC: ${team.viceCaptain.name} (has: [${available.join(', ')}], needs: ${transferPlatform})`)
+      }
+
+      if (!allValid) {
+        // Player mapping failed — include debug info about which player(s) failed
         failCount++
         setTransferFailCount(failCount)
+        const detail = failedMappings.length > 0 ? failedMappings[0] : 'Unknown player'
         setTransferResults(prev => prev.map((r, idx) =>
-          idx === i ? { ...r, status: 'fail' as const, message: 'Player ID mapping failed' } : r
+          idx === i ? { ...r, status: 'fail' as const, message: `ID mapping failed: ${detail}` } : r
         ))
         continue
       }

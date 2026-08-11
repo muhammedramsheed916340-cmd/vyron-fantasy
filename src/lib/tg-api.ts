@@ -3,6 +3,34 @@ import CryptoJS from 'crypto-js';
 const ENCRYPTION_KEY = 'coder_bobby_believer01_tg_software';
 const TG_API_BASE = 'https://tgsoftware-api.online/api';
 
+// ============ Platform Name Normalization ============
+
+/**
+ * Normalize platform names to consistent lowercase identifiers.
+ * The TG API may return varied casing in fantasy_id_list[].name
+ * (e.g., "Dream11", "dream11", "My11Circle", "my11circle").
+ * All internal references use lowercase: "dream11", "my11circle".
+ */
+export function normalizePlatformName(name: string): string {
+  return name.toLowerCase().replace(/[\s_-]/g, '');
+}
+
+/**
+ * Resolve a player's platform-specific ID from their fantasy_id_list.
+ * Uses case-insensitive matching to handle API casing variations.
+ */
+export function resolvePlatformPlayerId(
+  player: TGPlayer,
+  platform: string,
+): number | null {
+  if (!player.fantasy_id_list || player.fantasy_id_list.length === 0) return null;
+  const target = normalizePlatformName(platform);
+  const found = player.fantasy_id_list.find(
+    f => normalizePlatformName(f.name) === target
+  );
+  return found ? found.id : null;
+}
+
 // Player role constants
 export const PLAYER_ROLES = {
   BATSMAN: 0,

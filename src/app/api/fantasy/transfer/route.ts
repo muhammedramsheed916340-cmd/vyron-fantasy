@@ -85,7 +85,8 @@ export async function POST(request: NextRequest) {
     if (type === 'edit' && id) {
       payload.id = id;
     }
-    if (fantasyApp === 'my11circle' && my11circleChallenge) {
+    // Use case-insensitive check for my11circle challenge token
+    if (fantasyApp.toLowerCase() === 'my11circle' && my11circleChallenge) {
       payload.my11circleChallenge = my11circleChallenge;
     }
 
