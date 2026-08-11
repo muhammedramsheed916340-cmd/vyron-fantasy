@@ -88,3 +88,33 @@ Stage Summary:
 - Full VYRON rebrand complete: all user-facing text, logos, colors, metadata updated
 - Zero remaining user-visible old brand references (only internal encryption key and code comments remain)
 - App builds and runs successfully with VYRON identity
+---
+Task ID: 1
+Agent: Main
+Task: Fix Join Contest HTTP 404 — Complete contest API architecture
+
+Work Log:
+- Audited all TG API endpoints: confirmed NO contest endpoints exist (all return HTTP 404)
+- Tested 25+ possible endpoint variations on TG API — all 404
+- Decoded match data: match IDs are numeric (e.g., 113672), compatible with platform APIs
+- Tested Dream11 direct API: returns 418 (anti-bot) without valid session token
+- Tested My11Circle direct API: returns 404 without valid session token
+- Found CONTEST_JWT_TOKEN in .env was defined but never used anywhere
+- Found transfer/route.ts was calling non-existent TG API join-contest endpoint (404)
+- Updated platform-contest-api.ts: CONTEST_JWT_TOKEN, multi-strategy APIs, _debug diagnostics, numeric matchId validation, HTTP 404 error type
+- Updated platform-contests/route.ts: JWT support, matchId validation, http_404 handling
+- Updated join-contest/route.ts: JWT support, matchId validation
+- Fixed transfer/route.ts: replaced broken TG API join-contest call with internal route
+- Updated join-contest-service.ts: numeric matchId, 404 diagnosis, _debug logging
+- Updated JoinContestDialog.tsx: numeric platformMatchId, INVALID MATCH state, HTTP 404 display
+- Updated list-contests/route.ts: enhanced deprecation with debug info
+- Updated .env: added NEXT_PUBLIC_APP_URL
+- Build successful, committed and pushed (d55d388)
+
+Stage Summary:
+- TG API definitively has NO contest endpoints — platform-contest-api.ts is the correct approach
+- CONTEST_JWT_TOKEN now integrated as x-contest-token header
+- HTTP 404 is NEVER silently converted to empty contests
+- Real platform contest IDs preserved throughout the flow
+- Numeric matchId validated at every level (dialog → service → route → platform API)
+- transfer/route.ts join-contest bug fixed (was calling non-existent TG API endpoint)
