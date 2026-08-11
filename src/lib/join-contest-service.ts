@@ -574,8 +574,8 @@ export async function getExistingPlatformTeams(
           platformTeamId: teamId,  // REAL platform team ID
           name: (t.name as string) || `Team ${i + 1}`,
           players: [],              // Platform doesn't return full player list in list-of-teams
-          captain: { name: String(t.captain || ''), pl_id: 0, fantasy_id_list: [] } as TGPlayer,
-          viceCaptain: { name: String(t.vice_captain || t.viceCaptain || ''), pl_id: 0, fantasy_id_list: [] } as TGPlayer,
+          captain: { name: String(t.captain || ''), pl_id: 0, fantasy_id_list: [] } as unknown as TGPlayer,
+          viceCaptain: { name: String(t.vice_captain || t.viceCaptain || ''), pl_id: 0, fantasy_id_list: [] } as unknown as TGPlayer,
           matchId,
           platform,
           playerCount: (t.players as number) || (t.player_count as number) || (t.totalPlayers as number) || 11,

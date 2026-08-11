@@ -668,19 +668,43 @@ export function generateTeams(
 ): GeneratedTeam[] {
   // Apply lineup-aware filtering: AFTER LINEUP only playing=1, BEFORE LINEUP all
   const allPlayersRaw = [...leftPlayers, ...rightPlayers];
-  const allPlayers = getEligiblePlayers(allPlayersRaw, avoidPlayerIds);
+  const lineupMode = getLineupMode(allPlayersRaw);
+  let allPlayers = getEligiblePlayers(allPlayersRaw, avoidPlayerIds);
   const leftTeamName = leftPlayers[0]?.team_name || 'A';
   const rightTeamName = rightPlayers[0]?.team_name || 'B';
 
   // After filtering, rebuild left/right pools for team distribution checks
-  const eligibleLeft = allPlayers.filter(p => p.team_name === leftTeamName);
-  const eligibleRight = allPlayers.filter(p => p.team_name === rightTeamName);
+  let eligibleLeft = allPlayers.filter(p => p.team_name === leftTeamName);
+  let eligibleRight = allPlayers.filter(p => p.team_name === rightTeamName);
 
   // Separate by role
-  const wk = allPlayers.filter(p => p.role === PLAYER_ROLES.WICKET_KEEPER);
-  const bat = allPlayers.filter(p => p.role === PLAYER_ROLES.BATSMAN);
-  const ar = allPlayers.filter(p => p.role === PLAYER_ROLES.ALL_ROUNDER);
-  const bowl = allPlayers.filter(p => p.role === PLAYER_ROLES.BOWLER);
+  let wk = allPlayers.filter(p => p.role === PLAYER_ROLES.WICKET_KEEPER);
+  let bat = allPlayers.filter(p => p.role === PLAYER_ROLES.BATSMAN);
+  let ar = allPlayers.filter(p => p.role === PLAYER_ROLES.ALL_ROUNDER);
+  let bowl = allPlayers.filter(p => p.role === PLAYER_ROLES.BOWLER);
+
+  // AFTER LINEUP DIAGNOSTIC: Check if we have enough eligible players
+  if (lineupMode === 'after') {
+    console.log(`[TEAM GEN] AFTER LINEUP — Eligible: ${allPlayers.length}, Left: ${eligibleLeft.length}, Right: ${eligibleRight.length}, WK: ${wk.length}, BAT: ${bat.length}, AR: ${ar.length}, BOWL: ${bowl.length}`);
+    const totalCredits = allPlayers.reduce((s, p) => s + p.credits, 0);
+    console.log(`[TEAM GEN] Total eligible credits: ${totalCredits}, Avg: ${(totalCredits / allPlayers.length).toFixed(1)}`);
+
+    // If too few eligible players after lineup, fall back to including probable players
+    // (playing === 0 but likely to play — e.g., not explicitly ruled out)
+    if (allPlayers.length < 11 || eligibleLeft.length < 1 || eligibleRight.length < 1 ||
+        wk.length < MIN_WK || bat.length < MIN_BAT || ar.length < MIN_AR || bowl.length < MIN_BOWL) {
+      console.warn(`[TEAM GEN] Not enough eligible players after lineup. Including probable players (playing=0) as fallback.`);
+      // Include playing=0 players as fallback (they might still play)
+      allPlayers = allPlayersRaw.filter(p => !avoidPlayerIds.has(p.pl_id) && p.playing !== -1);
+      eligibleLeft = allPlayers.filter(p => p.team_name === leftTeamName);
+      eligibleRight = allPlayers.filter(p => p.team_name === rightTeamName);
+      wk = allPlayers.filter(p => p.role === PLAYER_ROLES.WICKET_KEEPER);
+      bat = allPlayers.filter(p => p.role === PLAYER_ROLES.BATSMAN);
+      ar = allPlayers.filter(p => p.role === PLAYER_ROLES.ALL_ROUNDER);
+      bowl = allPlayers.filter(p => p.role === PLAYER_ROLES.BOWLER);
+      console.log(`[TEAM GEN] Fallback — Eligible: ${allPlayers.length}, Left: ${eligibleLeft.length}, Right: ${eligibleRight.length}, WK: ${wk.length}, BAT: ${bat.length}, AR: ${ar.length}, BOWL: ${bowl.length}`);
+    }
+  }
 
   const teams: GeneratedTeam[] = [];
   const rng = seededRandom(seed);
@@ -807,6 +831,76 @@ export function generateTeams(
     }
   }
 
+  // AFTER LINEUP FALLBACK: If 0 teams generated, retry with relaxed constraints
+  if (teams.length === 0 && lineupMode === 'after') {
+    console.warn(`[TEAM GEN] 0 teams generated after lineup! Retrying with relaxed constraints...`);
+
+    // Fallback 1: Increase max attempts and allow higher credits
+    const RELAXED_MAX_CREDITS = 110; // Allow 10 extra credits
+    for (let t = 0; t < count; t++) {
+      let attempts = 0;
+      let team: TGPlayer[] | null = null;
+
+      while (!team && attempts < 500) {
+        attempts++;
+        const sr = seededRandom(seed + t * 2000 + attempts + 99999);
+
+        let wkCount, batCount, arCount, bowlCount;
+        // Try all valid combinations systematically
+        const combos = getAllValidCombinations();
+        const combo = combos[Math.floor(sr() * combos.length)];
+        wkCount = combo.wk;
+        batCount = combo.bat;
+        arCount = combo.ar;
+        bowlCount = combo.bowl;
+
+        const shuffledWK = shuffleArray(wk, sr);
+        const shuffledBat = shuffleArray(bat, sr);
+        const shuffledAR = shuffleArray(ar, sr);
+        const shuffledBowl = shuffleArray(bowl, sr);
+
+        const selectedWK = shuffledWK.slice(0, wkCount);
+        const selectedBat = shuffledBat.slice(0, batCount);
+        const selectedAR = shuffledAR.slice(0, arCount);
+        const selectedBowl = shuffledBowl.slice(0, bowlCount);
+
+        if (selectedWK.length < wkCount || selectedBat.length < batCount ||
+            selectedAR.length < arCount || selectedBowl.length < bowlCount) continue;
+
+        const selected = [...selectedWK, ...selectedBat, ...selectedAR, ...selectedBowl];
+        const totalCredits = selected.reduce((sum, p) => sum + p.credits, 0);
+        if (totalCredits > RELAXED_MAX_CREDITS) continue;
+
+        const leftCount = selected.filter(p => p.team_name === leftTeamName).length;
+        const rightCount = selected.filter(p => p.team_name === rightTeamName).length;
+        // Relaxed: allow up to 8 from one team (instead of 7)
+        if (leftCount > 8 || rightCount > 8) continue;
+        if (leftCount < 1 || rightCount < 1) continue;
+
+        team = selected;
+      }
+
+      if (team) {
+        const sorted = [...team].sort((a, b) =>
+          (b.points * 0.4 + b.selected_by * 0.3 + b.captain_percentage * 0.3) -
+          (a.points * 0.4 + a.selected_by * 0.3 + a.captain_percentage * 0.3)
+        );
+        teams.push({
+          id: t + 1,
+          captain: sorted[0],
+          viceCaptain: sorted.length > 1 ? sorted[1] : sorted[0],
+          players: team,
+        });
+      }
+    }
+
+    if (teams.length > 0) {
+      console.log(`[TEAM GEN] Relaxed constraints generated ${teams.length} teams`);
+    } else {
+      console.error(`[TEAM GEN] Still 0 teams after relaxed constraints. Eligible: ${allPlayers.length}, WK: ${wk.length}, BAT: ${bat.length}, AR: ${ar.length}, BOWL: ${bowl.length}`);
+    }
+  }
+
   return teams;
 }
 
@@ -843,9 +937,16 @@ export function generateExtraTeams(input: ExtraTeamGenInput): GeneratedTeam[] {
 
   // Apply lineup-aware filtering to the full player pool
   const allPlayersRaw = [...leftPlayers, ...rightPlayers];
-  const allPlayers = getEligiblePlayers(allPlayersRaw, avoidPlayerIds);
+  const lineupMode = getLineupMode(allPlayersRaw);
+  let allPlayers = getEligiblePlayers(allPlayersRaw, avoidPlayerIds);
   const leftTeamName = leftPlayers[0]?.team_name || 'A';
   const rightTeamName = rightPlayers[0]?.team_name || 'B';
+
+  // AFTER LINEUP FALLBACK: If too few eligible players, include probable players
+  if (lineupMode === 'after' && allPlayers.length < 14) {
+    console.warn(`[EXTRA TEAM GEN] Only ${allPlayers.length} eligible after lineup, including probable players as fallback.`);
+    allPlayers = allPlayersRaw.filter(p => !avoidPlayerIds.has(p.pl_id) && p.playing !== -1);
+  }
 
   // Pool of players excluding the 8 fixed ones (use pl_id for identity)
   const fixedIds = new Set(fixedPlayers.map(p => p.pl_id));

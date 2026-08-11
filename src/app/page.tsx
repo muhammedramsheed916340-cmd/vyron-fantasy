@@ -894,7 +894,16 @@ export default function Home() {
       setInvalidTeams(newInvalidTeams)
 
       setGenerating(false)
-      if (newInvalidTeams.size > 0) {
+      if (teams.length === 0) {
+        const allP = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
+        const lineupMode = getLineupMode(allP)
+        const playingCount = allP.filter(p => p.playing === 1).length
+        if (lineupMode === 'after' || playingCount > 0) {
+          toast({ title: `0 teams generated. Lineup has ${playingCount} confirmed players. Try changing combination or removing avoid players.`, variant: 'destructive' })
+        } else {
+          toast({ title: '0 teams generated. Not enough valid player combinations. Try different category or combination.', variant: 'destructive' })
+        }
+      } else if (newInvalidTeams.size > 0) {
         toast({ title: `${teams.length} teams generated, but ${newInvalidTeams.size} have invalid players after lineup check`, variant: 'destructive' })
       } else {
         toast({ title: `${teams.length} teams generated successfully!` })
@@ -4412,6 +4421,13 @@ export default function Home() {
           fantasy_list: m.fantasy_list,
         }))}
         fantasyAccounts={fantasyAccounts}
+        onAccountUpdate={(platform, account) => {
+          setFantasyAccounts(prev => {
+            const updated = { ...prev, [platform]: account }
+            localStorage.setItem('vyron_fantasy_accounts', JSON.stringify(updated))
+            return updated
+          })
+        }}
       />
     </div>
   )

@@ -29,7 +29,7 @@ interface JoinContestDialogProps {
   open: boolean;
   onClose: () => void;
   matches: JCMatch[];
-  fantasyAccounts: Record<string, { authToken: string; mobileNumber: string; my11circleChallenge?: string | null }>;
+  fantasyAccounts: Record<string, { authToken: string; mobileNumber: string; my11circleChallenge?: string | null } | null>;
   /** Callback to update the parent's fantasy account state after a successful token refresh */
   onAccountUpdate?: (platform: string, account: { authToken: string; mobileNumber: string; my11circleChallenge?: string | null; my11circleUserId?: string | null; linkedAt: string }) => void;
 }
@@ -234,7 +234,7 @@ export default function JoinContestDialog({
         loadContests();
       }
     }, 1500);
-  }, [refreshOtp, platform, effectiveAccount, sessionRefreshState, onAccountUpdate, step, loadPlatformTeams, loadContests]);
+  }, [refreshOtp, platform, effectiveAccount, sessionRefreshState, onAccountUpdate, step]);
 
   // ============ Match Selection ============
   const toggleMatch = (id: string | number) => {
