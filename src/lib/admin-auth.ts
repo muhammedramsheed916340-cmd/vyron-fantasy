@@ -136,13 +136,23 @@ export async function findActiveLicenseForAccount(accountId: string): Promise<{
     assignedTo: string | null;
   };
 }> {
-  const license = await prisma.license.findFirst({
+  // First try: license assigned to this specific account
+  let license = await prisma.license.findFirst({
     where: {
       assignedTo: accountId,
       status: 'ACTIVE',
     },
     orderBy: { createdAt: 'desc' },
   });
+
+  // Fallback: any active license (supports admin/single-user setups where
+  // license is assigned to "admin" but frontend sends the phone number)
+  if (!license) {
+    license = await prisma.license.findFirst({
+      where: { status: 'ACTIVE' },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
 
   if (!license) {
     return { valid: false };
