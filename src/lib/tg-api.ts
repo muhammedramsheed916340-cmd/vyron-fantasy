@@ -63,12 +63,34 @@ export function getRoleShort(role: number): string {
 
 /**
  * Determine lineup mode based on player data.
- * AFTER LINEUP: any player has playing === 1 (confirmed in Playing XI)
- * BEFORE LINEUP: no player is confirmed yet
+ * AFTER LINEUP: enough players have playing === 1 to form valid teams.
+ *   Requires at least 11 confirmed total AND at least 4 from each team
+ *   (due to max-7-from-one-team constraint: 11 - 7 = 4).
+ *   If only a few players are confirmed (partial lineup), we stay in
+ *   'before' mode so team generation doesn't fail with too few eligible players.
+ * BEFORE LINEUP: lineup not fully confirmed yet — all players eligible.
+ *
+ * BUG FIX: Previously used players.some(p => p.playing === 1) which
+ * switched to 'after' mode when even ONE player was confirmed, causing
+ * getEligiblePlayers to filter out all non-confirmed players and leaving
+ * too few to form valid 11-player teams → 0 teams generated.
  */
 export function getLineupMode(players: TGPlayer[]): 'before' | 'after' {
-  const hasConfirmedPlaying = players.some(p => p.playing === 1);
-  return hasConfirmedPlaying ? 'after' : 'before';
+  const confirmed = players.filter(p => p.playing === 1);
+
+  // Need at least 11 confirmed players total to form a valid team
+  if (confirmed.length < 11) return 'before';
+
+  // Need at least 4 confirmed from each team
+  // (max 7 from one team → need at least 11-7=4 from the other)
+  const teamNames = [...new Set(players.map(p => p.team_name))];
+  for (const team of teamNames) {
+    if (team && confirmed.filter(p => p.team_name === team).length < 4) {
+      return 'before';
+    }
+  }
+
+  return 'after';
 }
 
 /**
