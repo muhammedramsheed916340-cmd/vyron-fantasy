@@ -56,6 +56,8 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { useToast } from '@/hooks/use-toast'
 import { TGPlayer, GeneratedTeam, generateTeams, generateExtraTeams, autoSelectExtraPlayers, autoReplacePlayer, ExtraTeamGenInput, getRoleName, getRoleShort, PLAYER_ROLES, getLineupMode, getEligiblePlayers, isPlayerEligible, validateTeamForLineup, RoleCombination, CombinationMode, getAllValidCombinations, getCompatibleCombinations, autoSelectCombination, validateCombination, isCombinationCompatibleWithFixed, MIN_WK, MAX_WK, MIN_BAT, MAX_BAT, MIN_AR, MAX_AR, MIN_BOWL, MAX_BOWL, normalizePlatformName, resolvePlatformPlayerId } from '@/lib/tg-api'
+import JoinContestDialog from '@/components/join-contest/JoinContestDialog'
+import { JCMatch } from '@/lib/join-contest-service'
 
 // Types
 interface Match {
@@ -569,6 +571,7 @@ export default function Home() {
   const [authToken, setAuthToken] = useState<string | null>(null)
   const [showLoginDialog, setShowLoginDialog] = useState(false)
   const [showTransferDialog, setShowTransferDialog] = useState(false)
+  const [showJoinContestDialog, setShowJoinContestDialog] = useState(false)
   const [transferPlatform, setTransferPlatform] = useState<string | null>(null)
   const [transferOption, setTransferOption] = useState<'new' | 'existing' | 'replace'>('new')
   const [contestId, setContestId] = useState<string>('')
@@ -3134,6 +3137,22 @@ export default function Home() {
                     </div>
                   </div>
 
+                  {/* JOIN CONTEST — Separate Module */}
+                  <div className="mb-3">
+                    <p className="text-sm font-semibold text-gray-700 mb-2">4. Join Contest</p>
+                    <Button
+                      className="w-full bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white h-12 text-sm font-bold shadow-lg shadow-green-600/20"
+                      disabled={generatedTeams.length === 0}
+                      onClick={() => setShowJoinContestDialog(true)}
+                    >
+                      <Trophy className="w-5 h-5 mr-2" />
+                      JOIN CONTEST {generatedTeams.length > 0 ? `(${generatedTeams.length} teams)` : ''}
+                    </Button>
+                    {generatedTeams.length === 0 && (
+                      <p className="text-xs text-gray-400 mt-1">Generate teams first to join contests</p>
+                    )}
+                  </div>
+
                   {/* Fantasy Platform Info */}
                   <div className="mb-3">
                     <p className="text-xs font-semibold text-gray-500 mb-1.5">Available Platforms</p>
@@ -3556,43 +3575,6 @@ export default function Home() {
               </div>
             )}
 
-            {/* Join Contest Toggle */}
-            {transferProgress.status === 'idle' && (
-              <div className="space-y-1.5">
-                <button
-                  onClick={() => setContestId(contestId ? '' : 'join-enabled')}
-                  disabled={transferring}
-                  className={`w-full text-left rounded-xl border-2 p-3 transition-all ${
-                    contestId
-                      ? 'border-green-500 bg-green-50 shadow-sm'
-                      : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50'
-                  } ${transferring ? 'opacity-60 pointer-events-none' : ''}`}
-                >
-                  <div className="flex items-center gap-3">
-                    <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
-                      contestId ? 'bg-green-500 text-white' : 'bg-gray-100 text-gray-500'
-                    }`}>
-                      <Trophy className="w-5 h-5" />
-                    </div>
-                    <div className="flex-1">
-                      <p className={`font-semibold text-sm ${contestId ? 'text-green-700' : 'text-gray-900'}`}>
-                        Join Contest
-                      </p>
-                      <p className="text-xs text-gray-500 mt-0.5">
-                        {contestId
-                          ? `Teams will auto-join contest on ${transferPlatform === 'dream11' ? 'Dream11' : 'My11Circle'}`
-                          : 'Enable to auto-join contest after team creation'
-                        }
-                      </p>
-                    </div>
-                    <div className={`w-10 h-6 rounded-full relative transition-all ${contestId ? 'bg-green-500' : 'bg-gray-300'}`}>
-                      <div className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${contestId ? 'left-4.5' : 'left-0.5'}`} />
-                    </div>
-                  </div>
-                </button>
-              </div>
-            )}
-
             {/* Transfer summary before start */}
             {transferProgress.status === 'idle' && (
               <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
@@ -3622,12 +3604,6 @@ export default function Home() {
                   <span className="text-gray-600">Rate limit</span>
                   <span className="font-semibold text-gray-900">{transferPlatform === 'dream11' ? '200ms' : '2000ms'} between teams</span>
                 </div>
-                {contestId && (
-                  <div className="flex items-center justify-between text-sm mt-1">
-                    <span className="text-gray-600">Contest</span>
-                    <span className="font-semibold text-green-600">Auto-join enabled</span>
-                  </div>
-                )}
               </div>
             )}
 
@@ -4421,6 +4397,23 @@ export default function Home() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* JOIN CONTEST — Completely Separate Module */}
+      <JoinContestDialog
+        open={showJoinContestDialog}
+        onClose={() => setShowJoinContestDialog(false)}
+        matches={matches.map(m => ({
+          id: m.id,
+          left_team_name: m.left_team_name,
+          right_team_name: m.right_team_name,
+          match_time: m.match_time,
+          sport_index: m.sport_index,
+          lineup_out: m.lineup_out,
+          fantasy_list: m.fantasy_list,
+        }))}
+        generatedTeams={generatedTeams}
+        fantasyAccounts={fantasyAccounts}
+      />
     </div>
   )
 }

@@ -2,26 +2,23 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const TG_API_BASE = 'https://tgsoftware-api.online/api';
 
-// ============================================================
-// 🔒 HIDDEN JWT TOKEN — Only server-side, never exposed to client
-// Replace this with the actual JWT token when provided
-// ============================================================
-const CONTEST_JWT_TOKEN = process.env.CONTEST_JWT_TOKEN || 'PLACEHOLDER_REPLACE_WITH_REAL_TOKEN';
+// 🔒 JWT token — server-side only, never exposed to client
+const CONTEST_JWT_TOKEN = process.env.CONTEST_JWT_TOKEN || '';
 
 interface JoinContestBody {
   fantasyApp: string;
   matchId: string | number;
   authToken: string;
   teamId: string | number;
+  contestId: string;
   sportIndex?: number;
 }
 
 export async function POST(request: NextRequest) {
   try {
     const body: JoinContestBody = await request.json();
-    const { fantasyApp, matchId, authToken, teamId, sportIndex } = body;
+    const { fantasyApp, matchId, authToken, teamId, contestId, sportIndex } = body;
 
-    // Validate required fields
     if (!fantasyApp) {
       return NextResponse.json({ status: 'fail', message: 'fantasyApp is required' }, { status: 400 });
     }
@@ -31,32 +28,25 @@ export async function POST(request: NextRequest) {
     if (!authToken) {
       return NextResponse.json({ status: 'fail', message: 'authToken is required' }, { status: 400 });
     }
-    if (!teamId) {
-      return NextResponse.json({ status: 'fail', message: 'teamId is required' }, { status: 400 });
+    if (!contestId) {
+      return NextResponse.json({ status: 'fail', message: 'contestId is required' }, { status: 400 });
     }
-
-    // Check JWT token is configured
-    if (CONTEST_JWT_TOKEN === 'PLACEHOLDER_REPLACE_WITH_REAL_TOKEN') {
-      console.warn('Join Contest: JWT token not configured yet');
-      return NextResponse.json({
-        status: 'fail',
-        message: 'Contest joining is not configured. Contact admin.',
-      });
+    if (!CONTEST_JWT_TOKEN) {
+      return NextResponse.json({ status: 'fail', message: 'Contest JWT token not configured' });
     }
 
     const numericMatchId = typeof matchId === 'string' ? parseInt(matchId, 10) : matchId;
 
-    // Build payload for TG API join-contest
     const payload: Record<string, unknown> = {
       matchId: numericMatchId,
       fantasyApp,
       authToken,
       teamId,
+      contestId,
       sportIndex: sportIndex ?? 0,
-      token: CONTEST_JWT_TOKEN,  // JWT token — hidden from client
+      token: CONTEST_JWT_TOKEN,
     };
 
-    // Call TG API join-contest endpoint
     try {
       const response = await fetch(`${TG_API_BASE}/fantasy/join-contest`, {
         method: 'POST',
@@ -72,7 +62,6 @@ export async function POST(request: NextRequest) {
       try {
         data = await response.json();
       } catch {
-        console.error('TG API join-contest returned non-JSON, status:', response.status);
         return NextResponse.json({
           status: 'fail',
           message: `Contest API returned unexpected response (HTTP ${response.status}).`,
@@ -80,30 +69,22 @@ export async function POST(request: NextRequest) {
       }
 
       if (data.status === 'success') {
-        return NextResponse.json({
-          status: 'success',
-          data: data.data || {},
-        });
+        return NextResponse.json({ status: 'success', data: data.data || {} });
       }
 
+      // Detect "already joined" from API message
+      const alreadyJoined = /already.*join|already.*entered|already.*participat/i.test(data.message || '');
+
       return NextResponse.json({
-        status: 'fail',
-        message: data.message || 'Contest join failed at the platform API.',
+        status: alreadyJoined ? 'already_joined' : 'fail',
+        message: data.message || 'Contest join failed.',
       });
     } catch (fetchError) {
-      const errMsg = fetchError instanceof Error ? fetchError.message : String(fetchError);
-      console.error('TG API join-contest unreachable:', errMsg);
-      return NextResponse.json({
-        status: 'fail',
-        message: 'Contest join API is unavailable. Please try again later.',
-      });
+      console.error('TG API join-contest unreachable:', fetchError instanceof Error ? fetchError.message : 'unknown');
+      return NextResponse.json({ status: 'fail', message: 'Contest join API unavailable.' });
     }
   } catch (error) {
-    const errMsg = error instanceof Error ? error.message : String(error);
-    console.error('Join Contest API Error:', errMsg);
-    return NextResponse.json(
-      { status: 'fail', message: 'Failed to process join contest request.' },
-      { status: 500 }
-    );
+    console.error('Join Contest Error:', error instanceof Error ? error.message : 'unknown');
+    return NextResponse.json({ status: 'fail', message: 'Failed to process join contest.' }, { status: 500 });
   }
 }

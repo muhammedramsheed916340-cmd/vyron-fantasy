@@ -1,0 +1,631 @@
+'use client';
+
+import React, { useState, useCallback, useMemo } from 'react';
+import {
+  Trophy, X, CheckCircle2, Loader2, ChevronRight, ChevronLeft,
+  AlertCircle, Users, DollarSign, Filter, Search,
+} from 'lucide-react';
+import {
+  JCMatch, JCContest, JCTeam, JCJoinItem, JCProgress,
+  parseContest, formatCurrency, getContestTypeColor,
+  generatedTeamToJCTeam, buildJoinItems, getJoinKey,
+} from '@/lib/join-contest-service';
+import { TGPlayer, GeneratedTeam } from '@/lib/tg-api';
+
+// ============ Step Enum ============
+type Step = 'matches' | 'teams' | 'contests' | 'joining' | 'result';
+
+// ============ Props ============
+interface JoinContestDialogProps {
+  open: boolean;
+  onClose: () => void;
+  matches: JCMatch[];
+  generatedTeams: GeneratedTeam[];
+  fantasyAccounts: Record<string, { authToken: string; mobileNumber: string; my11circleChallenge?: string | null }>;
+}
+
+// ============ Main Dialog ============
+export default function JoinContestDialog({
+  open, onClose, matches, generatedTeams, fantasyAccounts,
+}: JoinContestDialogProps) {
+  // Step state
+  const [step, setStep] = useState<Step>('matches');
+  const [platform, setPlatform] = useState<string>('dream11');
+
+  // Match selection
+  const [selectedMatchIds, setSelectedMatchIds] = useState<Set<string | number>>(new Set());
+
+  // Team selection
+  const [selectedTeamIds, setSelectedTeamIds] = useState<Set<string | number>>(new Set());
+  const [mixedTeamMode, setMixedTeamMode] = useState(false);
+
+  // Contest selection
+  const [contestsMap, setContestsMap] = useState<Map<string, JCContest[]>>(new Map());
+  const [selectedContestIds, setSelectedContestIds] = useState<Set<string>>(new Set());
+  const [loadingContests, setLoadingContests] = useState(false);
+
+  // Join progress
+  const [joinItems, setJoinItems] = useState<JCJoinItem[]>([]);
+  const [progress, setProgress] = useState<JCProgress>({ current: 0, total: 0, status: 'idle' });
+
+  // Result
+  const [resultItems, setResultItems] = useState<JCJoinItem[]>([]);
+
+  // Reset on close
+  const handleClose = () => {
+    setStep('matches');
+    setSelectedMatchIds(new Set());
+    setSelectedTeamIds(new Set());
+    setMixedTeamMode(false);
+    setContestsMap(new Map());
+    setSelectedContestIds(new Set());
+    setJoinItems([]);
+    setProgress({ current: 0, total: 0, status: 'idle' });
+    setResultItems([]);
+    onClose();
+  };
+
+  // Available platforms from linked accounts
+  const availablePlatforms = useMemo(() => {
+    const platforms: string[] = [];
+    if (fantasyAccounts.dream11?.authToken) platforms.push('dream11');
+    if (fantasyAccounts.my11circle?.authToken) platforms.push('my11circle');
+    return platforms;
+  }, [fantasyAccounts]);
+
+  const account = fantasyAccounts[platform];
+
+  // ============ Match Selection ============
+  const toggleMatch = (id: string | number) => {
+    setSelectedMatchIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const selectAllMatches = () => {
+    setSelectedMatchIds(new Set(matches.map(m => m.id)));
+  };
+
+  // ============ Team Selection ============
+  const jcTeams = useMemo(() => {
+    const selectedMatch = matches.find(m => selectedMatchIds.has(m.id));
+    return generatedTeams.map((t, i) => generatedTeamToJCTeam(t, i, selectedMatch?.id));
+  }, [generatedTeams, selectedMatchIds, matches]);
+
+  const toggleTeam = (id: string | number) => {
+    setSelectedTeamIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const selectAllTeams = () => {
+    setSelectedTeamIds(new Set(jcTeams.map(t => t.id)));
+  };
+
+  // ============ Contest Loading ============
+  const loadContests = useCallback(async () => {
+    if (!account?.authToken) return;
+    setLoadingContests(true);
+    const newMap = new Map<string, JCContest[]>();
+
+    for (const matchId of selectedMatchIds) {
+      const match = matches.find(m => m.id === matchId);
+      try {
+        const res = await fetch('/api/fantasy/list-contests', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fantasyApp: platform,
+            matchId,
+            authToken: account.authToken,
+            sportIndex: match?.sport_index ?? 0,
+          }),
+        });
+        const data = await res.json();
+        if (data.status === 'success' && Array.isArray(data.data?.contests)) {
+          newMap.set(String(matchId), data.data.contests.map((c: Record<string, unknown>) => parseContest(c)));
+        } else {
+          newMap.set(String(matchId), []);
+        }
+      } catch {
+        newMap.set(String(matchId), []);
+      }
+    }
+
+    setContestsMap(newMap);
+    setLoadingContests(false);
+  }, [selectedMatchIds, platform, account, matches]);
+
+  const toggleContest = (id: string) => {
+    setSelectedContestIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  // ============ Join Execution ============
+  const executeJoin = useCallback(async () => {
+    const selectedMatches = matches.filter(m => selectedMatchIds.has(m.id));
+    const selectedContestsForJoin = new Map<string, JCContest[]>();
+    for (const [matchId, contests] of contestsMap.entries()) {
+      selectedContestsForJoin.set(matchId, contests.filter(c => selectedContestIds.has(c.id)));
+    }
+
+    const items = buildJoinItems(selectedMatches, selectedContestsForJoin, selectedTeamIds, jcTeams, platform);
+
+    if (items.length === 0) {
+      setStep('result');
+      return;
+    }
+
+    setJoinItems(items);
+    setProgress({ current: 0, total: items.length, status: 'joining' });
+    setStep('joining');
+
+    let current = 0;
+    const updatedItems = [...items];
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      current = i + 1;
+      setProgress(prev => ({ ...prev, current }));
+      setJoinItems(prev => prev.map((it, idx) =>
+        idx === i ? { ...it, status: 'processing' } : it
+      ));
+
+      try {
+        const match = matches.find(m => String(m.id) === String(item.matchId));
+        const res = await fetch('/api/fantasy/join-contest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fantasyApp: platform,
+            matchId: item.matchId,
+            authToken: account?.authToken,
+            teamId: item.teamId,
+            contestId: item.contestId,
+            sportIndex: match?.sport_index ?? 0,
+          }),
+        });
+        const data = await res.json();
+
+        const status = data.status === 'success' ? 'success'
+          : data.status === 'already_joined' ? 'already_joined' : 'fail';
+
+        updatedItems[i] = { ...updatedItems[i], status, message: data.message };
+        setJoinItems([...updatedItems]);
+      } catch {
+        updatedItems[i] = { ...updatedItems[i], status: 'fail', message: 'Network error' };
+        setJoinItems([...updatedItems]);
+      }
+
+      // Rate limit between joins
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    setResultItems([...updatedItems]);
+    setProgress(prev => ({ ...prev, status: 'done' }));
+    setStep('result');
+  }, [matches, selectedMatchIds, contestsMap, selectedContestIds, selectedTeamIds, jcTeams, platform, account]);
+
+  // ============ Result Stats ============
+  const resultStats = useMemo(() => {
+    const items = resultItems.length > 0 ? resultItems : joinItems;
+    return {
+      total: items.length,
+      success: items.filter(i => i.status === 'success').length,
+      alreadyJoined: items.filter(i => i.status === 'already_joined').length,
+      fail: items.filter(i => i.status === 'fail').length,
+    };
+  }, [resultItems, joinItems]);
+
+  if (!open) return null;
+
+  // ============ RENDER ============
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={handleClose}>
+      <div
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b bg-gradient-to-r from-green-600 to-emerald-600 text-white">
+          <div className="flex items-center gap-3">
+            <Trophy className="w-6 h-6" />
+            <h2 className="text-lg font-bold">Join Contest</h2>
+          </div>
+          <button onClick={handleClose} className="p-1 hover:bg-white/20 rounded-lg transition-all">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Step Indicator */}
+        <div className="flex items-center gap-1 px-6 py-3 bg-gray-50 border-b">
+          {(['matches', 'teams', 'contests', 'joining', 'result'] as Step[]).map((s, i) => {
+            const labels = ['Match', 'Teams', 'Contests', 'Join', 'Result'];
+            const stepOrder = ['matches', 'teams', 'contests', 'joining', 'result'];
+            const isActive = step === s;
+            const isDone = stepOrder.indexOf(step) > i;
+            return (
+              <React.Fragment key={s}>
+                {i > 0 && <ChevronRight className="w-3 h-3 text-gray-300" />}
+                <div className={`flex items-center gap-1.5 text-xs font-semibold px-2 py-1 rounded-lg transition-all ${
+                  isActive ? 'bg-green-100 text-green-700' : isDone ? 'text-green-500' : 'text-gray-400'
+                }`}>
+                  <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] ${
+                    isActive ? 'bg-green-600 text-white' : isDone ? 'bg-green-200 text-green-600' : 'bg-gray-200 text-gray-500'
+                  }`}>
+                    {isDone ? '✓' : i + 1}
+                  </div>
+                  {labels[i]}
+                </div>
+              </React.Fragment>
+            );
+          })}
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-6">
+          {/* ===== STEP: MATCHES ===== */}
+          {step === 'matches' && (
+            <div className="space-y-4">
+              {/* Platform Selection */}
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Platform</p>
+                <div className="flex gap-2">
+                  {availablePlatforms.map(p => (
+                    <button key={p} onClick={() => setPlatform(p)}
+                      className={`flex-1 rounded-xl border-2 p-3 text-center font-semibold text-sm transition-all ${
+                        platform === p ? 'border-green-500 bg-green-50 text-green-700' : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300'
+                      }`}
+                    >
+                      {p === 'dream11' ? 'Dream11' : 'My11Circle'}
+                    </button>
+                  ))}
+                </div>
+                {availablePlatforms.length === 0 && (
+                  <p className="text-sm text-amber-600">⚠️ Link a fantasy account first via Transfer</p>
+                )}
+              </div>
+
+              {/* Match List */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Select Matches</p>
+                  <button onClick={selectAllMatches}
+                    className="text-xs font-semibold text-green-600 hover:text-green-700">
+                    Select All
+                  </button>
+                </div>
+                {matches.length === 0 ? (
+                  <p className="text-sm text-gray-400 text-center py-8">No upcoming matches</p>
+                ) : (
+                  <div className="space-y-2 max-h-80 overflow-y-auto">
+                    {matches.map(match => {
+                      const selected = selectedMatchIds.has(match.id);
+                      return (
+                        <button key={match.id} onClick={() => toggleMatch(match.id)}
+                          className={`w-full text-left rounded-xl border-2 p-3 transition-all ${
+                            selected ? 'border-green-500 bg-green-50' : 'border-gray-200 bg-white hover:border-gray-300'
+                          }`}>
+                          <div className="flex items-center gap-3">
+                            <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
+                              selected ? 'border-green-500 bg-green-500' : 'border-gray-300'
+                            }`}>
+                              {selected && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
+                            </div>
+                            <div className="flex-1">
+                              <p className="font-semibold text-sm text-gray-900">
+                                {match.left_team_name} vs {match.right_team_name}
+                              </p>
+                              <div className="flex items-center gap-2 text-xs text-gray-500 mt-0.5">
+                                <span>{match.match_time}</span>
+                                {match.lineup_out === 1 && <span className="text-green-600 font-medium">Lineup Out</span>}
+                              </div>
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ===== STEP: TEAMS ===== */}
+          {step === 'teams' && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                  Select Teams ({jcTeams.length} available)
+                </p>
+                <button onClick={selectAllTeams}
+                  className="text-xs font-semibold text-green-600 hover:text-green-700">
+                  Select All
+                </button>
+              </div>
+
+              {/* Mixed Team Toggle */}
+              <button onClick={() => setMixedTeamMode(!mixedTeamMode)}
+                className={`w-full rounded-xl border-2 p-3 transition-all ${
+                  mixedTeamMode ? 'border-purple-500 bg-purple-50' : 'border-gray-200 bg-white hover:border-gray-300'
+                }`}>
+                <div className="flex items-center gap-3">
+                  <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${
+                    mixedTeamMode ? 'bg-purple-500 text-white' : 'bg-gray-100 text-gray-500'
+                  }`}>
+                    <Filter className="w-5 h-5" />
+                  </div>
+                  <div className="flex-1">
+                    <p className={`font-semibold text-sm ${mixedTeamMode ? 'text-purple-700' : 'text-gray-900'}`}>
+                      Mixed Team Mode
+                    </p>
+                    <p className="text-xs text-gray-500">
+                      {mixedTeamMode ? 'Teams can be combined across compatible match pools' : 'Enable to mix teams from compatible matches'}
+                    </p>
+                  </div>
+                  <div className={`w-10 h-6 rounded-full relative transition-all ${mixedTeamMode ? 'bg-purple-500' : 'bg-gray-300'}`}>
+                    <div className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${mixedTeamMode ? 'left-4.5' : 'left-0.5'}`} />
+                  </div>
+                </div>
+              </button>
+
+              {/* Team Grid */}
+              <div className="grid grid-cols-2 gap-2 max-h-72 overflow-y-auto">
+                {jcTeams.map(team => {
+                  const selected = selectedTeamIds.has(team.id);
+                  return (
+                    <button key={team.id} onClick={() => toggleTeam(team.id)}
+                      className={`rounded-xl border-2 p-2.5 text-left transition-all ${
+                        selected ? 'border-green-500 bg-green-50' : 'border-gray-200 bg-white hover:border-gray-300'
+                      }`}>
+                      <div className="flex items-center gap-2">
+                        <div className={`w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 ${
+                          selected ? 'border-green-500 bg-green-500' : 'border-gray-300'
+                        }`}>
+                          {selected && <CheckCircle2 className="w-3 h-3 text-white" />}
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium text-gray-900">{team.name}</p>
+                          <p className="text-[10px] text-gray-500">C: {team.captain.name} | VC: {team.viceCaptain.name}</p>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {selectedTeamIds.size > 0 && (
+                <p className="text-sm text-green-600 font-medium">{selectedTeamIds.size} team(s) selected</p>
+              )}
+            </div>
+          )}
+
+          {/* ===== STEP: CONTESTS ===== */}
+          {step === 'contests' && (
+            <div className="space-y-4">
+              {loadingContests ? (
+                <div className="flex flex-col items-center justify-center py-12">
+                  <Loader2 className="w-8 h-8 animate-spin text-green-500" />
+                  <p className="text-sm text-gray-500 mt-3">Loading contests...</p>
+                </div>
+              ) : (
+                Array.from(contestsMap.entries()).map(([matchId, contests]) => {
+                  const match = matches.find(m => String(m.id) === matchId);
+                  return (
+                    <div key={matchId} className="space-y-2">
+                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                        {match?.left_team_name} vs {match?.right_team_name}
+                      </p>
+                      {contests.length === 0 ? (
+                        <p className="text-sm text-gray-400 py-4 text-center">No contests available</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {contests.map(contest => {
+                            const selected = selectedContestIds.has(contest.id);
+                            return (
+                              <button key={contest.id} onClick={() => toggleContest(contest.id)}
+                                className={`w-full text-left rounded-xl border-2 p-3 transition-all ${
+                                  selected ? 'border-green-500 bg-green-50' : 'border-gray-200 bg-white hover:border-gray-300'
+                                } ${!contest.joinAvailable ? 'opacity-50' : ''}`}>
+                                <div className="flex items-center gap-3">
+                                  <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
+                                    selected ? 'border-green-500 bg-green-500' : 'border-gray-300'
+                                  }`}>
+                                    {selected && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
+                                  </div>
+                                  <div className="flex-1">
+                                    <div className="flex items-center gap-2">
+                                      <p className="font-semibold text-sm text-gray-900">{contest.name}</p>
+                                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${getContestTypeColor(contest.type)}`}>
+                                        {contest.type}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center gap-3 text-xs text-gray-500 mt-1">
+                                      <span className="flex items-center gap-0.5"><DollarSign className="w-3 h-3" />{formatCurrency(contest.entryFee)}</span>
+                                      <span>Prize: {formatCurrency(contest.prizePool)}</span>
+                                      <span className="flex items-center gap-0.5"><Users className="w-3 h-3" />{contest.filledSpots}/{contest.totalSpots}</span>
+                                    </div>
+                                    {contest.remainingSpots > 0 && (
+                                      <p className="text-[10px] text-green-600 mt-0.5">{contest.remainingSpots} spots remaining</p>
+                                    )}
+                                    {!contest.joinAvailable && (
+                                      <p className="text-[10px] text-red-500 mt-0.5">Full</p>
+                                    )}
+                                  </div>
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+
+          {/* ===== STEP: JOINING ===== */}
+          {step === 'joining' && (
+            <div className="space-y-4">
+              {/* Progress Bar */}
+              <div className="bg-green-50 border border-green-200 rounded-xl p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-semibold text-green-700">Joining contests...</span>
+                  <span className="text-sm font-bold text-green-700">{progress.current}/{progress.total}</span>
+                </div>
+                <div className="w-full bg-green-200 rounded-full h-3 overflow-hidden">
+                  <div className="bg-green-600 h-3 rounded-full transition-all duration-300"
+                    style={{ width: `${(progress.current / Math.max(progress.total, 1)) * 100}%` }} />
+                </div>
+                <div className="flex justify-between mt-2 text-xs">
+                  <span className="text-green-600 font-medium">✓ {resultStats.success} joined</span>
+                  <span className="text-amber-600 font-medium">⊙ {resultStats.alreadyJoined} already</span>
+                  <span className="text-red-500 font-medium">✗ {resultStats.fail} failed</span>
+                </div>
+              </div>
+
+              {/* Per-item Status */}
+              <div className="max-h-56 overflow-y-auto space-y-1.5">
+                {joinItems.map((item, i) => (
+                  <div key={i} className="flex items-center gap-2 text-xs py-1 px-2 rounded-lg bg-gray-50">
+                    {item.status === 'pending' && <div className="w-3.5 h-3.5 rounded-full bg-gray-200 shrink-0" />}
+                    {item.status === 'processing' && <Loader2 className="w-3.5 h-3.5 animate-spin text-green-500 shrink-0" />}
+                    {item.status === 'success' && <CheckCircle2 className="w-3.5 h-3.5 text-green-500 shrink-0" />}
+                    {item.status === 'already_joined' && <AlertCircle className="w-3.5 h-3.5 text-amber-500 shrink-0" />}
+                    {item.status === 'fail' && <X className="w-3.5 h-3.5 text-red-500 shrink-0" />}
+                    <span className="text-gray-600 truncate">{item.matchName}</span>
+                    <span className="text-gray-400">→</span>
+                    <span className="text-gray-700 font-medium truncate">{item.contestName}</span>
+                    <span className="text-gray-400">→</span>
+                    <span className="truncate">{item.teamName}</span>
+                    {item.message && item.status !== 'success' && (
+                      <span className="text-gray-400 truncate ml-auto">{item.message}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ===== STEP: RESULT ===== */}
+          {step === 'result' && (
+            <div className="space-y-4">
+              <div className="text-center py-4">
+                <div className="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-3">
+                  <Trophy className="w-8 h-8 text-green-600" />
+                </div>
+                <h3 className="text-xl font-bold text-gray-900">JOIN COMPLETE</h3>
+              </div>
+
+              <div className="grid grid-cols-4 gap-2">
+                <div className="bg-gray-50 rounded-xl p-3 text-center">
+                  <p className="text-lg font-bold text-gray-900">{resultStats.total}</p>
+                  <p className="text-[10px] text-gray-500 uppercase">Total</p>
+                </div>
+                <div className="bg-green-50 rounded-xl p-3 text-center">
+                  <p className="text-lg font-bold text-green-600">{resultStats.success}</p>
+                  <p className="text-[10px] text-green-600 uppercase">Joined</p>
+                </div>
+                <div className="bg-amber-50 rounded-xl p-3 text-center">
+                  <p className="text-lg font-bold text-amber-600">{resultStats.alreadyJoined}</p>
+                  <p className="text-[10px] text-amber-600 uppercase">Already</p>
+                </div>
+                <div className="bg-red-50 rounded-xl p-3 text-center">
+                  <p className="text-lg font-bold text-red-500">{resultStats.fail}</p>
+                  <p className="text-[10px] text-red-500 uppercase">Failed</p>
+                </div>
+              </div>
+
+              {/* Per-match details */}
+              <div className="max-h-48 overflow-y-auto space-y-2">
+                {(() => {
+                  const byMatch = new Map<string, JCJoinItem[]>();
+                  for (const item of (resultItems.length > 0 ? resultItems : joinItems)) {
+                    const key = String(item.matchId);
+                    if (!byMatch.has(key)) byMatch.set(key, []);
+                    byMatch.get(key)!.push(item);
+                  }
+                  return Array.from(byMatch.entries()).map(([matchId, items]) => (
+                    <div key={matchId} className="bg-gray-50 rounded-xl p-3">
+                      <p className="text-xs font-semibold text-gray-700 mb-1">{items[0].matchName}</p>
+                      {items.map((item, i) => (
+                        <div key={i} className="flex items-center gap-1.5 text-[11px] py-0.5">
+                          {item.status === 'success' && <CheckCircle2 className="w-3 h-3 text-green-500" />}
+                          {item.status === 'already_joined' && <AlertCircle className="w-3 h-3 text-amber-500" />}
+                          {item.status === 'fail' && <X className="w-3 h-3 text-red-500" />}
+                          <span className="text-gray-600">{item.contestName}</span>
+                          <span className="text-gray-400">— {item.teamName}</span>
+                          {item.message && <span className="text-gray-400 ml-auto">{item.message}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  ));
+                })()}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer Buttons */}
+        <div className="px-6 py-4 border-t bg-gray-50 flex items-center justify-between">
+          <div>
+            {step !== 'matches' && step !== 'joining' && step !== 'result' && (
+              <button onClick={() => {
+                const prev: Record<Step, Step | null> = {
+                  matches: null, teams: 'matches', contests: 'teams',
+                  joining: null, result: null,
+                };
+                const p = prev[step];
+                if (p) setStep(p);
+              }} className="flex items-center gap-1 text-sm text-gray-600 hover:text-gray-800 font-medium">
+                <ChevronLeft className="w-4 h-4" /> Back
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {step === 'matches' && (
+              <button onClick={() => {
+                if (selectedMatchIds.size > 0 && availablePlatforms.length > 0) setStep('teams');
+              }} disabled={selectedMatchIds.size === 0 || availablePlatforms.length === 0}
+                className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
+                Next <ChevronRight className="w-4 h-4" />
+              </button>
+            )}
+            {step === 'teams' && (
+              <button onClick={() => {
+                if (selectedTeamIds.size > 0) {
+                  setStep('contests');
+                  loadContests();
+                }
+              }} disabled={selectedTeamIds.size === 0}
+                className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
+                Next <ChevronRight className="w-4 h-4" />
+              </button>
+            )}
+            {step === 'contests' && (
+              <button onClick={executeJoin} disabled={selectedContestIds.size === 0}
+                className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
+                <Trophy className="w-4 h-4" />
+                JOIN ALL SELECTED ({selectedContestIds.size * selectedTeamIds.size})
+              </button>
+            )}
+            {step === 'result' && (
+              <button onClick={handleClose}
+                className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all">
+                Done
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
