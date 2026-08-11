@@ -190,6 +190,7 @@ export default function JoinContestDialog({
         platformMatchId,
         account.authToken,
         match?.sport_index ?? 0,
+        account.my11circleChallenge || undefined,
       );
 
       console.log('[JOIN CONTEST] Contest count:', result.contests.length);
@@ -312,6 +313,7 @@ export default function JoinContestDialog({
             teamId: item.teamId,    // REAL platform team ID
             contestId: item.contestId,
             sportIndex: match?.sport_index ?? 0,
+            challenge: account?.my11circleChallenge || undefined,
           }),
         });
         const data = await res.json();

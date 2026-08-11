@@ -229,7 +229,8 @@ export function normalizeContests(
 
 /**
  * Fetch contests from the platform for a specific match.
- * Uses the list-contests API route.
+ * Uses the platform-contests API route which calls Dream11/My11Circle directly.
+ * The old list-contests route called a non-existent TG API endpoint (404).
  * Returns proper error differentiation instead of silently returning [].
  */
 export async function getPlatformContests(
@@ -237,25 +238,25 @@ export async function getPlatformContests(
   matchId: string | number,
   authToken: string,
   sportIndex?: number,
+  challenge?: string,
 ): Promise<JCContestFetchResult> {
   console.log('[JOIN CONTEST] Fetching contests — Platform:', platform, 'Match ID:', matchId, 'Sport Index:', sportIndex);
 
   try {
-    const res = await fetch('/api/fantasy/list-contests', {
+    const res = await fetch('/api/fantasy/platform-contests', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        fantasyApp: platform,
+        platform,
         matchId,
         authToken,
-        sportIndex: sportIndex ?? 0,
+        challenge,
       }),
     });
 
     console.log('[JOIN CONTEST] HTTP status:', res.status);
 
     if (!res.ok) {
-      // Non-200 HTTP status
       if (res.status === 401 || res.status === 403) {
         return {
           contests: [],
@@ -282,8 +283,7 @@ export async function getPlatformContests(
     }
 
     console.log('[JOIN CONTEST] API response status:', data.status);
-    console.log('[JOIN CONTEST] Raw response keys:', Object.keys(data));
-    console.log('[JOIN CONTEST] Raw response data keys:', data.data ? Object.keys(data.data) : 'no data');
+    console.log('[JOIN CONTEST] Response data:', data.data ? `contests: ${data.data.contestCount}` : 'no data');
 
     // API-level auth/token error
     if (data.tokenExpired || data.status === 'token_expired') {
@@ -298,8 +298,7 @@ export async function getPlatformContests(
     // API-level failure
     if (data.status === 'fail' || data.status === 'error') {
       const msg = data.message || 'Failed to load contests.';
-      // Detect auth errors from the message
-      if (msg.toLowerCase().includes('auth') || msg.toLowerCase().includes('token') || msg.toLowerCase().includes('expire') || msg.toLowerCase().includes('login') || msg.toLowerCase().includes('session')) {
+      if (msg.toLowerCase().includes('auth') || msg.toLowerCase().includes('token') || msg.toLowerCase().includes('expire') || msg.toLowerCase().includes('session') || msg.toLowerCase().includes('reconnect')) {
         return {
           contests: [],
           error: msg,
@@ -315,28 +314,29 @@ export async function getPlatformContests(
       };
     }
 
-    // Success — normalize contests from the response
-    if (data.status === 'success') {
-      const contestData = data.data;
-      const { contests, rawKeys } = normalizeContests(contestData, String(matchId), platform);
+    // Success — convert platform contests to JCContest format
+    if (data.status === 'success' && data.data?.contests) {
+      const platformContests = data.data.contests as Record<string, unknown>[];
+      const contests: JCContest[] = platformContests.map((c) => {
+        const contest = parseContest(c, String(matchId), platform);
+        return contest;
+      });
 
-      console.log('[JOIN CONTEST] Normalized contests:', contests.length);
-      console.log('[JOIN CONTEST] Raw data keys:', rawKeys);
-      if (contests.length === 0) {
-        console.log('[JOIN CONTEST] WARNING: 0 contests after normalization. Raw data structure:', JSON.stringify(contestData, null, 2).slice(0, 500));
+      console.log('[JOIN CONTEST] Contests loaded:', contests.length);
+      if (contests.length === 0 && platformContests.length > 0) {
+        console.log('[JOIN CONTEST] WARNING: 0 contests after parsing from', platformContests.length, 'raw items');
       }
 
       return {
         contests,
-        error: contests.length === 0 ? undefined : undefined,
         errorType: 'none',
         rawResponse: data,
-        rawKeys,
+        rawKeys: Object.keys(data.data),
       };
     }
 
     // Unknown response format
-    console.log('[JOIN CONTEST] Unknown response format:', JSON.stringify(data, null, 2).slice(0, 300));
+    console.log('[JOIN CONTEST] Unexpected response:', JSON.stringify(data, null, 2).slice(0, 300));
     return {
       contests: [],
       error: 'Unexpected response format from contest API.',
