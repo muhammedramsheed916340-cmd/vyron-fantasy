@@ -21,6 +21,8 @@ export async function POST(request: NextRequest) {
 
     const numericMatchId = typeof matchId === 'string' ? parseInt(matchId, 10) : matchId;
 
+    console.log('[LIST-CONTESTS API] Platform:', fantasyApp, 'Match ID:', numericMatchId, 'Sport Index:', sportIndex ?? 0);
+
     try {
       const response = await fetch(`${TG_API_BASE}/fantasy/list-contests`, {
         method: 'POST',
@@ -38,23 +40,71 @@ export async function POST(request: NextRequest) {
         signal: AbortSignal.timeout(15000),
       });
 
+      console.log('[LIST-CONTESTS API] TG API HTTP status:', response.status);
+
       let data: any;
       try {
         data = await response.json();
       } catch {
-        return NextResponse.json({ status: 'fail', message: `Contest list API error (HTTP ${response.status})` });
+        console.error('[LIST-CONTESTS API] Failed to parse TG API response as JSON');
+        return NextResponse.json({
+          status: 'fail',
+          message: `Contest list API returned unexpected response (HTTP ${response.status}).`,
+        });
+      }
+
+      console.log('[LIST-CONTESTS API] TG API response status:', data.status);
+      console.log('[LIST-CONTESTS API] TG API response keys:', Object.keys(data));
+      console.log('[LIST-CONTESTS API] TG API data keys:', data.data ? (typeof data.data === 'object' ? Object.keys(data.data) : typeof data.data) : 'no data');
+
+      // Auth/token expiration detection
+      if (data.tokenExpired || data.status === 'token_expired') {
+        return NextResponse.json({
+          status: 'fail',
+          message: data.message || 'Auth token expired. Please re-login.',
+          tokenExpired: true,
+        });
       }
 
       if (data.status === 'success') {
-        return NextResponse.json({ status: 'success', data: data.data || {} });
+        // Pass through the FULL data object so the client can normalize it
+        // The data.data may contain contests in various nested structures
+        return NextResponse.json({
+          status: 'success',
+          data: data.data || {},
+          // Also include top-level contest arrays if present
+          _debug: {
+            httpStatus: response.status,
+            topLevelKeys: Object.keys(data),
+            dataKeys: data.data && typeof data.data === 'object' ? Object.keys(data.data) : null,
+            dataType: typeof data.data,
+            isDataArray: Array.isArray(data.data),
+          },
+        });
       }
 
-      return NextResponse.json({ status: 'fail', message: data.message || 'Failed to load contests.' });
+      // Detect auth errors from the message
+      const msg = data.message || 'Failed to load contests.';
+      const isAuthError = msg.toLowerCase().includes('auth') ||
+        msg.toLowerCase().includes('token') ||
+        msg.toLowerCase().includes('expire') ||
+        msg.toLowerCase().includes('login') ||
+        msg.toLowerCase().includes('session');
+
+      return NextResponse.json({
+        status: 'fail',
+        message: msg,
+        tokenExpired: isAuthError,
+      });
     } catch (fetchError) {
-      console.error('TG API list-contests unreachable:', fetchError instanceof Error ? fetchError.message : 'unknown');
-      return NextResponse.json({ status: 'fail', message: 'Contest list API unavailable.' });
+      console.error('[LIST-CONTESTS API] TG API unreachable:', fetchError instanceof Error ? fetchError.message : 'unknown');
+      return NextResponse.json({
+        status: 'fail',
+        message: 'Contest list API unavailable. Please try again.',
+      });
     }
   } catch (error) {
+    console.error('[LIST-CONTESTS API] Route error:', error instanceof Error ? error.message : 'unknown');
     return NextResponse.json({ status: 'fail', message: 'Failed to list contests.' }, { status: 500 });
   }
 }

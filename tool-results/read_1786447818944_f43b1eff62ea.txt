@@ -1,0 +1,734 @@
+     1→     1→     1→'use client';
+     2→     2→     2→
+     3→     3→     3→import React, { useState, useCallback, useMemo } from 'react';
+     4→     4→     4→import {
+     5→     5→     5→  Trophy, X, CheckCircle2, Loader2, ChevronRight, ChevronLeft,
+     6→     6→     6→  AlertCircle, Users, DollarSign, Filter, RefreshCw,
+     7→     7→     7→} from 'lucide-react';
+     8→     8→     8→import {
+     9→     9→     9→  JCMatch, JCContest, JCTeam, JCJoinItem, JCProgress,
+    10→    10→    10→  parseContest, formatCurrency, getContestTypeColor,
+    11→    11→    11→  getExistingPlatformTeams, buildJoinItems, getJoinKey,
+    12→    12→    12→} from '@/lib/join-contest-service';
+    13→    13→    13→
+    14→    14→    14→// ============ Step Enum ============
+    15→    15→    15→type Step = 'matches' | 'teams' | 'contests' | 'joining' | 'result';
+    16→    16→    16→
+    17→    17→    17→// ============ Props ============
+    18→    18→    18→interface JoinContestDialogProps {
+    19→    19→    19→  open: boolean;
+    20→    20→    20→  onClose: () => void;
+    21→    21→    21→  matches: JCMatch[];
+    22→    22→    22→  fantasyAccounts: Record<string, { authToken: string; mobileNumber: string; my11circleChallenge?: string | null }>;
+    23→    23→    23→}
+    24→    24→    24→
+    25→    25→    25→// ============ Main Dialog ============
+    26→    26→    26→export default function JoinContestDialog({
+    27→    27→    27→  open, onClose, matches, fantasyAccounts,
+    28→    28→    28→}: JoinContestDialogProps) {
+    29→    29→    29→  // Step state
+    30→    30→    30→  const [step, setStep] = useState<Step>('matches');
+    31→    31→    31→  const [platform, setPlatform] = useState<string>('dream11');
+    32→    32→    32→
+    33→    33→    33→  // Match selection
+    34→    34→    34→  const [selectedMatchIds, setSelectedMatchIds] = useState<Set<string | number>>(new Set());
+    35→    35→    35→
+    36→    36→    36→  // Team selection — EXISTING PLATFORM TEAMS
+    37→    37→    37→  const [platformTeams, setPlatformTeams] = useState<JCTeam[]>([]);
+    38→    38→    38→  const [selectedTeamIds, setSelectedTeamIds] = useState<Set<string | number>>(new Set());
+    39→    39→    39→  const [mixedTeamMode, setMixedTeamMode] = useState(false);
+    40→    40→    40→  const [loadingTeams, setLoadingTeams] = useState(false);
+    41→    41→    41→  const [teamsError, setTeamsError] = useState<string | null>(null);
+    42→    42→    42→  const [teamsTokenExpired, setTeamsTokenExpired] = useState(false);
+    43→    43→    43→
+    44→    44→    44→  // Contest selection
+    45→    45→    45→  const [contestsMap, setContestsMap] = useState<Map<string, JCContest[]>>(new Map());
+    46→    46→    46→  const [selectedContestIds, setSelectedContestIds] = useState<Set<string>>(new Set());
+    47→    47→    47→  const [loadingContests, setLoadingContests] = useState(false);
+    48→    48→    48→
+    49→    49→    49→  // Join progress
+    50→    50→    50→  const [joinItems, setJoinItems] = useState<JCJoinItem[]>([]);
+    51→    51→    51→  const [progress, setProgress] = useState<JCProgress>({ current: 0, total: 0, status: 'idle' });
+    52→    52→    52→
+    53→    53→    53→  // Result
+    54→    54→    54→  const [resultItems, setResultItems] = useState<JCJoinItem[]>([]);
+    55→    55→    55→
+    56→    56→    56→  // Available platforms from linked accounts
+    57→    57→    57→  const availablePlatforms = useMemo(() => {
+    58→    58→    58→    const platforms: string[] = [];
+    59→    59→    59→    if (fantasyAccounts.dream11?.authToken) platforms.push('dream11');
+    60→    60→    60→    if (fantasyAccounts.my11circle?.authToken) platforms.push('my11circle');
+    61→    61→    61→    return platforms;
+    62→    62→    62→  }, [fantasyAccounts]);
+    63→    63→    63→
+    64→    64→    64→  const account = fantasyAccounts[platform];
+    65→    65→    65→
+    66→    66→    66→  // Reset on close
+    67→    67→    67→  const handleClose = () => {
+    68→    68→    68→    setStep('matches');
+    69→    69→    69→    setSelectedMatchIds(new Set());
+    70→    70→    70→    setPlatformTeams([]);
+    71→    71→    71→    setSelectedTeamIds(new Set());
+    72→    72→    72→    setMixedTeamMode(false);
+    73→    73→    73→    setLoadingTeams(false);
+    74→    74→    74→    setTeamsError(null);
+    75→    75→    75→    setTeamsTokenExpired(false);
+    76→    76→    76→    setContestsMap(new Map());
+    77→    77→    77→    setSelectedContestIds(new Set());
+    78→    78→    78→    setJoinItems([]);
+    79→    79→    79→    setProgress({ current: 0, total: 0, status: 'idle' });
+    80→    80→    80→    setResultItems([]);
+    81→    81→    81→    onClose();
+    82→    82→    82→  };
+    83→    83→    83→
+    84→    84→    84→  // ============ Match Selection ============
+    85→    85→    85→  const toggleMatch = (id: string | number) => {
+    86→    86→    86→    setSelectedMatchIds(prev => {
+    87→    87→    87→      const next = new Set(prev);
+    88→    88→    88→      next.has(id) ? next.delete(id) : next.add(id);
+    89→    89→    89→      return next;
+    90→    90→    90→    });
+    91→    91→    91→  };
+    92→    92→    92→
+    93→    93→    93→  const selectAllMatches = () => {
+    94→    94→    94→    setSelectedMatchIds(new Set(matches.map(m => m.id)));
+    95→    95→    95→  };
+    96→    96→    96→
+    97→    97→    97→  // ============ Load Existing Platform Teams ============
+    98→    98→    98→  const loadPlatformTeams = useCallback(async (selectedPlatform?: string) => {
+    99→    99→    99→    const plat = selectedPlatform || platform;
+   100→   100→   100→    const acc = fantasyAccounts[plat];
+   101→   101→   101→    if (!acc?.authToken) {
+   102→   102→   102→      setTeamsError('No connected account found. Connect your platform account to load existing teams.');
+   103→   103→   103→      setPlatformTeams([]);
+   104→   104→   104→      return;
+   105→   105→   105→    }
+   106→   106→   106→
+   107→   107→   107→    setLoadingTeams(true);
+   108→   108→   108→    setTeamsError(null);
+   109→   109→   109→    setTeamsTokenExpired(false);
+   110→   110→   110→    setSelectedTeamIds(new Set());
+   111→   111→   111→
+   112→   112→   112→    const allTeams: JCTeam[] = [];
+   113→   113→   113→    let firstError: string | null = null;
+   114→   114→   114→    let anyTokenExpired = false;
+   115→   115→   115→
+   116→   116→   116→    for (const matchId of selectedMatchIds) {
+   117→   117→   117→      const result = await getExistingPlatformTeams(plat, matchId, acc.authToken);
+   118→   118→   118→      if (result.teams.length > 0) {
+   119→   119→   119→        allTeams.push(...result.teams);
+   120→   120→   120→      }
+   121→   121→   121→      if (result.tokenExpired) {
+   122→   122→   122→        anyTokenExpired = true;
+   123→   123→   123→        firstError = result.error || 'Session expired';
+   124→   124→   124→      } else if (result.error && !firstError) {
+   125→   125→   125→        firstError = result.error;
+   126→   126→   126→      }
+   127→   127→   127→    }
+   128→   128→   128→
+   129→   129→   129→    setPlatformTeams(allTeams);
+   130→   130→   130→    setTeamsError(allTeams.length === 0 ? firstError : null);
+   131→   131→   131→    setTeamsTokenExpired(anyTokenExpired);
+   132→   132→   132→    setLoadingTeams(false);
+   133→   133→   133→  }, [selectedMatchIds, platform, fantasyAccounts]);
+   134→   134→   134→
+   135→   135→   135→  // ============ Team Selection ============
+   136→   136→   136→  const toggleTeam = (id: string | number) => {
+   137→   137→   137→    setSelectedTeamIds(prev => {
+   138→   138→   138→      const next = new Set(prev);
+   139→   139→   139→      next.has(id) ? next.delete(id) : next.add(id);
+   140→   140→   140→      return next;
+   141→   141→   141→    });
+   142→   142→   142→  };
+   143→   143→   143→
+   144→   144→   144→  const selectAllTeams = () => {
+   145→   145→   145→    setSelectedTeamIds(new Set(platformTeams.map(t => t.id)));
+   146→   146→   146→  };
+   147→   147→   147→
+   148→   148→   148→  const deselectAllTeams = () => {
+   149→   149→   149→    setSelectedTeamIds(new Set());
+   150→   150→   150→  };
+   151→   151→   151→
+   152→   152→   152→  // ============ Contest Loading ============
+   153→   153→   153→  const loadContests = useCallback(async () => {
+   154→   154→   154→    if (!account?.authToken) return;
+   155→   155→   155→    setLoadingContests(true);
+   156→   156→   156→    const newMap = new Map<string, JCContest[]>();
+   157→   157→   157→
+   158→   158→   158→    for (const matchId of selectedMatchIds) {
+   159→   159→   159→      const match = matches.find(m => m.id === matchId);
+   160→   160→   160→      try {
+   161→   161→   161→        const res = await fetch('/api/fantasy/list-contests', {
+   162→   162→   162→          method: 'POST',
+   163→   163→   163→          headers: { 'Content-Type': 'application/json' },
+   164→   164→   164→          body: JSON.stringify({
+   165→   165→   165→            fantasyApp: platform,
+   166→   166→   166→            matchId,
+   167→   167→   167→            authToken: account.authToken,
+   168→   168→   168→            sportIndex: match?.sport_index ?? 0,
+   169→   169→   169→          }),
+   170→   170→   170→        });
+   171→   171→   171→        const data = await res.json();
+   172→   172→   172→        if (data.status === 'success' && Array.isArray(data.data?.contests)) {
+   173→   173→   173→          newMap.set(String(matchId), data.data.contests.map((c: Record<string, unknown>) => parseContest(c)));
+   174→   174→   174→        } else {
+   175→   175→   175→          newMap.set(String(matchId), []);
+   176→   176→   176→        }
+   177→   177→   177→      } catch {
+   178→   178→   178→        newMap.set(String(matchId), []);
+   179→   179→   179→      }
+   180→   180→   180→    }
+   181→   181→   181→
+   182→   182→   182→    setContestsMap(newMap);
+   183→   183→   183→    setLoadingContests(false);
+   184→   184→   184→  }, [selectedMatchIds, platform, account, matches]);
+   185→   185→   185→
+   186→   186→   186→  const toggleContest = (id: string) => {
+   187→   187→   187→    setSelectedContestIds(prev => {
+   188→   188→   188→      const next = new Set(prev);
+   189→   189→   189→      next.has(id) ? next.delete(id) : next.add(id);
+   190→   190→   190→      return next;
+   191→   191→   191→    });
+   192→   192→   192→  };
+   193→   193→   193→
+   194→   194→   194→  // ============ Join Execution ============
+   195→   195→   195→  const executeJoin = useCallback(async () => {
+   196→   196→   196→    const selectedMatches = matches.filter(m => selectedMatchIds.has(m.id));
+   197→   197→   197→    const selectedContestsForJoin = new Map<string, JCContest[]>();
+   198→   198→   198→    for (const [matchId, contests] of contestsMap.entries()) {
+   199→   199→   199→      selectedContestsForJoin.set(matchId, contests.filter(c => selectedContestIds.has(c.id)));
+   200→   200→   200→    }
+   201→   201→   201→
+   202→   202→   202→    const items = buildJoinItems(selectedMatches, selectedContestsForJoin, selectedTeamIds, platformTeams, platform);
+   203→   203→   203→
+   204→   204→   204→    if (items.length === 0) {
+   205→   205→   205→      setStep('result');
+   206→   206→   206→      return;
+   207→   207→   207→    }
+   208→   208→   208→
+   209→   209→   209→    setJoinItems(items);
+   210→   210→   210→    setProgress({ current: 0, total: items.length, status: 'joining' });
+   211→   211→   211→    setStep('joining');
+   212→   212→   212→
+   213→   213→   213→    const updatedItems = [...items];
+   214→   214→   214→
+   215→   215→   215→    for (let i = 0; i < items.length; i++) {
+   216→   216→   216→      const item = items[i];
+   217→   217→   217→      setProgress(prev => ({ ...prev, current: i + 1 }));
+   218→   218→   218→      setJoinItems(prev => prev.map((it, idx) =>
+   219→   219→   219→        idx === i ? { ...it, status: 'processing' } : it
+   220→   220→   220→      ));
+   221→   221→   221→
+   222→   222→   222→      try {
+   223→   223→   223→        const match = matches.find(m => String(m.id) === String(item.matchId));
+   224→   224→   224→        const res = await fetch('/api/fantasy/join-contest', {
+   225→   225→   225→          method: 'POST',
+   226→   226→   226→          headers: { 'Content-Type': 'application/json' },
+   227→   227→   227→          body: JSON.stringify({
+   228→   228→   228→            fantasyApp: item.platform || platform,
+   229→   229→   229→            matchId: item.matchId,
+   230→   230→   230→            authToken: account?.authToken,
+   231→   231→   231→            teamId: item.teamId,    // REAL platform team ID
+   232→   232→   232→            contestId: item.contestId,
+   233→   233→   233→            sportIndex: match?.sport_index ?? 0,
+   234→   234→   234→          }),
+   235→   235→   235→        });
+   236→   236→   236→        const data = await res.json();
+   237→   237→   237→
+   238→   238→   238→        const status = data.status === 'success' ? 'success'
+   239→   239→   239→          : data.status === 'already_joined' ? 'already_joined' : 'fail';
+   240→   240→   240→
+   241→   241→   241→        updatedItems[i] = { ...updatedItems[i], status, message: data.message };
+   242→   242→   242→        setJoinItems([...updatedItems]);
+   243→   243→   243→      } catch {
+   244→   244→   244→        updatedItems[i] = { ...updatedItems[i], status: 'fail', message: 'Network error' };
+   245→   245→   245→        setJoinItems([...updatedItems]);
+   246→   246→   246→      }
+   247→   247→   247→
+   248→   248→   248→      // Rate limit between joins
+   249→   249→   249→      await new Promise(r => setTimeout(r, 300));
+   250→   250→   250→    }
+   251→   251→   251→
+   252→   252→   252→    setResultItems([...updatedItems]);
+   253→   253→   253→    setProgress(prev => ({ ...prev, status: 'done' }));
+   254→   254→   254→    setStep('result');
+   255→   255→   255→  }, [matches, selectedMatchIds, contestsMap, selectedContestIds, selectedTeamIds, platformTeams, platform, account]);
+   256→   256→   256→
+   257→   257→   257→  // ============ Result Stats ============
+   258→   258→   258→  const resultStats = useMemo(() => {
+   259→   259→   259→    const items = resultItems.length > 0 ? resultItems : joinItems;
+   260→   260→   260→    return {
+   261→   261→   261→      total: items.length,
+   262→   262→   262→      success: items.filter(i => i.status === 'success').length,
+   263→   263→   263→      alreadyJoined: items.filter(i => i.status === 'already_joined').length,
+   264→   264→   264→      fail: items.filter(i => i.status === 'fail').length,
+   265→   265→   265→    };
+   266→   266→   266→  }, [resultItems, joinItems]);
+   267→   267→   267→
+   268→   268→   268→  if (!open) return null;
+   269→   269→   269→
+   270→   270→   270→  // ============ RENDER ============
+   271→   271→   271→  return (
+   272→   272→   272→    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={handleClose}>
+   273→   273→   273→      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+   274→   274→   274→        {/* Header */}
+   275→   275→   275→        <div className="flex items-center justify-between px-6 py-4 border-b bg-gradient-to-r from-green-600 to-emerald-600 text-white">
+   276→   276→   276→          <div className="flex items-center gap-3">
+   277→   277→   277→            <Trophy className="w-6 h-6" />
+   278→   278→   278→            <h2 className="text-lg font-bold">Join Contest</h2>
+   279→   279→   279→          </div>
+   280→   280→   280→          <button onClick={handleClose} className="p-1 hover:bg-white/20 rounded-lg transition-all">
+   281→   281→   281→            <X className="w-5 h-5" />
+   282→   282→   282→          </button>
+   283→   283→   283→        </div>
+   284→   284→   284→
+   285→   285→   285→        {/* Step Indicator */}
+   286→   286→   286→        <div className="flex items-center gap-1 px-6 py-3 bg-gray-50 border-b">
+   287→   287→   287→          {(['matches', 'teams', 'contests', 'joining', 'result'] as Step[]).map((s, i) => {
+   288→   288→   288→            const labels = ['Match', 'Teams', 'Contests', 'Join', 'Result'];
+   289→   289→   289→            const stepOrder = ['matches', 'teams', 'contests', 'joining', 'result'];
+   290→   290→   290→            const isActive = step === s;
+   291→   291→   291→            const isDone = stepOrder.indexOf(step) > i;
+   292→   292→   292→            return (
+   293→   293→   293→              <React.Fragment key={s}>
+   294→   294→   294→                {i > 0 && <ChevronRight className="w-3 h-3 text-gray-300" />}
+   295→   295→   295→                <div className={`flex items-center gap-1.5 text-xs font-semibold px-2 py-1 rounded-lg transition-all ${
+   296→   296→   296→                  isActive ? 'bg-green-100 text-green-700' : isDone ? 'text-green-500' : 'text-gray-400'
+   297→   297→   297→                }`}>
+   298→   298→   298→                  <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] ${
+   299→   299→   299→                    isActive ? 'bg-green-600 text-white' : isDone ? 'bg-green-200 text-green-600' : 'bg-gray-200 text-gray-500'
+   300→   300→   300→                  }`}>
+   301→   301→   301→                    {isDone ? '✓' : i + 1}
+   302→   302→   302→                  </div>
+   303→   303→   303→                  {labels[i]}
+   304→   304→   304→                </div>
+   305→   305→   305→              </React.Fragment>
+   306→   306→   306→            );
+   307→   307→   307→          })}
+   308→   308→   308→        </div>
+   309→   309→   309→
+   310→   310→   310→        {/* Content */}
+   311→   311→   311→        <div className="flex-1 overflow-y-auto p-6">
+   312→   312→   312→
+   313→   313→   313→          {/* ===== STEP: MATCHES ===== */}
+   314→   314→   314→          {step === 'matches' && (
+   315→   315→   315→            <div className="space-y-4">
+   316→   316→   316→              {/* Platform Selection */}
+   317→   317→   317→              <div className="space-y-2">
+   318→   318→   318→                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Platform</p>
+   319→   319→   319→                <div className="flex gap-2">
+   320→   320→   320→                  {availablePlatforms.map(p => (
+   321→   321→   321→                    <button key={p} onClick={() => setPlatform(p)}
+   322→   322→   322→                      className={`flex-1 rounded-xl border-2 p-3 text-center font-semibold text-sm transition-all ${
+   323→   323→   323→                        platform === p ? 'border-green-500 bg-green-50 text-green-700' : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300'
+   324→   324→   324→                      }`}>
+   325→   325→   325→                      {p === 'dream11' ? 'Dream11' : 'My11Circle'}
+   326→   326→   326→                    </button>
+   327→   327→   327→                  ))}
+   328→   328→   328→                </div>
+   329→   329→   329→                {availablePlatforms.length === 0 && (
+   330→   330→   330→                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-700">
+   331→   331→   331→                    ⚠️ No connected account found. Link your platform account first via Transfer.
+   332→   332→   332→                  </div>
+   333→   333→   333→                )}
+   334→   334→   334→              </div>
+   335→   335→   335→
+   336→   336→   336→              {/* Match List */}
+   337→   337→   337→              <div className="space-y-2">
+   338→   338→   338→                <div className="flex items-center justify-between">
+   339→   339→   339→                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Select Matches</p>
+   340→   340→   340→                  <button onClick={selectAllMatches} className="text-xs font-semibold text-green-600 hover:text-green-700">
+   341→   341→   341→                    Select All
+   342→   342→   342→                  </button>
+   343→   343→   343→                </div>
+   344→   344→   344→                {matches.length === 0 ? (
+   345→   345→   345→                  <p className="text-sm text-gray-400 text-center py-8">No upcoming matches</p>
+   346→   346→   346→                ) : (
+   347→   347→   347→                  <div className="space-y-2 max-h-80 overflow-y-auto">
+   348→   348→   348→                    {matches.map(match => {
+   349→   349→   349→                      const selected = selectedMatchIds.has(match.id);
+   350→   350→   350→                      return (
+   351→   351→   351→                        <button key={match.id} onClick={() => toggleMatch(match.id)}
+   352→   352→   352→                          className={`w-full text-left rounded-xl border-2 p-3 transition-all ${
+   353→   353→   353→                            selected ? 'border-green-500 bg-green-50' : 'border-gray-200 bg-white hover:border-gray-300'
+   354→   354→   354→                          }`}>
+   355→   355→   355→                          <div className="flex items-center gap-3">
+   356→   356→   356→                            <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
+   357→   357→   357→                              selected ? 'border-green-500 bg-green-500' : 'border-gray-300'
+   358→   358→   358→                            }`}>
+   359→   359→   359→                              {selected && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
+   360→   360→   360→                            </div>
+   361→   361→   361→                            <div className="flex-1">
+   362→   362→   362→                              <p className="font-semibold text-sm text-gray-900">
+   363→   363→   363→                                {match.left_team_name} vs {match.right_team_name}
+   364→   364→   364→                              </p>
+   365→   365→   365→                              <div className="flex items-center gap-2 text-xs text-gray-500 mt-0.5">
+   366→   366→   366→                                <span>{match.match_time}</span>
+   367→   367→   367→                                {match.lineup_out === 1 && <span className="text-green-600 font-medium">Lineup Out</span>}
+   368→   368→   368→                              </div>
+   369→   369→   369→                            </div>
+   370→   370→   370→                          </div>
+   371→   371→   371→                        </button>
+   372→   372→   372→                      );
+   373→   373→   373→                    })}
+   374→   374→   374→                  </div>
+   375→   375→   375→                )}
+   376→   376→   376→              </div>
+   377→   377→   377→            </div>
+   378→   378→   378→          )}
+   379→   379→   379→
+   380→   380→   380→          {/* ===== STEP: TEAMS — EXISTING PLATFORM TEAMS ===== */}
+   381→   381→   381→          {step === 'teams' && (
+   382→   382→   382→            <div className="space-y-4">
+   383→   383→   383→              {/* Loading State */}
+   384→   384→   384→              {loadingTeams && (
+   385→   385→   385→                <div className="flex flex-col items-center justify-center py-12">
+   386→   386→   386→                  <Loader2 className="w-8 h-8 animate-spin text-green-500" />
+   387→   387→   387→                  <p className="text-sm text-gray-500 mt-3">Loading existing teams from {platform === 'dream11' ? 'Dream11' : 'My11Circle'}...</p>
+   388→   388→   388→                </div>
+   389→   389→   389→              )}
+   390→   390→   390→
+   391→   391→   391→              {/* Error State */}
+   392→   392→   392→              {!loadingTeams && teamsError && (
+   393→   393→   393→                <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+   394→   394→   394→                  <div className="flex items-center gap-2">
+   395→   395→   395→                    <AlertCircle className="w-5 h-5 text-red-500 shrink-0" />
+   396→   396→   396→                    <div>
+   397→   397→   397→                      <p className="text-sm font-semibold text-red-700">
+   398→   398→   398→                        {teamsTokenExpired ? 'SESSION EXPIRED' : 'Error Loading Teams'}
+   399→   399→   399→                      </p>
+   400→   400→   400→                      <p className="text-xs text-red-600 mt-0.5">{teamsError}</p>
+   401→   401→   401→                    </div>
+   402→   402→   402→                  </div>
+   403→   403→   403→                  {teamsTokenExpired && (
+   404→   404→   404→                    <p className="text-xs text-red-500 mt-2">Reconnect your {platform === 'dream11' ? 'Dream11' : 'My11Circle'} account via Transfer.</p>
+   405→   405→   405→                  )}
+   406→   406→   406→                  <button onClick={() => loadPlatformTeams()} className="mt-2 flex items-center gap-1 text-xs font-semibold text-red-600 hover:text-red-700">
+   407→   407→   407→                    <RefreshCw className="w-3 h-3" /> Retry
+   408→   408→   408→                  </button>
+   409→   409→   409→                </div>
+   410→   410→   410→              )}
+   411→   411→   411→
+   412→   412→   412→              {/* No Account */}
+   413→   413→   413→              {!loadingTeams && !teamsError && !account?.authToken && (
+   414→   414→   414→                <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-center">
+   415→   415→   415→                  <p className="text-sm font-semibold text-amber-700">No connected account found</p>
+   416→   416→   416→                  <p className="text-xs text-amber-600 mt-1">Connect your {platform === 'dream11' ? 'Dream11' : 'My11Circle'} account to load existing teams.</p>
+   417→   417→   417→                </div>
+   418→   418→   418→              )}
+   419→   419→   419→
+   420→   420→   420→              {/* Teams List */}
+   421→   421→   421→              {!loadingTeams && account?.authToken && (
+   422→   422→   422→                <div className="space-y-2">
+   423→   423→   423→                  <div className="flex items-center justify-between">
+   424→   424→   424→                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+   425→   425→   425→                      Existing Teams ({platformTeams.length} available)
+   426→   426→   426→                    </p>
+   427→   427→   427→                    <div className="flex gap-2">
+   428→   428→   428→                      <button onClick={selectAllTeams} disabled={platformTeams.length === 0}
+   429→   429→   429→                        className="text-xs font-semibold text-green-600 hover:text-green-700 disabled:opacity-40">
+   430→   430→   430→                        Select All
+   431→   431→   431→                      </button>
+   432→   432→   432→                      <button onClick={deselectAllTeams} disabled={selectedTeamIds.size === 0}
+   433→   433→   433→                        className="text-xs font-semibold text-gray-500 hover:text-gray-700 disabled:opacity-40">
+   434→   434→   434→                        Deselect
+   435→   435→   435→                      </button>
+   436→   436→   436→                    </div>
+   437→   437→   437→                  </div>
+   438→   438→   438→
+   439→   439→   439→                  {/* Mixed Team Toggle */}
+   440→   440→   440→                  <button onClick={() => setMixedTeamMode(!mixedTeamMode)}
+   441→   441→   441→                    className={`w-full rounded-xl border-2 p-3 transition-all ${
+   442→   442→   442→                      mixedTeamMode ? 'border-purple-500 bg-purple-50' : 'border-gray-200 bg-white hover:border-gray-300'
+   443→   443→   443→                    }`}>
+   444→   444→   444→                    <div className="flex items-center gap-3">
+   445→   445→   445→                      <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${
+   446→   446→   446→                        mixedTeamMode ? 'bg-purple-500 text-white' : 'bg-gray-100 text-gray-500'
+   447→   447→   447→                      }`}>
+   448→   448→   448→                        <Filter className="w-5 h-5" />
+   449→   449→   449→                      </div>
+   450→   450→   450→                      <div className="flex-1">
+   451→   451→   451→                        <p className={`font-semibold text-sm ${mixedTeamMode ? 'text-purple-700' : 'text-gray-900'}`}>Mixed Team Mode</p>
+   452→   452→   452→                        <p className="text-xs text-gray-500">
+   453→   453→   453→                          {mixedTeamMode ? 'Combining teams from compatible platform accounts' : 'Enable to mix teams from compatible accounts'}
+   454→   454→   454→                        </p>
+   455→   455→   455→                      </div>
+   456→   456→   456→                      <div className={`w-10 h-6 rounded-full relative transition-all ${mixedTeamMode ? 'bg-purple-500' : 'bg-gray-300'}`}>
+   457→   457→   457→                        <div className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${mixedTeamMode ? 'left-[18px]' : 'left-0.5'}`} />
+   458→   458→   458→                      </div>
+   459→   459→   459→                    </div>
+   460→   460→   460→                  </button>
+   461→   461→   461→
+   462→   462→   462→                  {/* No Teams */}
+   463→   463→   463→                  {platformTeams.length === 0 && !teamsError && (
+   464→   464→   464→                    <div className="bg-gray-50 border border-gray-200 rounded-xl p-6 text-center">
+   465→   465→   465→                      <p className="text-sm text-gray-500">No existing teams found on this platform account.</p>
+   466→   466→   466→                      <p className="text-xs text-gray-400 mt-1">Create teams on {platform === 'dream11' ? 'Dream11' : 'My11Circle'} first, then join contests.</p>
+   467→   467→   467→                    </div>
+   468→   468→   468→                  )}
+   469→   469→   469→
+   470→   470→   470→                  {/* Team Cards */}
+   471→   471→   471→                  {platformTeams.length > 0 && (
+   472→   472→   472→                    <div className="space-y-2 max-h-72 overflow-y-auto">
+   473→   473→   473→                      {platformTeams.map(team => {
+   474→   474→   474→                        const selected = selectedTeamIds.has(team.id);
+   475→   475→   475→                        return (
+   476→   476→   476→                          <button key={team.id} onClick={() => toggleTeam(team.id)}
+   477→   477→   477→                            className={`w-full text-left rounded-xl border-2 p-3 transition-all ${
+   478→   478→   478→                              selected ? 'border-green-500 bg-green-50' : 'border-gray-200 bg-white hover:border-gray-300'
+   479→   479→   479→                            }`}>
+   480→   480→   480→                            <div className="flex items-center gap-3">
+   481→   481→   481→                              <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
+   482→   482→   482→                                selected ? 'border-green-500 bg-green-500' : 'border-gray-300'
+   483→   483→   483→                              }`}>
+   484→   484→   484→                                {selected && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
+   485→   485→   485→                              </div>
+   486→   486→   486→                              <div className="flex-1">
+   487→   487→   487→                                <p className="font-semibold text-sm text-gray-900">{team.name}</p>
+   488→   488→   488→                                <div className="flex items-center gap-2 text-xs text-gray-500 mt-0.5">
+   489→   489→   489→                                  <span>{team.playerCount || 11} Players</span>
+   490→   490→   490→                                  {team.captain?.name && <span>C: {team.captain.name}</span>}
+   491→   491→   491→                                  {team.viceCaptain?.name && <span>VC: {team.viceCaptain.name}</span>}
+   492→   492→   492→                                </div>
+   493→   493→   493→                              </div>
+   494→   494→   494→                              <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">
+   495→   495→   495→                                ID: {team.platformTeamId}
+   496→   496→   496→                              </span>
+   497→   497→   497→                            </div>
+   498→   498→   498→                          </button>
+   499→   499→   499→                        );
+   500→   500→   500→                      })}
+   501→   501→   501→                    </div>
+   502→   502→   502→                  )}
+   503→   503→   503→
+   504→   504→   504→                  {/* Selection Count */}
+   505→   505→   505→                  {selectedTeamIds.size > 0 && (
+   506→   506→   506→                    <p className="text-sm text-green-600 font-medium">
+   507→   507→   507→                      Selected: {selectedTeamIds.size} / {platformTeams.length}
+   508→   508→   508→                    </p>
+   509→   509→   509→                  )}
+   510→   510→   510→                </div>
+   511→   511→   511→              )}
+   512→   512→   512→            </div>
+   513→   513→   513→          )}
+   514→   514→   514→
+   515→   515→   515→          {/* ===== STEP: CONTESTS ===== */}
+   516→   516→   516→          {step === 'contests' && (
+   517→   517→   517→            <div className="space-y-4">
+   518→   518→   518→              {loadingContests ? (
+   519→   519→   519→                <div className="flex flex-col items-center justify-center py-12">
+   520→   520→   520→                  <Loader2 className="w-8 h-8 animate-spin text-green-500" />
+   521→   521→   521→                  <p className="text-sm text-gray-500 mt-3">Loading contests...</p>
+   522→   522→   522→                </div>
+   523→   523→   523→              ) : (
+   524→   524→   524→                Array.from(contestsMap.entries()).map(([matchId, contests]) => {
+   525→   525→   525→                  const match = matches.find(m => String(m.id) === matchId);
+   526→   526→   526→                  return (
+   527→   527→   527→                    <div key={matchId} className="space-y-2">
+   528→   528→   528→                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+   529→   529→   529→                        {match?.left_team_name} vs {match?.right_team_name}
+   530→   530→   530→                      </p>
+   531→   531→   531→                      {contests.length === 0 ? (
+   532→   532→   532→                        <p className="text-sm text-gray-400 py-4 text-center">No contests available</p>
+   533→   533→   533→                      ) : (
+   534→   534→   534→                        <div className="space-y-2">
+   535→   535→   535→                          {contests.map(contest => {
+   536→   536→   536→                            const selected = selectedContestIds.has(contest.id);
+   537→   537→   537→                            return (
+   538→   538→   538→                              <button key={contest.id} onClick={() => toggleContest(contest.id)}
+   539→   539→   539→                                className={`w-full text-left rounded-xl border-2 p-3 transition-all ${
+   540→   540→   540→                                  selected ? 'border-green-500 bg-green-50' : 'border-gray-200 bg-white hover:border-gray-300'
+   541→   541→   541→                                } ${!contest.joinAvailable ? 'opacity-50' : ''}`}>
+   542→   542→   542→                                <div className="flex items-center gap-3">
+   543→   543→   543→                                  <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
+   544→   544→   544→                                    selected ? 'border-green-500 bg-green-500' : 'border-gray-300'
+   545→   545→   545→                                  }`}>
+   546→   546→   546→                                    {selected && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
+   547→   547→   547→                                  </div>
+   548→   548→   548→                                  <div className="flex-1">
+   549→   549→   549→                                    <div className="flex items-center gap-2">
+   550→   550→   550→                                      <p className="font-semibold text-sm text-gray-900">{contest.name}</p>
+   551→   551→   551→                                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${getContestTypeColor(contest.type)}`}>
+   552→   552→   552→                                        {contest.type}
+   553→   553→   553→                                      </span>
+   554→   554→   554→                                    </div>
+   555→   555→   555→                                    <div className="flex items-center gap-3 text-xs text-gray-500 mt-1">
+   556→   556→   556→                                      <span className="flex items-center gap-0.5"><DollarSign className="w-3 h-3" />{formatCurrency(contest.entryFee)}</span>
+   557→   557→   557→                                      <span>Prize: {formatCurrency(contest.prizePool)}</span>
+   558→   558→   558→                                      <span className="flex items-center gap-0.5"><Users className="w-3 h-3" />{contest.filledSpots}/{contest.totalSpots}</span>
+   559→   559→   559→                                    </div>
+   560→   560→   560→                                    {contest.remainingSpots > 0 && (
+   561→   561→   561→                                      <p className="text-[10px] text-green-600 mt-0.5">{contest.remainingSpots} spots remaining</p>
+   562→   562→   562→                                    )}
+   563→   563→   563→                                    {!contest.joinAvailable && (
+   564→   564→   564→                                      <p className="text-[10px] text-red-500 mt-0.5">Full</p>
+   565→   565→   565→                                    )}
+   566→   566→   566→                                  </div>
+   567→   567→   567→                                </div>
+   568→   568→   568→                              </button>
+   569→   569→   569→                            );
+   570→   570→   570→                          })}
+   571→   571→   571→                        </div>
+   572→   572→   572→                      )}
+   573→   573→   573→                    </div>
+   574→   574→   574→                  );
+   575→   575→   575→                })
+   576→   576→   576→              )}
+   577→   577→   577→            </div>
+   578→   578→   578→          )}
+   579→   579→   579→
+   580→   580→   580→          {/* ===== STEP: JOINING ===== */}
+   581→   581→   581→          {step === 'joining' && (
+   582→   582→   582→            <div className="space-y-4">
+   583→   583→   583→              <div className="bg-green-50 border border-green-200 rounded-xl p-4">
+   584→   584→   584→                <div className="flex items-center justify-between mb-2">
+   585→   585→   585→                  <span className="text-sm font-semibold text-green-700">Joining contests...</span>
+   586→   586→   586→                  <span className="text-sm font-bold text-green-700">{progress.current}/{progress.total}</span>
+   587→   587→   587→                </div>
+   588→   588→   588→                <div className="w-full bg-green-200 rounded-full h-3 overflow-hidden">
+   589→   589→   589→                  <div className="bg-green-600 h-3 rounded-full transition-all duration-300"
+   590→   590→   590→                    style={{ width: `${(progress.current / Math.max(progress.total, 1)) * 100}%` }} />
+   591→   591→   591→                </div>
+   592→   592→   592→                <div className="flex justify-between mt-2 text-xs">
+   593→   593→   593→                  <span className="text-green-600 font-medium">✓ {resultStats.success} joined</span>
+   594→   594→   594→                  <span className="text-amber-600 font-medium">⊙ {resultStats.alreadyJoined} already</span>
+   595→   595→   595→                  <span className="text-red-500 font-medium">✗ {resultStats.fail} failed</span>
+   596→   596→   596→                </div>
+   597→   597→   597→              </div>
+   598→   598→   598→              <div className="max-h-56 overflow-y-auto space-y-1.5">
+   599→   599→   599→                {joinItems.map((item, i) => (
+   600→   600→   600→                  <div key={i} className="flex items-center gap-2 text-xs py-1 px-2 rounded-lg bg-gray-50">
+   601→   601→   601→                    {item.status === 'pending' && <div className="w-3.5 h-3.5 rounded-full bg-gray-200 shrink-0" />}
+   602→   602→   602→                    {item.status === 'processing' && <Loader2 className="w-3.5 h-3.5 animate-spin text-green-500 shrink-0" />}
+   603→   603→   603→                    {item.status === 'success' && <CheckCircle2 className="w-3.5 h-3.5 text-green-500 shrink-0" />}
+   604→   604→   604→                    {item.status === 'already_joined' && <AlertCircle className="w-3.5 h-3.5 text-amber-500 shrink-0" />}
+   605→   605→   605→                    {item.status === 'fail' && <X className="w-3.5 h-3.5 text-red-500 shrink-0" />}
+   606→   606→   606→                    <span className="text-gray-600 truncate">{item.matchName}</span>
+   607→   607→   607→                    <span className="text-gray-400">→</span>
+   608→   608→   608→                    <span className="text-gray-700 font-medium truncate">{item.contestName}</span>
+   609→   609→   609→                    <span className="text-gray-400">→</span>
+   610→   610→   610→                    <span className="truncate">{item.teamName}</span>
+   611→   611→   611→                    {item.message && item.status !== 'success' && (
+   612→   612→   612→                      <span className="text-gray-400 truncate ml-auto">{item.message}</span>
+   613→   613→   613→                    )}
+   614→   614→   614→                  </div>
+   615→   615→   615→                ))}
+   616→   616→   616→              </div>
+   617→   617→   617→            </div>
+   618→   618→   618→          )}
+   619→   619→   619→
+   620→   620→   620→          {/* ===== STEP: RESULT ===== */}
+   621→   621→   621→          {step === 'result' && (
+   622→   622→   622→            <div className="space-y-4">
+   623→   623→   623→              <div className="text-center py-4">
+   624→   624→   624→                <div className="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-3">
+   625→   625→   625→                  <Trophy className="w-8 h-8 text-green-600" />
+   626→   626→   626→                </div>
+   627→   627→   627→                <h3 className="text-xl font-bold text-gray-900">JOIN COMPLETE</h3>
+   628→   628→   628→              </div>
+   629→   629→   629→              <div className="grid grid-cols-4 gap-2">
+   630→   630→   630→                <div className="bg-gray-50 rounded-xl p-3 text-center">
+   631→   631→   631→                  <p className="text-lg font-bold text-gray-900">{resultStats.total}</p>
+   632→   632→   632→                  <p className="text-[10px] text-gray-500 uppercase">Total</p>
+   633→   633→   633→                </div>
+   634→   634→   634→                <div className="bg-green-50 rounded-xl p-3 text-center">
+   635→   635→   635→                  <p className="text-lg font-bold text-green-600">{resultStats.success}</p>
+   636→   636→   636→                  <p className="text-[10px] text-green-600 uppercase">Joined</p>
+   637→   637→   637→                </div>
+   638→   638→   638→                <div className="bg-amber-50 rounded-xl p-3 text-center">
+   639→   639→   639→                  <p className="text-lg font-bold text-amber-600">{resultStats.alreadyJoined}</p>
+   640→   640→   640→                  <p className="text-[10px] text-amber-600 uppercase">Already</p>
+   641→   641→   641→                </div>
+   642→   642→   642→                <div className="bg-red-50 rounded-xl p-3 text-center">
+   643→   643→   643→                  <p className="text-lg font-bold text-red-500">{resultStats.fail}</p>
+   644→   644→   644→                  <p className="text-[10px] text-red-500 uppercase">Failed</p>
+   645→   645→   645→                </div>
+   646→   646→   646→              </div>
+   647→   647→   647→              <div className="max-h-48 overflow-y-auto space-y-2">
+   648→   648→   648→                {(() => {
+   649→   649→   649→                  const byMatch = new Map<string, JCJoinItem[]>();
+   650→   650→   650→                  for (const item of (resultItems.length > 0 ? resultItems : joinItems)) {
+   651→   651→   651→                    const key = String(item.matchId);
+   652→   652→   652→                    if (!byMatch.has(key)) byMatch.set(key, []);
+   653→   653→   653→                    byMatch.get(key)!.push(item);
+   654→   654→   654→                  }
+   655→   655→   655→                  return Array.from(byMatch.entries()).map(([matchId, items]) => (
+   656→   656→   656→                    <div key={matchId} className="bg-gray-50 rounded-xl p-3">
+   657→   657→   657→                      <p className="text-xs font-semibold text-gray-700 mb-1">{items[0].matchName}</p>
+   658→   658→   658→                      {items.map((item, i) => (
+   659→   659→   659→                        <div key={i} className="flex items-center gap-1.5 text-[11px] py-0.5">
+   660→   660→   660→                          {item.status === 'success' && <CheckCircle2 className="w-3 h-3 text-green-500" />}
+   661→   661→   661→                          {item.status === 'already_joined' && <AlertCircle className="w-3 h-3 text-amber-500" />}
+   662→   662→   662→                          {item.status === 'fail' && <X className="w-3 h-3 text-red-500" />}
+   663→   663→   663→                          <span className="text-gray-600">{item.contestName}</span>
+   664→   664→   664→                          <span className="text-gray-400">— {item.teamName}</span>
+   665→   665→   665→                          {item.message && <span className="text-gray-400 ml-auto">{item.message}</span>}
+   666→   666→   666→                        </div>
+   667→   667→   667→                      ))}
+   668→   668→   668→                    </div>
+   669→   669→   669→                  ));
+   670→   670→   670→                })()}
+   671→   671→   671→              </div>
+   672→   672→   672→            </div>
+   673→   673→   673→          )}
+   674→   674→   674→        </div>
+   675→   675→   675→
+   676→   676→   676→        {/* Footer Buttons */}
+   677→   677→   677→        <div className="px-6 py-4 border-t bg-gray-50 flex items-center justify-between">
+   678→   678→   678→          <div>
+   679→   679→   679→            {step !== 'matches' && step !== 'joining' && step !== 'result' && (
+   680→   680→   680→              <button onClick={() => {
+   681→   681→   681→                const prev: Record<Step, Step | null> = {
+   682→   682→   682→                  matches: null, teams: 'matches', contests: 'teams',
+   683→   683→   683→                  joining: null, result: null,
+   684→   684→   684→                };
+   685→   685→   685→                const p = prev[step];
+   686→   686→   686→                if (p) setStep(p);
+   687→   687→   687→              }} className="flex items-center gap-1 text-sm text-gray-600 hover:text-gray-800 font-medium">
+   688→   688→   688→                <ChevronLeft className="w-4 h-4" /> Back
+   689→   689→   689→              </button>
+   690→   690→   690→            )}
+   691→   691→   691→          </div>
+   692→   692→   692→          <div className="flex items-center gap-2">
+   693→   693→   693→            {step === 'matches' && (
+   694→   694→   694→              <button onClick={() => {
+   695→   695→   695→                if (selectedMatchIds.size > 0 && availablePlatforms.length > 0) {
+   696→   696→   696→                  setStep('teams');
+   697→   697→   697→                  loadPlatformTeams();
+   698→   698→   698→                }
+   699→   699→   699→              }} disabled={selectedMatchIds.size === 0 || availablePlatforms.length === 0}
+   700→   700→   700→                className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
+   701→   701→   701→                Next <ChevronRight className="w-4 h-4" />
+   702→   702→   702→              </button>
+   703→   703→   703→            )}
+   704→   704→   704→            {step === 'teams' && (
+   705→   705→   705→              <button onClick={() => {
+   706→   706→   706→                if (selectedTeamIds.size > 0) {
+   707→   707→   707→                  setStep('contests');
+   708→   708→   708→                  loadContests();
+   709→   709→   709→                }
+   710→   710→   710→              }} disabled={selectedTeamIds.size === 0}
+   711→   711→   711→                className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
+   712→   712→   712→                Next <ChevronRight className="w-4 h-4" />
+   713→   713→   713→              </button>
+   714→   714→   714→            )}
+   715→   715→   715→            {step === 'contests' && (
+   716→   716→   716→              <button onClick={executeJoin} disabled={selectedContestIds.size === 0}
+   717→   717→   717→                className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
+   718→   718→   718→                <Trophy className="w-4 h-4" />
+   719→   719→   719→                JOIN ALL SELECTED ({selectedContestIds.size * selectedTeamIds.size})
+   720→   720→   720→              </button>
+   721→   721→   721→            )}
+   722→   722→   722→            {step === 'result' && (
+   723→   723→   723→              <button onClick={handleClose}
+   724→   724→   724→                className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all">
+   725→   725→   725→                Done
+   726→   726→   726→              </button>
+   727→   727→   727→            )}
+   728→   728→   728→          </div>
+   729→   729→   729→        </div>
+   730→   730→   730→      </div>
+   731→   731→   731→    </div>
+   732→   732→   732→  );
+   733→   733→   733→}
+   734→   734→   734→

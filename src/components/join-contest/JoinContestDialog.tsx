@@ -7,12 +7,21 @@ import {
 } from 'lucide-react';
 import {
   JCMatch, JCContest, JCTeam, JCJoinItem, JCProgress,
+  JCContestFetchResult,
   parseContest, formatCurrency, getContestTypeColor,
-  getExistingPlatformTeams, buildJoinItems, getJoinKey,
+  getExistingPlatformTeams, getPlatformContests, normalizeContests,
+  buildJoinItems, getJoinKey,
 } from '@/lib/join-contest-service';
 
 // ============ Step Enum ============
 type Step = 'matches' | 'teams' | 'contests' | 'joining' | 'result';
+
+// ============ Contest Error State ============
+interface ContestErrorState {
+  matchId: string;
+  error: string;
+  errorType: 'auth' | 'network' | 'parse' | 'invalid_match' | 'api_fail';
+}
 
 // ============ Props ============
 interface JoinContestDialogProps {
@@ -41,10 +50,12 @@ export default function JoinContestDialog({
   const [teamsError, setTeamsError] = useState<string | null>(null);
   const [teamsTokenExpired, setTeamsTokenExpired] = useState(false);
 
-  // Contest selection
+  // Contest selection — with proper error states
   const [contestsMap, setContestsMap] = useState<Map<string, JCContest[]>>(new Map());
   const [selectedContestIds, setSelectedContestIds] = useState<Set<string>>(new Set());
   const [loadingContests, setLoadingContests] = useState(false);
+  const [contestErrors, setContestErrors] = useState<ContestErrorState[]>([]);
+  const [contestTokenExpired, setContestTokenExpired] = useState(false);
 
   // Join progress
   const [joinItems, setJoinItems] = useState<JCJoinItem[]>([]);
@@ -75,6 +86,9 @@ export default function JoinContestDialog({
     setTeamsTokenExpired(false);
     setContestsMap(new Map());
     setSelectedContestIds(new Set());
+    setLoadingContests(false);
+    setContestErrors([]);
+    setContestTokenExpired(false);
     setJoinItems([]);
     setProgress({ current: 0, total: 0, status: 'idle' });
     setResultItems([]);
@@ -149,37 +163,72 @@ export default function JoinContestDialog({
     setSelectedTeamIds(new Set());
   };
 
-  // ============ Contest Loading ============
+  // ============ Contest Loading — with proper error differentiation ============
   const loadContests = useCallback(async () => {
     if (!account?.authToken) return;
     setLoadingContests(true);
+    setContestErrors([]);
+    setContestTokenExpired(false);
+    setSelectedContestIds(new Set());
+
     const newMap = new Map<string, JCContest[]>();
+    const errors: ContestErrorState[] = [];
+    let anyTokenExpired = false;
 
     for (const matchId of selectedMatchIds) {
       const match = matches.find(m => m.id === matchId);
-      try {
-        const res = await fetch('/api/fantasy/list-contests', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            fantasyApp: platform,
-            matchId,
-            authToken: account.authToken,
-            sportIndex: match?.sport_index ?? 0,
-          }),
+      const platformMatchId = String(matchId);
+
+      console.log('[JOIN CONTEST] Selected match:', match?.left_team_name, 'vs', match?.right_team_name);
+      console.log('[JOIN CONTEST] Platform:', platform);
+      console.log('[JOIN CONTEST] Platform Match ID:', platformMatchId);
+      console.log('[JOIN CONTEST] Account ID:', account.mobileNumber || 'unknown');
+      console.log('[JOIN CONTEST] Sport Index:', match?.sport_index ?? 0);
+
+      const result: JCContestFetchResult = await getPlatformContests(
+        platform,
+        platformMatchId,
+        account.authToken,
+        match?.sport_index ?? 0,
+      );
+
+      console.log('[JOIN CONTEST] Contest count:', result.contests.length);
+      console.log('[JOIN CONTEST] Error type:', result.errorType);
+
+      if (result.errorType === 'auth') {
+        anyTokenExpired = true;
+        errors.push({
+          matchId: String(matchId),
+          error: result.error || 'Session expired',
+          errorType: 'auth',
         });
-        const data = await res.json();
-        if (data.status === 'success' && Array.isArray(data.data?.contests)) {
-          newMap.set(String(matchId), data.data.contests.map((c: Record<string, unknown>) => parseContest(c)));
-        } else {
-          newMap.set(String(matchId), []);
-        }
-      } catch {
+        // Still set empty array for this match
         newMap.set(String(matchId), []);
+      } else if (result.errorType && result.errorType !== 'none') {
+        errors.push({
+          matchId: String(matchId),
+          error: result.error || 'Failed to load contests',
+          errorType: result.errorType,
+        });
+        newMap.set(String(matchId), []);
+      } else {
+        // Success (possibly 0 contests — that's a valid state)
+        newMap.set(String(matchId), result.contests);
       }
+
+      // Validate: contest.matchId should match our matchId
+      for (const contest of result.contests) {
+        if (contest.matchId && contest.matchId !== platformMatchId) {
+          console.warn('[JOIN CONTEST] Contest matchId mismatch:', contest.matchId, '!==', platformMatchId, 'for contest:', contest.id);
+        }
+      }
+
+      console.log('[JOIN CONTEST] Normalized contests for match', platformMatchId, ':', result.contests.length);
     }
 
     setContestsMap(newMap);
+    setContestErrors(errors);
+    setContestTokenExpired(anyTokenExpired);
     setLoadingContests(false);
   }, [selectedMatchIds, platform, account, matches]);
 
@@ -190,6 +239,38 @@ export default function JoinContestDialog({
       return next;
     });
   };
+
+  const selectAllContests = () => {
+    const allIds: string[] = [];
+    for (const contests of contestsMap.values()) {
+      for (const c of contests) {
+        if (c.joinAvailable) allIds.push(c.id);
+      }
+    }
+    setSelectedContestIds(new Set(allIds));
+  };
+
+  const deselectAllContests = () => {
+    setSelectedContestIds(new Set());
+  };
+
+  // Total contest count across all matches
+  const totalContestCount = useMemo(() => {
+    let count = 0;
+    for (const contests of contestsMap.values()) {
+      count += contests.length;
+    }
+    return count;
+  }, [contestsMap]);
+
+  // Total joinable contest count
+  const totalJoinableCount = useMemo(() => {
+    let count = 0;
+    for (const contests of contestsMap.values()) {
+      count += contests.filter(c => c.joinAvailable).length;
+    }
+    return count;
+  }, [contestsMap]);
 
   // ============ Join Execution ============
   const executeJoin = useCallback(async () => {
@@ -512,67 +593,186 @@ export default function JoinContestDialog({
             </div>
           )}
 
-          {/* ===== STEP: CONTESTS ===== */}
+          {/* ===== STEP: CONTESTS — with proper error/loading states ===== */}
           {step === 'contests' && (
             <div className="space-y-4">
-              {loadingContests ? (
+              {/* LOADING STATE */}
+              {loadingContests && (
                 <div className="flex flex-col items-center justify-center py-12">
                   <Loader2 className="w-8 h-8 animate-spin text-green-500" />
-                  <p className="text-sm text-gray-500 mt-3">Loading contests...</p>
+                  <p className="text-sm text-gray-500 mt-3">LOADING CONTESTS...</p>
+                  <p className="text-xs text-gray-400 mt-1">Fetching contests from {platform === 'dream11' ? 'Dream11' : 'My11Circle'}</p>
                 </div>
-              ) : (
-                Array.from(contestsMap.entries()).map(([matchId, contests]) => {
-                  const match = matches.find(m => String(m.id) === matchId);
-                  return (
-                    <div key={matchId} className="space-y-2">
-                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                        {match?.left_team_name} vs {match?.right_team_name}
-                      </p>
-                      {contests.length === 0 ? (
-                        <p className="text-sm text-gray-400 py-4 text-center">No contests available</p>
-                      ) : (
-                        <div className="space-y-2">
-                          {contests.map(contest => {
-                            const selected = selectedContestIds.has(contest.id);
-                            return (
-                              <button key={contest.id} onClick={() => toggleContest(contest.id)}
-                                className={`w-full text-left rounded-xl border-2 p-3 transition-all ${
-                                  selected ? 'border-green-500 bg-green-50' : 'border-gray-200 bg-white hover:border-gray-300'
-                                } ${!contest.joinAvailable ? 'opacity-50' : ''}`}>
-                                <div className="flex items-center gap-3">
-                                  <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
-                                    selected ? 'border-green-500 bg-green-500' : 'border-gray-300'
-                                  }`}>
-                                    {selected && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
-                                  </div>
-                                  <div className="flex-1">
-                                    <div className="flex items-center gap-2">
-                                      <p className="font-semibold text-sm text-gray-900">{contest.name}</p>
-                                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${getContestTypeColor(contest.type)}`}>
-                                        {contest.type}
-                                      </span>
-                                    </div>
-                                    <div className="flex items-center gap-3 text-xs text-gray-500 mt-1">
-                                      <span className="flex items-center gap-0.5"><DollarSign className="w-3 h-3" />{formatCurrency(contest.entryFee)}</span>
-                                      <span>Prize: {formatCurrency(contest.prizePool)}</span>
-                                      <span className="flex items-center gap-0.5"><Users className="w-3 h-3" />{contest.filledSpots}/{contest.totalSpots}</span>
-                                    </div>
-                                    {contest.remainingSpots > 0 && (
-                                      <p className="text-[10px] text-green-600 mt-0.5">{contest.remainingSpots} spots remaining</p>
-                                    )}
-                                    {!contest.joinAvailable && (
-                                      <p className="text-[10px] text-red-500 mt-0.5">Full</p>
-                                    )}
-                                  </div>
-                                </div>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
+              )}
+
+              {/* SESSION EXPIRED */}
+              {!loadingContests && contestTokenExpired && (
+                <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+                  <div className="flex items-center gap-2">
+                    <AlertCircle className="w-5 h-5 text-red-500 shrink-0" />
+                    <div>
+                      <p className="text-sm font-semibold text-red-700">SESSION EXPIRED</p>
+                      <p className="text-xs text-red-600 mt-0.5">Your {platform === 'dream11' ? 'Dream11' : 'My11Circle'} session has expired.</p>
                     </div>
-                  );
-                })
+                  </div>
+                  <p className="text-xs text-red-500 mt-2">Reconnect your account via Transfer to continue.</p>
+                  <button onClick={loadContests} className="mt-2 flex items-center gap-1 text-xs font-semibold text-red-600 hover:text-red-700">
+                    <RefreshCw className="w-3 h-3" /> Retry
+                  </button>
+                </div>
+              )}
+
+              {/* API/NETWORK ERRORS */}
+              {!loadingContests && !contestTokenExpired && contestErrors.length > 0 && totalContestCount === 0 && (
+                <div className="space-y-3">
+                  {contestErrors.map((err, i) => {
+                    const match = matches.find(m => String(m.id) === err.matchId);
+                    return (
+                      <div key={i} className="bg-red-50 border border-red-200 rounded-xl p-4">
+                        <div className="flex items-center gap-2">
+                          <AlertCircle className="w-5 h-5 text-red-500 shrink-0" />
+                          <div>
+                            <p className="text-sm font-semibold text-red-700">UNABLE TO LOAD CONTESTS</p>
+                            <p className="text-xs text-red-600 mt-0.5">
+                              {match ? `${match.left_team_name} vs ${match.right_team_name}` : `Match ${err.matchId}`}
+                            </p>
+                            <p className="text-xs text-red-500 mt-0.5">{err.error}</p>
+                          </div>
+                        </div>
+                        <button onClick={loadContests} className="mt-2 flex items-center gap-1 text-xs font-semibold text-red-600 hover:text-red-700">
+                          <RefreshCw className="w-3 h-3" /> Retry
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* CONTESTS LIST (when not loading and we have data or genuine zero) */}
+              {!loadingContests && !contestTokenExpired && (totalContestCount > 0 || contestErrors.length === 0) && (
+                <div className="space-y-4">
+                  {/* Select All / Deselect header */}
+                  {totalContestCount > 0 && (
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                        CONTESTS ({totalContestCount})
+                      </p>
+                      <div className="flex gap-2">
+                        <button onClick={selectAllContests} disabled={totalJoinableCount === 0}
+                          className="text-xs font-semibold text-green-600 hover:text-green-700 disabled:opacity-40">
+                          Select All
+                        </button>
+                        <button onClick={deselectAllContests} disabled={selectedContestIds.size === 0}
+                          className="text-xs font-semibold text-gray-500 hover:text-gray-700 disabled:opacity-40">
+                          Deselect
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Per-match contest groups */}
+                  {Array.from(contestsMap.entries()).map(([matchId, contests]) => {
+                    const match = matches.find(m => String(m.id) === matchId);
+                    const matchError = contestErrors.find(e => e.matchId === matchId);
+                    return (
+                      <div key={matchId} className="space-y-2">
+                        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                          {match?.left_team_name || '?'} vs {match?.right_team_name || '?'}
+                          <span className="ml-2 text-gray-400">({contests.length} contests)</span>
+                        </p>
+
+                        {/* Error for this specific match (partial failure) */}
+                        {matchError && contests.length === 0 && (
+                          <div className="bg-red-50 border border-red-200 rounded-xl p-3">
+                            <div className="flex items-center gap-2">
+                              <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
+                              <div>
+                                <p className="text-xs font-semibold text-red-700">UNABLE TO LOAD CONTESTS</p>
+                                <p className="text-[11px] text-red-600 mt-0.5">{matchError.error}</p>
+                              </div>
+                            </div>
+                            <button onClick={loadContests} className="mt-1.5 flex items-center gap-1 text-[11px] font-semibold text-red-600 hover:text-red-700">
+                              <RefreshCw className="w-3 h-3" /> Retry
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Genuine zero contests */}
+                        {!matchError && contests.length === 0 && (
+                          <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 text-center">
+                            <p className="text-sm text-gray-500">NO CONTESTS AVAILABLE FOR THIS MATCH</p>
+                            <p className="text-xs text-gray-400 mt-1">This match may not have any joinable contests on {platform === 'dream11' ? 'Dream11' : 'My11Circle'}.</p>
+                          </div>
+                        )}
+
+                        {/* Contest Cards */}
+                        {contests.length > 0 && (
+                          <div className="space-y-2">
+                            {contests.map(contest => {
+                              const selected = selectedContestIds.has(contest.id);
+                              return (
+                                <button key={contest.id} onClick={() => toggleContest(contest.id)}
+                                  className={`w-full text-left rounded-xl border-2 p-3 transition-all ${
+                                    selected ? 'border-green-500 bg-green-50' : 'border-gray-200 bg-white hover:border-gray-300'
+                                  } ${!contest.joinAvailable ? 'opacity-50' : ''}`}>
+                                  <div className="flex items-center gap-3">
+                                    <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
+                                      selected ? 'border-green-500 bg-green-500' : 'border-gray-300'
+                                    }`}>
+                                      {selected && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-2">
+                                        <p className="font-semibold text-sm text-gray-900 truncate">{contest.name}</p>
+                                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded shrink-0 ${getContestTypeColor(contest.type)}`}>
+                                          {contest.type}
+                                        </span>
+                                      </div>
+                                      <div className="flex items-center gap-3 text-xs text-gray-500 mt-1">
+                                        <span className="flex items-center gap-0.5"><DollarSign className="w-3 h-3" />{formatCurrency(contest.entryFee)}</span>
+                                        <span>Prize: {formatCurrency(contest.prizePool)}</span>
+                                        <span className="flex items-center gap-0.5"><Users className="w-3 h-3" />{contest.filledSpots}/{contest.totalSpots}</span>
+                                      </div>
+                                      <div className="flex items-center gap-2 mt-0.5">
+                                        {contest.remainingSpots > 0 && (
+                                          <p className="text-[10px] text-green-600">{contest.remainingSpots} spots remaining</p>
+                                        )}
+                                        {!contest.joinAvailable && (
+                                          <p className="text-[10px] text-red-500">Full</p>
+                                        )}
+                                        {contest.joinAvailable && (
+                                          <p className="text-[10px] text-green-600 font-medium">JOIN AVAILABLE</p>
+                                        )}
+                                      </div>
+                                    </div>
+                                    <span className="text-[9px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded shrink-0" title="Platform Contest ID">
+                                      {contest.contestId}
+                                    </span>
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {/* Selected contest count */}
+                  {selectedContestIds.size > 0 && (
+                    <p className="text-sm text-green-600 font-medium">
+                      Selected: {selectedContestIds.size} contest{selectedContestIds.size !== 1 ? 's' : ''}
+                    </p>
+                  )}
+
+                  {/* Zero contests overall (genuine) */}
+                  {totalContestCount === 0 && contestErrors.length === 0 && (
+                    <div className="bg-gray-50 border border-gray-200 rounded-xl p-6 text-center">
+                      <p className="text-sm text-gray-500">NO CONTESTS AVAILABLE</p>
+                      <p className="text-xs text-gray-400 mt-1">None of the selected matches have joinable contests on {platform === 'dream11' ? 'Dream11' : 'My11Circle'} right now.</p>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           )}

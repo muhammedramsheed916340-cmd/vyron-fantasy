@@ -18,6 +18,7 @@ export interface JCMatch {
 
 export interface JCContest {
   id: string;
+  contestId: string;       // REAL platform contest ID
   name: string;
   type: string;           // GL, SL, H2H, etc.
   entryFee: number;
@@ -27,6 +28,17 @@ export interface JCContest {
   remainingSpots: number;
   joinAvailable: boolean;
   maxTeamsPerUser?: number;
+  matchId?: string;       // Platform match ID for validation
+  platform?: string;      // Which platform this contest belongs to
+}
+
+/** Contest fetch result with proper error differentiation */
+export interface JCContestFetchResult {
+  contests: JCContest[];
+  error?: string;
+  errorType?: 'none' | 'auth' | 'network' | 'parse' | 'invalid_match' | 'api_fail';
+  rawResponse?: unknown;   // For debug logging
+  rawKeys?: string[];      // Top-level keys in the response for debugging
 }
 
 export interface JCTeam {
@@ -99,21 +111,25 @@ export function deduplicateJoinItems(items: JCJoinItem[]): JCJoinItem[] {
  * Parse contest data from TG API response into JCContest format.
  * Handles various field naming conventions from the API.
  */
-export function parseContest(raw: Record<string, unknown>): JCContest {
-  const totalSpots = (raw.totalSpots as number) || (raw.total_spots as number) || (raw.size as number) || 0;
-  const filledSpots = (raw.filledSpots as number) || (raw.filled_spots as number) || (raw.joined as number) || 0;
+export function parseContest(raw: Record<string, unknown>, platformMatchId?: string, platform?: string): JCContest {
+  const totalSpots = (raw.totalSpots as number) || (raw.total_spots as number) || (raw.size as number) || (raw.totalSpot as number) || 0;
+  const filledSpots = (raw.filledSpots as number) || (raw.filled_spots as number) || (raw.joined as number) || (raw.spot_filled as number) || 0;
+  const contestId = String(raw.id || raw.contestId || raw.contest_id || raw._id || '');
 
   return {
-    id: String(raw.id || raw.contestId || raw.contest_id || ''),
-    name: String(raw.name || raw.contestName || raw.contest_name || 'Contest'),
+    id: contestId,
+    contestId,                                    // REAL platform contest ID
+    name: String(raw.name || raw.contestName || raw.contest_name || raw.title || 'Contest'),
     type: String(raw.type || raw.contestType || raw.contest_type || 'GL'),
-    entryFee: (raw.entryFee as number) || (raw.entry_fee as number) || (raw.entry as number) || 0,
-    prizePool: (raw.prizePool as number) || (raw.prize_pool as number) || (raw.prize as number) || 0,
+    entryFee: (raw.entryFee as number) || (raw.entry_fee as number) || (raw.entry as number) || (raw.joinAmount as number) || 0,
+    prizePool: (raw.prizePool as number) || (raw.prize_pool as number) || (raw.prize as number) || (raw.winningAmount as number) || 0,
     totalSpots,
     filledSpots,
     remainingSpots: Math.max(0, totalSpots - filledSpots),
     joinAvailable: totalSpots === 0 || filledSpots < totalSpots,
-    maxTeamsPerUser: (raw.maxTeamsPerUser as number) || (raw.max_teams as number) || undefined,
+    maxTeamsPerUser: (raw.maxTeamsPerUser as number) || (raw.max_teams as number) || (raw.maxTeamPerUser as number) || undefined,
+    matchId: platformMatchId,
+    platform,
   };
 }
 
@@ -136,6 +152,204 @@ export function getContestTypeColor(type: string): string {
     case 'SL': case 'SMALL': return 'bg-blue-100 text-blue-700';
     case 'H2H': case 'HEAD-TO-HEAD': return 'bg-orange-100 text-orange-700';
     default: return 'bg-gray-100 text-gray-700';
+  }
+}
+
+/**
+ * Normalize raw contest data from the TG API into JCContest[].
+ * Handles various response structures from different platform APIs.
+ *
+ * The TG API may return contests in various nested structures:
+ * - data.contests
+ * - data.contest_list
+ * - data.result
+ * - data.data (nested)
+ * - data.list
+ * - or the data itself may be an array
+ */
+export function normalizeContests(
+  rawData: unknown,
+  platformMatchId?: string,
+  platform?: string,
+): { contests: JCContest[]; rawKeys: string[] } {
+  const rawKeys: string[] = [];
+  let contestArray: unknown[] | null = null;
+
+  if (rawData && typeof rawData === 'object' && !Array.isArray(rawData)) {
+    const obj = rawData as Record<string, unknown>;
+    rawKeys.push(...Object.keys(obj));
+
+    // Try known field names for contest arrays
+    const arrayFields = [
+      'contests', 'contest_list', 'contestList', 'list',
+      'result', 'data', 'items', 'records',
+    ];
+    for (const field of arrayFields) {
+      if (Array.isArray(obj[field])) {
+        contestArray = obj[field] as unknown[];
+        break;
+      }
+    }
+
+    // If still not found, check if any value is an array of objects that look like contests
+    if (!contestArray) {
+      for (const [key, val] of Object.entries(obj)) {
+        if (Array.isArray(val) && val.length > 0 && typeof val[0] === 'object' && val[0] !== null) {
+          const sample = val[0] as Record<string, unknown>;
+          // Heuristic: if it has any contest-like fields, treat as contests
+          if (sample.id || sample.contestId || sample.contest_id || sample.name || sample.entryFee || sample.entry_fee) {
+            contestArray = val as unknown[];
+            break;
+          }
+        }
+      }
+    }
+  } else if (Array.isArray(rawData)) {
+    contestArray = rawData;
+    rawKeys.push('(root array)');
+  }
+
+  if (!contestArray || contestArray.length === 0) {
+    return { contests: [], rawKeys };
+  }
+
+  const contests: JCContest[] = [];
+  for (const item of contestArray) {
+    if (item && typeof item === 'object') {
+      const contest = parseContest(item as Record<string, unknown>, platformMatchId, platform);
+      // Only include contests that have a valid ID
+      if (contest.id && contest.id !== '') {
+        contests.push(contest);
+      }
+    }
+  }
+
+  return { contests, rawKeys };
+}
+
+/**
+ * Fetch contests from the platform for a specific match.
+ * Uses the list-contests API route.
+ * Returns proper error differentiation instead of silently returning [].
+ */
+export async function getPlatformContests(
+  platform: string,
+  matchId: string | number,
+  authToken: string,
+  sportIndex?: number,
+): Promise<JCContestFetchResult> {
+  console.log('[JOIN CONTEST] Fetching contests — Platform:', platform, 'Match ID:', matchId, 'Sport Index:', sportIndex);
+
+  try {
+    const res = await fetch('/api/fantasy/list-contests', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fantasyApp: platform,
+        matchId,
+        authToken,
+        sportIndex: sportIndex ?? 0,
+      }),
+    });
+
+    console.log('[JOIN CONTEST] HTTP status:', res.status);
+
+    if (!res.ok) {
+      // Non-200 HTTP status
+      if (res.status === 401 || res.status === 403) {
+        return {
+          contests: [],
+          error: 'Session expired. Reconnect your account.',
+          errorType: 'auth',
+        };
+      }
+      return {
+        contests: [],
+        error: `API error (HTTP ${res.status}). Please try again.`,
+        errorType: 'api_fail',
+      };
+    }
+
+    let data: any;
+    try {
+      data = await res.json();
+    } catch {
+      return {
+        contests: [],
+        error: 'Invalid response from server.',
+        errorType: 'parse',
+      };
+    }
+
+    console.log('[JOIN CONTEST] API response status:', data.status);
+    console.log('[JOIN CONTEST] Raw response keys:', Object.keys(data));
+    console.log('[JOIN CONTEST] Raw response data keys:', data.data ? Object.keys(data.data) : 'no data');
+
+    // API-level auth/token error
+    if (data.tokenExpired || data.status === 'token_expired') {
+      return {
+        contests: [],
+        error: data.message || 'Session expired. Reconnect your account.',
+        errorType: 'auth',
+        rawResponse: data,
+      };
+    }
+
+    // API-level failure
+    if (data.status === 'fail' || data.status === 'error') {
+      const msg = data.message || 'Failed to load contests.';
+      // Detect auth errors from the message
+      if (msg.toLowerCase().includes('auth') || msg.toLowerCase().includes('token') || msg.toLowerCase().includes('expire') || msg.toLowerCase().includes('login') || msg.toLowerCase().includes('session')) {
+        return {
+          contests: [],
+          error: msg,
+          errorType: 'auth',
+          rawResponse: data,
+        };
+      }
+      return {
+        contests: [],
+        error: msg,
+        errorType: 'api_fail',
+        rawResponse: data,
+      };
+    }
+
+    // Success — normalize contests from the response
+    if (data.status === 'success') {
+      const contestData = data.data;
+      const { contests, rawKeys } = normalizeContests(contestData, String(matchId), platform);
+
+      console.log('[JOIN CONTEST] Normalized contests:', contests.length);
+      console.log('[JOIN CONTEST] Raw data keys:', rawKeys);
+      if (contests.length === 0) {
+        console.log('[JOIN CONTEST] WARNING: 0 contests after normalization. Raw data structure:', JSON.stringify(contestData, null, 2).slice(0, 500));
+      }
+
+      return {
+        contests,
+        error: contests.length === 0 ? undefined : undefined,
+        errorType: 'none',
+        rawResponse: data,
+        rawKeys,
+      };
+    }
+
+    // Unknown response format
+    console.log('[JOIN CONTEST] Unknown response format:', JSON.stringify(data, null, 2).slice(0, 300));
+    return {
+      contests: [],
+      error: 'Unexpected response format from contest API.',
+      errorType: 'parse',
+      rawResponse: data,
+    };
+  } catch (err) {
+    console.error('[JOIN CONTEST] Network error:', err instanceof Error ? err.message : 'unknown');
+    return {
+      contests: [],
+      error: 'Network error. Please check your connection and try again.',
+      errorType: 'network',
+    };
   }
 }
 
