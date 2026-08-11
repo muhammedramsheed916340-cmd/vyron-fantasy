@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { findActiveLicenseForAccount, prisma } from '@/lib/admin-auth';
+import { prisma } from '@/lib/admin-auth';
 
 const TG_API_BASE = 'https://tgsoftware-api.online/api';
 
@@ -19,7 +19,7 @@ interface TransferRequestBody {
   vice_captain: number; // Vice-captain's platform-specific player ID (NOTE: underscore!)
   id?: string | number; // Required for edit mode
   my11circleChallenge?: string; // For my11circle
-  licenseAccountId?: string; // Account identifier for license validation
+  licenseAccountId?: string; // Account identifier for logging only
 }
 
 export async function POST(request: NextRequest) {
@@ -40,25 +40,7 @@ export async function POST(request: NextRequest) {
       licenseAccountId,
     } = body;
 
-    // ========== LICENSE GATE ==========
-    // A valid active license is REQUIRED before any transfer operation.
-    // This check is server-side only — frontend cannot bypass this.
-    if (licenseAccountId) {
-      const licenseCheck = await findActiveLicenseForAccount(licenseAccountId);
-      if (!licenseCheck.valid) {
-        return NextResponse.json(
-          { status: 'LICENSE_REQUIRED', message: 'An active license is required to use team transfer.' },
-          { status: 403 }
-        );
-      }
-    } else {
-      // No account ID provided — cannot validate license
-      return NextResponse.json(
-        { status: 'LICENSE_REQUIRED', message: 'An active license is required to use team transfer.' },
-        { status: 403 }
-      );
-    }
-    // ========== END LICENSE GATE ==========
+    // No license gate — transfer is open to all users
 
     // Validate required fields
     if (!fantasyApp) {
@@ -122,8 +104,6 @@ export async function POST(request: NextRequest) {
     const url = `${TG_API_BASE}/fantasy/${endpoint}`;
 
     // Build the EXACT payload the TG API expects
-    // Field names MUST match what the original teamgeneration.in sends:
-    //   matchId, captain, vice_captain, players, fantasyApp, authToken, sportIndex, type
     const payload: Record<string, unknown> = {
       matchId,
       captain,
@@ -146,7 +126,6 @@ export async function POST(request: NextRequest) {
     }
 
     // Call the real TG Software API
-    // NOTE: authToken goes in the body, NOT as a Bearer header
     try {
       const response = await fetch(url, {
         method: 'POST',
