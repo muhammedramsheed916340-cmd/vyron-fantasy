@@ -177,13 +177,31 @@ export default function JoinContestDialog({
 
     for (const matchId of selectedMatchIds) {
       const match = matches.find(m => m.id === matchId);
-      const platformMatchId = String(matchId);
+
+      // Use the match ID as the platform match ID.
+      // The TG API returns numeric match IDs (e.g., 113672) that are compatible
+      // with Dream11/My11Circle platform APIs.
+      // CRITICAL: This must be a numeric ID, NOT a display name like "MO vs SUL".
+      const platformMatchId = matchId;
+      const numericMatchId = typeof matchId === 'string' ? parseInt(matchId, 10) : matchId;
 
       console.log('[JOIN CONTEST] Selected match:', match?.left_team_name, 'vs', match?.right_team_name);
       console.log('[JOIN CONTEST] Platform:', platform);
-      console.log('[JOIN CONTEST] Platform Match ID:', platformMatchId);
+      console.log('[JOIN CONTEST] Platform Match ID:', platformMatchId, '(numeric:', numericMatchId, ')');
       console.log('[JOIN CONTEST] Account ID:', account.mobileNumber || 'unknown');
       console.log('[JOIN CONTEST] Sport Index:', match?.sport_index ?? 0);
+
+      // Validate: matchId must be numeric
+      if (isNaN(numericMatchId) || numericMatchId <= 0) {
+        console.error('[JOIN CONTEST] INVALID matchId:', matchId, '— not a valid numeric ID. This should be a platform match ID like 113672, not a display name.');
+        errors.push({
+          matchId: String(matchId),
+          error: `Invalid match ID "${matchId}". Must be a numeric platform match ID.`,
+          errorType: 'invalid_match',
+        });
+        newMap.set(String(matchId), []);
+        continue;
+      }
 
       const result: JCContestFetchResult = await getPlatformContests(
         platform,
@@ -303,15 +321,17 @@ export default function JoinContestDialog({
 
       try {
         const match = matches.find(m => String(m.id) === String(item.matchId));
+        // Ensure matchId is numeric for the join API
+        const numericMatchId = typeof item.matchId === 'string' ? parseInt(item.matchId, 10) : item.matchId;
         const res = await fetch('/api/fantasy/join-contest', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             fantasyApp: item.platform || platform,
-            matchId: item.matchId,
-            authToken: account?.authToken,
-            teamId: item.teamId,    // REAL platform team ID
-            contestId: item.contestId,
+            matchId: numericMatchId,      // Numeric platform match ID
+            authToken: account?.authToken, // Platform session token from verify-otp
+            teamId: item.teamId,           // REAL platform team ID (from list-of-teams)
+            contestId: item.contestId,     // REAL platform contest ID
             sportIndex: match?.sport_index ?? 0,
             challenge: account?.my11circleChallenge || undefined,
           }),
@@ -624,17 +644,38 @@ export default function JoinContestDialog({
                 </div>
               )}
 
-              {/* API/NETWORK ERRORS */}
+              {/* INVALID MATCH ID */}
+              {!loadingContests && !contestTokenExpired && contestErrors.some(e => e.errorType === 'invalid_match') && (
+                <div className="bg-orange-50 border border-orange-200 rounded-xl p-4">
+                  <div className="flex items-center gap-2">
+                    <AlertCircle className="w-5 h-5 text-orange-500 shrink-0" />
+                    <div>
+                      <p className="text-sm font-semibold text-orange-700">INVALID MATCH</p>
+                      <p className="text-xs text-orange-600 mt-0.5">The match ID is not a valid numeric platform match ID.</p>
+                    </div>
+                  </div>
+                  {contestErrors.filter(e => e.errorType === 'invalid_match').map((err, i) => (
+                    <p key={i} className="text-xs text-orange-500 mt-1 ml-7">{err.error}</p>
+                  ))}
+                  <p className="text-xs text-orange-500 mt-2">Match IDs must be numeric (e.g., 113672), not display names like "MO vs SUL".</p>
+                </div>
+              )}
+
+              {/* API/NETWORK ERRORS — HTTP 404 is NEVER silently converted to "0 contests" */}
               {!loadingContests && !contestTokenExpired && contestErrors.length > 0 && totalContestCount === 0 && (
                 <div className="space-y-3">
                   {contestErrors.map((err, i) => {
                     const match = matches.find(m => String(m.id) === err.matchId);
+                    const isInvalidMatch = err.errorType === 'invalid_match';
+                    if (isInvalidMatch) return null; // Shown in dedicated section above
                     return (
                       <div key={i} className="bg-red-50 border border-red-200 rounded-xl p-4">
                         <div className="flex items-center gap-2">
                           <AlertCircle className="w-5 h-5 text-red-500 shrink-0" />
                           <div>
-                            <p className="text-sm font-semibold text-red-700">UNABLE TO LOAD CONTESTS</p>
+                            <p className="text-sm font-semibold text-red-700">
+                              {err.error.includes('404') ? 'HTTP 404 — CONTEST API NOT FOUND' : 'UNABLE TO LOAD CONTESTS'}
+                            </p>
                             <p className="text-xs text-red-600 mt-0.5">
                               {match ? `${match.left_team_name} vs ${match.right_team_name}` : `Match ${err.matchId}`}
                             </p>
@@ -683,13 +724,15 @@ export default function JoinContestDialog({
                           <span className="ml-2 text-gray-400">({contests.length} contests)</span>
                         </p>
 
-                        {/* Error for this specific match (partial failure) */}
+                        {/* Error for this specific match (partial failure) — HTTP 404 shows diagnostic info */}
                         {matchError && contests.length === 0 && (
                           <div className="bg-red-50 border border-red-200 rounded-xl p-3">
                             <div className="flex items-center gap-2">
                               <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
                               <div>
-                                <p className="text-xs font-semibold text-red-700">UNABLE TO LOAD CONTESTS</p>
+                                <p className="text-xs font-semibold text-red-700">
+                                  {matchError.error.includes('404') ? 'HTTP 404 — CONTEST API NOT FOUND' : 'UNABLE TO LOAD CONTESTS'}
+                                </p>
                                 <p className="text-[11px] text-red-600 mt-0.5">{matchError.error}</p>
                               </div>
                             </div>

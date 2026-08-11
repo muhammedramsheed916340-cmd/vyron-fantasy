@@ -147,17 +147,23 @@ export async function POST(request: NextRequest) {
           try {
             const teamId = data.data?.teamId || data.data?.id || data.data?.team_id;
             if (teamId) {
-              const contestRes = await fetch(`${TG_API_BASE}/fantasy/join-contest`, {
+              // Use our own /api/fantasy/join-contest route instead of the TG API.
+              // The TG API does NOT have /fantasy/join-contest (returns HTTP 404).
+              // Our route calls the platform APIs directly (Dream11/My11Circle).
+              const contestJwtToken = process.env.CONTEST_JWT_TOKEN;
+              const contestRes = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/fantasy/join-contest`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                  matchId: numericMatchId,
                   fantasyApp,
+                  matchId: numericMatchId,
                   authToken,
                   teamId,
+                  contestId: contestId || '',
                   sportIndex: sportIndex ?? 0,
+                  my11circleChallenge,
                 }),
-                signal: AbortSignal.timeout(10000),
+                signal: AbortSignal.timeout(15000),
               });
               const contestData = await contestRes.json();
               contestJoined = contestData.status === 'success';

@@ -240,7 +240,18 @@ export async function getPlatformContests(
   sportIndex?: number,
   challenge?: string,
 ): Promise<JCContestFetchResult> {
-  console.log('[JOIN CONTEST] Fetching contests — Platform:', platform, 'Match ID:', matchId, 'Sport Index:', sportIndex);
+  // Ensure matchId is numeric — the platform APIs require numeric match IDs
+  const numericMatchId = typeof matchId === 'string' ? parseInt(matchId, 10) : matchId;
+  if (isNaN(numericMatchId) || numericMatchId <= 0) {
+    console.error('[JOIN CONTEST] INVALID matchId:', matchId, 'Platform:', platform);
+    return {
+      contests: [],
+      error: `Invalid match ID "${matchId}". A valid numeric platform match ID is required.`,
+      errorType: 'invalid_match',
+    };
+  }
+
+  console.log('[JOIN CONTEST] Fetching contests — Platform:', platform, 'Match ID:', numericMatchId, '(original:', matchId, ') Sport Index:', sportIndex);
 
   try {
     const res = await fetch('/api/fantasy/platform-contests', {
@@ -248,13 +259,23 @@ export async function getPlatformContests(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         platform,
-        matchId,
+        matchId: numericMatchId,  // Always pass numeric matchId
         authToken,
         challenge,
       }),
     });
 
     console.log('[JOIN CONTEST] HTTP status:', res.status);
+
+    // CRITICAL: HTTP 404 from our own API route — diagnose root cause
+    if (res.status === 404) {
+      console.error('[JOIN CONTEST] HTTP 404 from /api/fantasy/platform-contests! Platform:', platform, 'Match ID:', numericMatchId);
+      return {
+        contests: [],
+        error: `Contest API returned HTTP 404. Platform: ${platform}, Match ID: ${numericMatchId}. The API route may be misconfigured or the platform API endpoint changed.`,
+        errorType: 'api_fail',
+      };
+    }
 
     if (!res.ok) {
       if (res.status === 401 || res.status === 403) {
@@ -266,7 +287,7 @@ export async function getPlatformContests(
       }
       return {
         contests: [],
-        error: `API error (HTTP ${res.status}). Please try again.`,
+        error: `API error (HTTP ${res.status}). Platform: ${platform}, Match ID: ${numericMatchId}.`,
         errorType: 'api_fail',
       };
     }
@@ -284,6 +305,20 @@ export async function getPlatformContests(
 
     console.log('[JOIN CONTEST] API response status:', data.status);
     console.log('[JOIN CONTEST] Response data:', data.data ? `contests: ${data.data.contestCount}` : 'no data');
+    if (data._debug) {
+      console.log('[JOIN CONTEST] Debug info:', JSON.stringify(data._debug));
+    }
+
+    // API-level HTTP 404 from the platform — NEVER silently convert to empty
+    if (data.httpStatus === 404 || data.errorType === 'http_404') {
+      console.error('[JOIN CONTEST] Platform returned HTTP 404! Debug:', JSON.stringify(data._debug));
+      return {
+        contests: [],
+        error: data.message || `Platform ${platform} returned HTTP 404 for match ID ${numericMatchId}. This could mean: (1) Invalid match ID, (2) Match not available on ${platform}, (3) Contest API endpoint changed.`,
+        errorType: 'api_fail',
+        rawResponse: data,
+      };
+    }
 
     // API-level auth/token error
     if (data.tokenExpired || data.status === 'token_expired') {
@@ -318,7 +353,7 @@ export async function getPlatformContests(
     if (data.status === 'success' && data.data?.contests) {
       const platformContests = data.data.contests as Record<string, unknown>[];
       const contests: JCContest[] = platformContests.map((c) => {
-        const contest = parseContest(c, String(matchId), platform);
+        const contest = parseContest(c, String(numericMatchId), platform);
         return contest;
       });
 

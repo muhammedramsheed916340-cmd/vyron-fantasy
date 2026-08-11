@@ -6,11 +6,14 @@ import { joinPlatformContest } from '@/lib/platform-contest-api';
  *
  * Join a contest on the platform using an existing team.
  * Calls the platform API directly (Dream11/My11Circle)
- * since the TG API does NOT have a join-contest endpoint.
+ * since the TG API does NOT have a join-contest endpoint (HTTP 404).
+ *
+ * The CONTEST_JWT_TOKEN from .env is passed as additional auth
+ * for future TG API contest endpoint support.
  *
  * Body:
  *   fantasyApp: string       — "dream11" | "my11circle"
- *   matchId: string|number   — platform match ID
+ *   matchId: string|number   — platform match ID (numeric)
  *   authToken: string        — platform session token from verify-otp
  *   teamId: string|number    — REAL platform team ID (from list-of-teams)
  *   contestId: string        — REAL platform contest ID
@@ -26,8 +29,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ status: 'fail', message: 'fantasyApp is required' }, { status: 400 });
     }
     if (!matchId) {
-      return NextResponse.json({ status: 'fail', message: 'matchId is required' }, { status: 400 });
+      return NextResponse.json({ status: 'fail', message: 'matchId is required (numeric platform match ID)' }, { status: 400 });
     }
+
+    // Validate matchId is numeric
+    const numericMatchId = typeof matchId === 'string' ? parseInt(matchId, 10) : matchId;
+    if (isNaN(numericMatchId) || numericMatchId <= 0) {
+      return NextResponse.json({
+        status: 'fail',
+        message: `matchId must be a valid positive number. Got: "${matchId}"`,
+      }, { status: 400 });
+    }
+
     if (!authToken) {
       return NextResponse.json({ status: 'fail', message: 'authToken is required' }, { status: 400 });
     }
@@ -38,15 +51,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ status: 'fail', message: 'contestId is required' }, { status: 400 });
     }
 
-    console.log('[JOIN CONTEST API] Platform:', fantasyApp, 'Match:', matchId, 'Team:', teamId, 'Contest:', contestId);
+    // Read CONTEST_JWT_TOKEN from server env
+    const contestJwtToken = process.env.CONTEST_JWT_TOKEN || undefined;
+
+    console.log('[JOIN CONTEST API] Platform:', fantasyApp, 'Match:', numericMatchId, 'Team:', teamId, 'Contest:', contestId, 'Has JWT:', !!contestJwtToken);
 
     const result = await joinPlatformContest(
       fantasyApp,
-      matchId,
+      numericMatchId,
       authToken,
       teamId,
       contestId,
       challenge,
+      contestJwtToken,
     );
 
     console.log('[JOIN CONTEST API] Result:', result.success ? 'SUCCESS' : result.alreadyJoined ? 'ALREADY_JOINED' : 'FAIL', result.message);
