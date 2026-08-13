@@ -85,6 +85,19 @@ export default function JoinContestDialog({
   const lastOtpTimestampRef = useRef(0);
   const OTP_COOLDOWN_MS = 10000; // 10 seconds minimum between OTP requests
 
+  // ============ REQUEST GUARDS (prevent duplicate/parallel/auto requests) ============
+  const loadTeamsInProgressRef = useRef(false);  // Prevents parallel team-fetch requests
+  const loadContestsInProgressRef = useRef(false); // Prevents parallel contest-fetch requests
+  const joinInProgressRef = useRef(false);  // Prevents double-click on Join button
+  const nextClickInProgressRef = useRef(false); // Prevents double-click on Next buttons
+
+  // ============ ABORT CONTROLLER (request cancellation on close/back) ============
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // ============ RATE LIMIT STATE ============
+  const [teamsRateLimited, setTeamsRateLimited] = useState(false);
+  const [contestsRateLimited, setContestsRateLimited] = useState(false);
+
   // ============ SESSION PRE-CHECK STATE ============
   const [sessionChecked, setSessionChecked] = useState(false);
   const [sessionValid, setSessionValid] = useState(false);
@@ -108,8 +121,21 @@ export default function JoinContestDialog({
 
   const account = effectiveAccount;
 
-  // Reset on close
+  // Reset on close — with request cancellation and guard cleanup
   const handleClose = () => {
+    // === CANCEL ALL PENDING REQUESTS ===
+    if (abortControllerRef.current) {
+      console.log('[JOIN] Aborting all pending requests on close');
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    // === CLEAR ALL REQUEST GUARDS ===
+    loadTeamsInProgressRef.current = false;
+    loadContestsInProgressRef.current = false;
+    joinInProgressRef.current = false;
+    nextClickInProgressRef.current = false;
+    otpRequestInProgressRef.current = false;
+
     setStep('matches');
     setSelectedMatchIds(new Set());
     setPlatformTeams([]);
@@ -118,11 +144,13 @@ export default function JoinContestDialog({
     setLoadingTeams(false);
     setTeamsError(null);
     setTeamsTokenExpired(false);
+    setTeamsRateLimited(false);
     setContestsMap(new Map());
     setSelectedContestIds(new Set());
     setLoadingContests(false);
     setContestErrors([]);
     setContestTokenExpired(false);
+    setContestsRateLimited(false);
     setJoinItems([]);
     setProgress({ current: 0, total: 0, status: 'idle' });
     setResultItems([]);
@@ -130,7 +158,6 @@ export default function JoinContestDialog({
     setRefreshOtp('');
     setSessionChecked(false);
     setSessionValid(false);
-    otpRequestInProgressRef.current = false;
     onClose();
   };
 
@@ -368,7 +395,16 @@ export default function JoinContestDialog({
   };
 
   // ============ Load Existing Platform Teams ============
+  // Fetches teams ONCE. Prevents duplicate/parallel/auto requests.
+  // Detects rate-limit responses and stops retrying.
+  // NEVER auto-triggers OTP — only sets expired flag.
   const loadPlatformTeams = useCallback(async (selectedPlatform?: string) => {
+    // === REQUEST GUARD: Prevent duplicate/parallel team-fetch ===
+    if (loadTeamsInProgressRef.current) {
+      console.warn('[JOIN] Team fetch BLOCKED — another team fetch is already in progress');
+      return;
+    }
+
     const plat = selectedPlatform || platform;
     const acc = fantasyAccounts[plat];
     if (!acc?.authToken) {
@@ -377,10 +413,21 @@ export default function JoinContestDialog({
       return;
     }
 
-    console.log('[JOIN] Connected account detected — Platform:', plat, 'Mobile:', acc.mobileNumber?.slice(0, 4) + '****');
+    console.log('[JOIN] === TEAM FETCH START ===');
+    console.log('[JOIN] Platform:', plat);
+    console.log('[JOIN] Account:', acc.mobileNumber?.slice(0, 4) + '****');
+    console.log('[JOIN] Match IDs:', [...selectedMatchIds]);
+    console.log('[JOIN] Token length:', acc.authToken.length);
+
+    // Create new AbortController for this request batch
+    if (abortControllerRef.current) abortControllerRef.current.abort();
+    abortControllerRef.current = new AbortController();
+
+    loadTeamsInProgressRef.current = true;
     setLoadingTeams(true);
     setTeamsError(null);
     setTeamsTokenExpired(false);
+    setTeamsRateLimited(false);
     // Preserve team selections on retry (only clear on first load)
     if (platformTeams.length === 0) {
       setSelectedTeamIds(new Set());
@@ -389,33 +436,69 @@ export default function JoinContestDialog({
     const allTeams: JCTeam[] = [];
     let firstError: string | null = null;
     let anyTokenExpired = false;
+    let anyRateLimited = false;
 
-    for (const matchId of selectedMatchIds) {
-      const result = await getExistingPlatformTeams(plat, matchId, acc.authToken);
-      if (result.teams.length > 0) {
-        allTeams.push(...result.teams);
+    try {
+      for (const matchId of selectedMatchIds) {
+        // Check if aborted
+        if (abortControllerRef.current?.signal.aborted) {
+          console.log('[JOIN] Team fetch aborted');
+          return;
+        }
+
+        const result = await getExistingPlatformTeams(plat, matchId, acc.authToken);
+
+        console.log('[JOIN] Team fetch result — Match:', matchId, 'Teams:', result.teams.length, 'Error:', result.error || 'none', 'TokenExpired:', result.tokenExpired);
+
+        if (result.teams.length > 0) {
+          allTeams.push(...result.teams);
+        }
+        if (result.tokenExpired) {
+          anyTokenExpired = true;
+          firstError = result.error || 'Session expired';
+        } else if (result.error && !firstError) {
+          firstError = result.error;
+          // Detect rate-limit responses
+          if (result.error.toLowerCase().includes('rate limit') ||
+              result.error.toLowerCase().includes('429') ||
+              result.error.toLowerCase().includes('too many')) {
+            anyRateLimited = true;
+            firstError = result.error;
+          }
+        }
       }
-      if (result.tokenExpired) {
-        anyTokenExpired = true;
-        firstError = result.error || 'Session expired';
-      } else if (result.error && !firstError) {
-        firstError = result.error;
+
+      // Check if aborted before setting state
+      if (abortControllerRef.current?.signal.aborted) return;
+
+      setPlatformTeams(allTeams);
+      setTeamsError(allTeams.length === 0 ? firstError : null);
+      setTeamsTokenExpired(anyTokenExpired);
+      setTeamsRateLimited(anyRateLimited && !anyTokenExpired);
+
+      console.log('[JOIN] === TEAM FETCH END ===');
+      console.log('[JOIN] Total teams loaded:', allTeams.length);
+      console.log('[JOIN] Selected team IDs:', [...selectedTeamIds]);
+      console.log('[JOIN] Rate limited:', anyRateLimited);
+      console.log('[JOIN] Token expired:', anyTokenExpired);
+
+      // *** CRITICAL FIX: NEVER auto-trigger OTP on token expiry ***
+      if (anyTokenExpired) {
+        console.log('[JOIN] Token expired — showing session expired UI (NOT auto-triggering OTP)');
       }
+      if (anyRateLimited) {
+        console.log('[JOIN] Rate limited — NOT retrying. User must click Retry manually.');
+      }
+    } catch (err) {
+      if (abortControllerRef.current?.signal.aborted) return;
+      console.error('[JOIN] Team fetch error:', err);
+      setTeamsError('Failed to load teams. Please try again.');
+      setPlatformTeams([]);
+    } finally {
+      loadTeamsInProgressRef.current = false;
+      setLoadingTeams(false);
     }
-
-    setPlatformTeams(allTeams);
-    setTeamsError(allTeams.length === 0 ? firstError : null);
-    setTeamsTokenExpired(anyTokenExpired);
-    setLoadingTeams(false);
-
-    // *** CRITICAL FIX: NEVER auto-trigger OTP on token expiry ***
-    // Only set the expired flag — user must manually click "Refresh Session"
-    if (anyTokenExpired) {
-      console.log('[JOIN] Token expired detected — showing session expired UI (NOT auto-triggering OTP)');
-      console.log('[JOIN] OTP required: YES (token expired)');
-      console.log('[JOIN] OTP request started: NO (waiting for user action)');
-    }
-  }, [selectedMatchIds, platform, fantasyAccounts, platformTeams.length]);
+  }, [selectedMatchIds, platform, fantasyAccounts, platformTeams.length, selectedTeamIds]);
 
   // ============ Team Selection ============
   const toggleTeam = (id: string | number) => {
@@ -435,17 +518,34 @@ export default function JoinContestDialog({
   };
 
   // ============ Contest Loading — with proper error differentiation ============
+  // Prevents duplicate/parallel requests. Detects rate-limit. Never auto-OTP.
   const loadContests = useCallback(async () => {
+    // === REQUEST GUARD: Prevent duplicate/parallel contest-fetch ===
+    if (loadContestsInProgressRef.current) {
+      console.warn('[JOIN] Contest fetch BLOCKED — another contest fetch is already in progress');
+      return;
+    }
+
     if (!account?.authToken) return;
+
+    console.log('[JOIN] === CONTEST FETCH START ===');
+    console.log('[JOIN] Platform:', platform);
+    console.log('[JOIN] Account:', account.mobileNumber?.slice(0, 4) + '****');
+    console.log('[JOIN] Match IDs:', [...selectedMatchIds]);
+
+    // Create new AbortController for this request batch
+    if (abortControllerRef.current) abortControllerRef.current.abort();
+    abortControllerRef.current = new AbortController();
+
+    loadContestsInProgressRef.current = true;
     setLoadingContests(true);
     setContestErrors([]);
     setContestTokenExpired(false);
+    setContestsRateLimited(false);
     // Preserve contest selections on retry (only clear on first load)
     if (contestsMap.size === 0) {
       setSelectedContestIds(new Set());
     }
-
-    console.log('[JOIN] Connected account detected — Platform:', platform, 'Mobile:', account.mobileNumber?.slice(0, 4) + '****');
 
     const newMap = new Map<string, JCContest[]>();
     const errors: ContestErrorState[] = [];
@@ -521,19 +621,42 @@ export default function JoinContestDialog({
       console.log('[JOIN] Normalized contests for match', platformMatchId, ':', result.contests.length);
     }
 
+    // Detect rate-limit in errors
+    const anyRateLimited = errors.some(e =>
+      e.error.toLowerCase().includes('rate limit') ||
+      e.error.toLowerCase().includes('429') ||
+      e.error.toLowerCase().includes('too many')
+    );
+
+    // Check if aborted before setting state
+    if (abortControllerRef.current?.signal.aborted) {
+      loadContestsInProgressRef.current = false;
+      return;
+    }
+
     setContestsMap(newMap);
     setContestErrors(errors);
     setContestTokenExpired(anyTokenExpired);
+    setContestsRateLimited(anyRateLimited && !anyTokenExpired);
     setLoadingContests(false);
 
+    console.log('[JOIN] === CONTEST FETCH END ===');
+    console.log('[JOIN] Total contests loaded:', totalContestCount);
+    console.log('[JOIN] Selected contest IDs:', [...selectedContestIds]);
+    console.log('[JOIN] Rate limited:', anyRateLimited);
+    console.log('[JOIN] Token expired:', anyTokenExpired);
+    console.log('[JOIN] Errors:', errors.length);
+
     // *** CRITICAL FIX: NEVER auto-trigger OTP on token expiry ***
-    // Only set the expired flag — user must manually click "Refresh Session"
     if (anyTokenExpired) {
-      console.log('[JOIN] Token expired detected — showing session expired UI (NOT auto-triggering OTP)');
-      console.log('[JOIN] OTP required: YES (token expired)');
-      console.log('[JOIN] OTP request started: NO (waiting for user action)');
+      console.log('[JOIN] Token expired — showing session expired UI (NOT auto-triggering OTP)');
     }
-  }, [selectedMatchIds, platform, account, matches, contestsMap.size]);
+    if (anyRateLimited) {
+      console.log('[JOIN] Rate limited — NOT retrying. User must click Retry manually.');
+    }
+
+    loadContestsInProgressRef.current = false;
+  }, [selectedMatchIds, platform, account, matches, contestsMap.size, selectedContestIds]);
 
   const toggleContest = (id: string) => {
     setSelectedContestIds(prev => {
@@ -576,7 +699,14 @@ export default function JoinContestDialog({
   }, [contestsMap]);
 
   // ============ Join Execution — with retry using SAME token (NEVER restarts OTP) ============
+  // Prevents double-clicks — joinInProgressRef guard ensures exactly ONE execution per user action.
   const executeJoin = useCallback(async () => {
+    // === PREVENT DOUBLE-CLICK ON JOIN ===
+    if (joinInProgressRef.current) {
+      console.warn('[JOIN] Join BLOCKED — another join is already in progress');
+      return;
+    }
+
     const selectedMatches = matches.filter(m => selectedMatchIds.has(m.id));
     const selectedContestsForJoin = new Map<string, JCContest[]>();
     for (const [matchId, contests] of contestsMap.entries()) {
@@ -599,15 +729,19 @@ export default function JoinContestDialog({
 
     if (!account?.authToken) {
       console.log('[JOIN] No auth token — cannot join. OTP required: YES');
-      console.log('[JOIN] OTP request started: NO (user must initiate)');
       setTeamsTokenExpired(true);
-      setStep('contests'); // Go back to contests step so user can see session expired
+      setStep('contests');
       return;
     }
 
+    // Mark join as in progress — prevents double-click
+    joinInProgressRef.current = true;
+
     console.log('[JOIN] Token valid: assumed valid (will verify on first join attempt)');
-    console.log('[JOIN] OTP required: NO');
     console.log('[JOIN] Join request: starting...');
+    console.log('[JOIN] Total join items:', items.length);
+    console.log('[JOIN] Selected team IDs:', [...selectedTeamIds]);
+    console.log('[JOIN] Selected contest IDs:', [...selectedContestIds]);
 
     setJoinItems(items);
     setProgress({ current: 0, total: items.length, status: 'joining' });
@@ -702,6 +836,11 @@ export default function JoinContestDialog({
 
     setResultItems([...updatedItems]);
     setProgress(prev => ({ ...prev, status: 'done' }));
+    joinInProgressRef.current = false; // Clear guard — join complete
+    console.log('[JOIN] === JOIN COMPLETE ===');
+    console.log('[JOIN] Success:', updatedItems.filter(i => i.status === 'success').length);
+    console.log('[JOIN] Already joined:', updatedItems.filter(i => i.status === 'already_joined').length);
+    console.log('[JOIN] Failed:', updatedItems.filter(i => i.status === 'fail').length);
     setStep('result');
   }, [matches, selectedMatchIds, contestsMap, selectedContestIds, selectedTeamIds, platformTeams, platform, account, MAX_JOIN_RETRIES, JOIN_RETRY_DELAY_MS]);
 
@@ -865,7 +1004,7 @@ export default function JoinContestDialog({
                     <AlertCircle className="w-5 h-5 text-red-500 shrink-0" />
                     <div>
                       <p className="text-sm font-semibold text-red-700">
-                        {teamsTokenExpired ? 'SESSION EXPIRED' : 'Error Loading Teams'}
+                        {teamsTokenExpired ? 'SESSION EXPIRED' : teamsRateLimited ? 'RATE LIMITED' : 'Error Loading Teams'}
                       </p>
                       <p className="text-xs text-red-600 mt-0.5">{teamsError}</p>
                     </div>
@@ -878,9 +1017,14 @@ export default function JoinContestDialog({
                   {teamsTokenExpired && !account?.mobileNumber && (
                     <p className="text-xs text-red-500 mt-2">No mobile number stored. Please reconnect your account.</p>
                   )}
-                  <button onClick={() => loadPlatformTeams()} className="mt-2 flex items-center gap-1 text-xs font-semibold text-red-600 hover:text-red-700">
-                    <RefreshCw className="w-3 h-3" /> Retry
-                  </button>
+                  {!teamsRateLimited && (
+                    <button onClick={() => loadPlatformTeams()} className="mt-2 flex items-center gap-1 text-xs font-semibold text-red-600 hover:text-red-700">
+                      <RefreshCw className="w-3 h-3" /> Retry
+                    </button>
+                  )}
+                  {teamsRateLimited && (
+                    <p className="text-xs text-amber-600 mt-2">Platform is rate limiting requests. Please wait a moment before retrying.</p>
+                  )}
                 </div>
               )}
 
@@ -1406,6 +1550,15 @@ export default function JoinContestDialog({
           <div>
             {step !== 'matches' && step !== 'joining' && step !== 'result' && (
               <button onClick={() => {
+                // Cancel pending requests when going back
+                if (abortControllerRef.current) {
+                  console.log('[JOIN] Aborting requests on Back navigation');
+                  abortControllerRef.current.abort();
+                  abortControllerRef.current = null;
+                }
+                loadTeamsInProgressRef.current = false;
+                loadContestsInProgressRef.current = false;
+
                 const prev: Record<Step, Step | null> = {
                   matches: null, teams: 'matches', contests: 'teams',
                   joining: null, result: null,
@@ -1420,15 +1573,20 @@ export default function JoinContestDialog({
           <div className="flex items-center gap-2">
             {step === 'matches' && (
               <button onClick={async () => {
+                // Prevent double-click on Next
+                if (nextClickInProgressRef.current) return;
                 if (selectedMatchIds.size > 0 && availablePlatforms.length > 0) {
-                  // Pre-check session validity before moving to teams step
-                  const isValid = await checkSessionValidity(platform);
-                  if (isValid) {
-                    setStep('teams');
-                    loadPlatformTeams();
+                  nextClickInProgressRef.current = true;
+                  try {
+                    // Pre-check session validity before moving to teams step
+                    const isValid = await checkSessionValidity(platform);
+                    if (isValid) {
+                      setStep('teams');
+                      loadPlatformTeams();
+                    }
+                  } finally {
+                    nextClickInProgressRef.current = false;
                   }
-                  // If not valid, the session expired UI will show on current step
-                  // User must manually refresh before proceeding
                 }
               }} disabled={selectedMatchIds.size === 0 || availablePlatforms.length === 0}
                 className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
@@ -1437,32 +1595,55 @@ export default function JoinContestDialog({
             )}
             {step === 'teams' && (
               <button onClick={async () => {
-                if (selectedTeamIds.size > 0) {
-                  // Pre-check session validity before moving to contests step
-                  const isValid = await checkSessionValidity(platform);
-                  if (isValid) {
-                    setStep('contests');
-                    loadContests();
+                // Prevent double-click on Next — also require teams loaded and selection valid
+                if (nextClickInProgressRef.current) return;
+                if (selectedTeamIds.size > 0 && !loadingTeams) {
+                  nextClickInProgressRef.current = true;
+                  try {
+                    // Validate: selected teams must belong to selected match
+                    const validTeamIds = platformTeams
+                      .filter(t => selectedMatchIds.has(String(t.matchId)) || selectedMatchIds.has(t.matchId as number))
+                      .map(t => t.id);
+                    const hasInvalidSelection = [...selectedTeamIds].some(id => !validTeamIds.includes(id));
+                    if (hasInvalidSelection) {
+                      console.warn('[JOIN] Some selected teams do not belong to the selected match — removing invalid selections');
+                      setSelectedTeamIds(new Set([...selectedTeamIds].filter(id => validTeamIds.includes(id))));
+                    }
+
+                    // Pre-check session validity before moving to contests step
+                    const isValid = await checkSessionValidity(platform);
+                    if (isValid) {
+                      setStep('contests');
+                      loadContests();
+                    }
+                  } finally {
+                    nextClickInProgressRef.current = false;
                   }
-                  // If not valid, the session expired UI will show on current step
                 }
-              }} disabled={selectedTeamIds.size === 0}
+              }} disabled={selectedTeamIds.size === 0 || loadingTeams || teamsTokenExpired}
                 className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
-                Next <ChevronRight className="w-4 h-4" />
+                {loadingTeams ? <><Loader2 className="w-4 h-4 animate-spin" /> Loading...</> : <>Next <ChevronRight className="w-4 h-4" /></>}
               </button>
             )}
             {step === 'contests' && (
               <button onClick={async () => {
-                // Pre-check session validity before joining
-                const isValid = await checkSessionValidity(platform);
-                if (isValid) {
-                  executeJoin();
+                // Prevent double-click — join executes exactly once per user action
+                if (nextClickInProgressRef.current || joinInProgressRef.current) return;
+                if (selectedContestIds.size > 0 && !loadingContests) {
+                  nextClickInProgressRef.current = true;
+                  try {
+                    // Pre-check session validity before joining
+                    const isValid = await checkSessionValidity(platform);
+                    if (isValid) {
+                      executeJoin();
+                    }
+                  } finally {
+                    nextClickInProgressRef.current = false;
+                  }
                 }
-                // If not valid, session expired UI will show
-              }} disabled={selectedContestIds.size === 0}
+              }} disabled={selectedContestIds.size === 0 || loadingContests || contestTokenExpired || joinInProgressRef.current}
                 className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
-                <Trophy className="w-4 h-4" />
-                JOIN ALL SELECTED ({selectedContestIds.size > 0 && selectedTeamIds.size > 0 ? selectedContestIds.size * selectedTeamIds.size : selectedContestIds.size})
+                {joinInProgressRef.current ? <><Loader2 className="w-4 h-4 animate-spin" /> Joining...</> : <><Trophy className="w-4 h-4" /> JOIN ALL SELECTED ({selectedContestIds.size > 0 && selectedTeamIds.size > 0 ? selectedContestIds.size * selectedTeamIds.size : selectedContestIds.size})</>}
               </button>
             )}
             {step === 'result' && (

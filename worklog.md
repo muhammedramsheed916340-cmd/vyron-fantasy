@@ -185,3 +185,38 @@ Stage Summary:
 - LOWER QUALITY THRESHOLD after lineup: 50% of normal (more teams pass quality check)
 - CONFIRMED OUT excluded: playing===-1 always filtered out, even before full lineup
 - Build successful with zero errors
+---
+Task ID: 4
+Agent: Main
+Task: Fix Join Contest Flow — 16-point spec (rate-limit, duplicate requests, double-click prevention, step validation, cleanup, debug logs)
+
+Work Log:
+- Read full JoinContestDialog.tsx (1656 lines) and join-contest-service.ts (658 lines)
+- Identified 16 issues per spec and implemented all fixes:
+
+FIX 1: Fetch teams only once — loadTeamsInProgressRef guard prevents duplicate/parallel team-fetch
+FIX 2: Prevent duplicate/parallel/auto requests — loadContestsInProgressRef guard for contests too
+FIX 3: Don't retry on rate-limit — teamsRateLimited/contestsRateLimited state, Retry button hidden when rate-limited
+FIX 4: Rate-limited → stop and show "wait before retrying" message instead of Retry button
+FIX 5: Never auto-trigger OTP — already fixed in prior session, verified unchanged
+FIX 6: Next disabled until valid data — disabled={selectedTeamIds.size === 0 || loadingTeams || teamsTokenExpired}
+FIX 7: Show all eligible teams, Select All/Deselect, preserve selections — already works, selections preserved
+FIX 8: Proper No Teams state — differentiated from API error (rate-limit vs no-teams vs session-expired)
+FIX 9: Mixed Team Mode — validates teams belong to selected match before proceeding
+FIX 10: Validate teams before proceeding — checks selectedTeamIds belong to selectedMatchIds
+FIX 11: Prevent double-clicks — nextClickInProgressRef guard on all Next buttons
+FIX 12: Join executes exactly once — joinInProgressRef guard + "Joining..." spinner on button
+FIX 13: UI design unchanged — only logic fixes, no visual changes
+FIX 14: Request cancellation/cleanup — AbortController on modal close and Back navigation
+FIX 15: Detailed debug logs — [JOIN] TEAM FETCH START/END, CONTEST FETCH START/END, JOIN COMPLETE with all details
+FIX 16: Step validation — can't proceed without valid data at each step
+
+Stage Summary:
+- All 16 points of the spec implemented
+- Request guards prevent duplicate/parallel/auto requests
+- Rate-limit detection stops retry and shows appropriate UI
+- Double-click prevention on Next and Join buttons
+- AbortController cancels pending requests on close/back
+- Step validation prevents navigation without valid data
+- Comprehensive debug logs at every stage
+- Build successful with zero errors
