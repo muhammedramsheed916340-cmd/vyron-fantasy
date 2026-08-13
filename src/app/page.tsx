@@ -57,6 +57,7 @@ import { Badge } from '@/components/ui/badge'
 import { useToast } from '@/hooks/use-toast'
 import { TGPlayer, GeneratedTeam, generateTeams, generateExtraTeams, autoSelectExtraPlayers, autoReplacePlayer, ExtraTeamGenInput, getRoleName, getRoleShort, PLAYER_ROLES, getLineupMode, getEligiblePlayers, isPlayerEligible, validateTeamForLineup, RoleCombination, CombinationMode, getAllValidCombinations, getCompatibleCombinations, autoSelectCombination, validateCombination, isCombinationCompatibleWithFixed, MIN_WK, MAX_WK, MIN_BAT, MAX_BAT, MIN_AR, MAX_AR, MIN_BOWL, MAX_BOWL, normalizePlatformName, resolvePlatformPlayerId, GenerationDebugInfo, GenerationResult, deduplicateAndValidateTeams, makeTeamSignature } from '@/lib/tg-api'
 import JoinContestDialog from '@/components/join-contest/JoinContestDialog'
+import FlashScreen from '@/components/FlashScreen'
 import { JCMatch } from '@/lib/join-contest-service'
 
 // Types
@@ -572,6 +573,7 @@ export default function Home() {
   const [showLoginDialog, setShowLoginDialog] = useState(false)
   const [showTransferDialog, setShowTransferDialog] = useState(false)
   const [showJoinContestDialog, setShowJoinContestDialog] = useState(false)
+  const [showFlashScreen, setShowFlashScreen] = useState(true)
   const [transferPlatform, setTransferPlatform] = useState<string | null>(null)
   const [transferOption, setTransferOption] = useState<'new' | 'existing' | 'replace'>('new')
   const [contestId, setContestId] = useState<string>('')
@@ -1892,6 +1894,12 @@ export default function Home() {
   const savedMatchList = matches.filter((m) => savedMatches.has(m._id))
 
   return (
+    <>
+      {/* ============ FLASH SCREEN ============ */}
+      {showFlashScreen && (
+        <FlashScreen onComplete={() => setShowFlashScreen(false)} />
+      )}
+
     <div className="min-h-screen flex flex-col bg-[#f4f6f9]">
       {/* ============ TOP HEADER ============ */}
       <header className="bg-[#0f0f23] text-white flex items-center justify-between px-3 h-[56px] sticky top-0 z-50">
@@ -4544,5 +4552,6 @@ export default function Home() {
         }}
       />
     </div>
+    </>
   )
 }
