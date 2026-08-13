@@ -738,6 +738,129 @@ function shuffleArray<T>(arr: T[], rng: () => number): T[] {
   return result;
 }
 
+// ============ PRO PLAYER SELECTION ENGINE ============
+// Each team tries to rank in the top 1-100.
+// Strategy: Must-have players + smart scoring + limited differential.
+
+/**
+ * Score a player for team selection (higher = better pick).
+ * Used for the MAIN generation engine (not just autoSelect).
+ * This is the PRO scoring that replaces the broken sort+shuffle approach.
+ */
+function playerScoreForGen(p: TGPlayer, category: string): number {
+  if (category === 'H2H') {
+    // H2H: Safest possible — selection % is king
+    return (
+      p.selected_by * 0.50 +
+      p.captain_percentage * 0.25 +
+      p.points * 0.15 +
+      p.vice_captain_percentage * 0.05 +
+      (p.playing === 1 ? 12 : 0) +
+      (p.role === PLAYER_ROLES.ALL_ROUNDER ? 3 : 0)
+    );
+  } else if (category === 'SL') {
+    // SL: Balanced — form + selection + captain history
+    return (
+      p.selected_by * 0.35 +
+      p.captain_percentage * 0.25 +
+      p.points * 0.25 +
+      p.vice_captain_percentage * 0.10 +
+      (p.playing === 1 ? 12 : 0) +
+      (p.role === PLAYER_ROLES.ALL_ROUNDER ? 3 : 0)
+    );
+  } else {
+    // Mega GL: Still prioritize core quality, differential comes from C/VC rotation
+    // and 2-3 "punt" players — NOT from making the whole team weak
+    return (
+      p.selected_by * 0.30 +
+      p.captain_percentage * 0.20 +
+      p.points * 0.25 +
+      p.vice_captain_percentage * 0.15 +
+      (p.playing === 1 ? 12 : 0) +
+      (p.role === PLAYER_ROLES.ALL_ROUNDER ? 4 : 0) +
+      (p.role === PLAYER_ROLES.WICKET_KEEPER ? 1 : 0)
+    );
+  }
+}
+
+/**
+ * Smart select: Picks top players by score, with controlled randomness.
+ * - Keeps top `keepTop` players fixed (highest scored).
+ * - Randomly selects from the remaining pool for variety.
+ * - This FIXES the critical bug where shuffleArray after sort destroyed all ordering.
+ */
+function smartSelect(
+  pool: TGPlayer[],
+  count: number,
+  scoreFn: (p: TGPlayer) => number,
+  rng: () => number,
+  keepTopRatio: number = 0.7, // Keep top 70% of picks as best-scored
+): TGPlayer[] {
+  if (pool.length <= count) return [...pool];
+
+  const sorted = [...pool].sort((a, b) => scoreFn(b) - scoreFn(a));
+  const keepTop = Math.max(1, Math.floor(count * keepTopRatio));
+  const randomSlots = count - keepTop;
+
+  // Top players — always include these (they're the best picks)
+  const top = sorted.slice(0, keepTop);
+  const topIds = new Set(top.map(p => p.pl_id));
+
+  // Remaining pool (excluding already picked top players)
+  const remaining = sorted.filter(p => !topIds.has(p.pl_id));
+
+  // Random selection from remaining for variety/diversification
+  const shuffled = shuffleArray(remaining, rng);
+  const randomPicks = shuffled.slice(0, randomSlots);
+
+  return [...top, ...randomPicks];
+}
+
+/**
+ * Identify must-have players — players selected by >70% of users.
+ * These should be in EVERY team. Missing them = guaranteed bad rank.
+ */
+function getMustHavePlayers(
+  pool: TGPlayer[],
+  threshold: number = 70,
+): TGPlayer[] {
+  return pool.filter(p => p.selected_by >= threshold && p.playing === 1);
+}
+
+/**
+ * Score an entire team's quality (higher = better team).
+ * Used to reject low-quality teams and retry.
+ */
+function scoreTeamQuality(team: TGPlayer[], category: string): number {
+  let score = 0;
+  const scoreFn = (p: TGPlayer) => playerScoreForGen(p, category);
+
+  for (const p of team) {
+    score += scoreFn(p);
+    // Bonus for must-have players (selected_by > 70%)
+    if (p.selected_by >= 70) score += 8;
+    // Bonus for confirmed playing
+    if (p.playing === 1) score += 3;
+    // Penalty for very low selection (< 10%) unless Mega GL
+    if (p.selected_by < 10 && category !== 'MEGA GL') score -= 5;
+  }
+
+  // Bonus for role diversity
+  const roles = new Set(team.map(p => p.role));
+  score += roles.size * 3;
+
+  // Bonus for team balance (close to 6-5 or 5-6 split)
+  const teamNames = [...new Set(team.map(p => p.team_name))];
+  if (teamNames.length === 2) {
+    const c1 = team.filter(p => p.team_name === teamNames[0]).length;
+    const c2 = team.filter(p => p.team_name === teamNames[1]).length;
+    const balance = Math.min(c1, c2); // Closer to 5.5 is better
+    score += balance * 2;
+  }
+
+  return score;
+}
+
 /**
  * Category-specific C/VC scoring functions.
  * Each category has a genuinely different strategy for selecting Captain and Vice-Captain.
@@ -912,56 +1035,76 @@ export function generateTeams(
       if (bowlCount < MIN_BOWL || bowlCount > MAX_BOWL) continue;
       if (wkCount + batCount + arCount + bowlCount !== CRICKET_TEAM_SIZE) continue;
 
-      // Pick players for each role — CATEGORY-SPECIFIC player selection
-      const shuffledWK = shuffleArray(wk, sr);
-      const shuffledBat = shuffleArray(bat, sr);
-      const shuffledAR = shuffleArray(ar, sr);
-      const shuffledBowl = shuffleArray(bowl, sr);
+      // Pick players for each role — PRO SELECTION ENGINE
+      // Uses smartSelect with playerScoreForGen — no more shuffle-after-sort bug
+      // Must-have players (selected_by > 70%) are always included
+      const genScore = (p: TGPlayer) => playerScoreForGen(p, category);
 
-      let selectedWK, selectedBat, selectedAR, selectedBowl;
+      // Must-have players across all roles
+      const mustHave = getMustHavePlayers(allPlayers, 70);
+      const mustHaveIds = new Set(mustHave.map(p => p.pl_id));
+      const mustHaveWK = mustHave.filter(p => p.role === PLAYER_ROLES.WICKET_KEEPER);
+      const mustHaveBAT = mustHave.filter(p => p.role === PLAYER_ROLES.BATSMAN);
+      const mustHaveAR = mustHave.filter(p => p.role === PLAYER_ROLES.ALL_ROUNDER);
+      const mustHaveBOWL = mustHave.filter(p => p.role === PLAYER_ROLES.BOWLER);
+
+      // If must-have exceeds role counts, skip this pattern
+      if (mustHaveWK.length > wkCount || mustHaveBAT.length > batCount ||
+          mustHaveAR.length > arCount || mustHaveBOWL.length > bowlCount) {
+        // Must-have players don't fit this pattern — try another
+        continue;
+      }
+
+      let selectedWK: TGPlayer[], selectedBat: TGPlayer[], selectedAR: TGPlayer[], selectedBowl: TGPlayer[];
 
       if (isH2H) {
-        // H2H: ALWAYS pick most-selected/consistent players — safest strategy
-        const sortFn = (a: TGPlayer, b: TGPlayer) => b.selected_by - a.selected_by;
-        selectedWK = [...wk].sort(sortFn).slice(0, wkCount);
-        selectedBat = shuffleArray([...bat].sort(sortFn), sr).slice(0, batCount);
-        selectedAR = [...ar].sort(sortFn).slice(0, arCount);
-        selectedBowl = shuffleArray([...bowl].sort(sortFn), sr).slice(0, bowlCount);
+        // H2H: PRO — highest selection % always, minimal randomness
+        // 80% top-scored + 20% random for slight variety
+        selectedWK = smartSelect(wk, wkCount, genScore, sr, 0.85);
+        selectedBat = smartSelect(bat, batCount, genScore, sr, 0.80);
+        selectedAR = smartSelect(ar, arCount, genScore, sr, 0.85);
+        selectedBowl = smartSelect(bowl, bowlCount, genScore, sr, 0.80);
       } else if (isSL) {
-        // SL: Mostly form players, some rotation — balanced strategy
-        // 60% form players, 40% rotation for variety
-        const formSort = (a: TGPlayer, b: TGPlayer) =>
-          (b.selected_by * 0.5 + b.points * 0.3 + b.captain_percentage * 0.2) -
-          (a.selected_by * 0.5 + a.points * 0.3 + a.captain_percentage * 0.2);
-        if (sr() > 0.4) {
-          // Form-based with light shuffle
-          selectedWK = shuffleArray([...wk].sort(formSort), sr).slice(0, wkCount);
-          selectedBat = shuffleArray([...bat].sort(formSort), sr).slice(0, batCount);
-          selectedAR = shuffleArray([...ar].sort(formSort), sr).slice(0, arCount);
-          selectedBowl = shuffleArray([...bowl].sort(formSort), sr).slice(0, bowlCount);
-        } else {
-          selectedWK = shuffledWK.slice(0, wkCount);
-          selectedBat = shuffledBat.slice(0, batCount);
-          selectedAR = shuffledAR.slice(0, arCount);
-          selectedBowl = shuffledBowl.slice(0, bowlCount);
-        }
+        // SL: PRO — balanced form + safety, moderate randomness for variety
+        // 70% top-scored + 30% random
+        selectedWK = smartSelect(wk, wkCount, genScore, sr, 0.75);
+        selectedBat = smartSelect(bat, batCount, genScore, sr, 0.70);
+        selectedAR = smartSelect(ar, arCount, genScore, sr, 0.75);
+        selectedBowl = smartSelect(bowl, bowlCount, genScore, sr, 0.70);
       } else {
-        // Mega GL: Strong differential rotation — low selection % players preferred
-        // 70% differential (low selection %), 30% random
-        const diffSort = (a: TGPlayer, b: TGPlayer) => a.selected_by - b.selected_by;
-        if (sr() > 0.3) {
-          // Differential picks — favor low selection % for Grand League upside
-          selectedWK = shuffleArray([...wk].sort(diffSort), sr).slice(0, wkCount);
-          selectedBat = shuffleArray([...bat].sort(diffSort), sr).slice(0, batCount);
-          selectedAR = shuffleArray([...ar].sort(diffSort), sr).slice(0, arCount);
-          selectedBowl = shuffleArray([...bowl].sort(diffSort), sr).slice(0, bowlCount);
-        } else {
-          selectedWK = shuffledWK.slice(0, wkCount);
-          selectedBat = shuffledBat.slice(0, batCount);
-          selectedAR = shuffledAR.slice(0, arCount);
-          selectedBowl = shuffledBowl.slice(0, bowlCount);
-        }
+        // Mega GL: PRO — core quality with 2-3 differential "punts"
+        // 60% top-scored + 40% random (wider variety for GL coverage)
+        // The C/VC rotation provides the real differentiation
+        selectedWK = smartSelect(wk, wkCount, genScore, sr, 0.65);
+        selectedBat = smartSelect(bat, batCount, genScore, sr, 0.60);
+        selectedAR = smartSelect(ar, arCount, genScore, sr, 0.65);
+        selectedBowl = smartSelect(bowl, bowlCount, genScore, sr, 0.60);
       }
+
+      // Ensure must-have players are included — force them in if missing
+      const forceMustHave = (selected: TGPlayer[], mustHave: TGPlayer[], pool: TGPlayer[], count: number): TGPlayer[] => {
+        const selectedIds = new Set(selected.map(p => p.pl_id));
+        const missingMust = mustHave.filter(p => !selectedIds.has(p.pl_id));
+        if (missingMust.length === 0) return selected; // All must-haves already included
+
+        // Add missing must-haves, remove the lowest-scored non-must-have players
+        const result = [...selected];
+        for (const mh of missingMust) {
+          // Find the lowest-scored player that is NOT must-have and replace
+          const replaceIdx = result.findIndex(p =>
+            !mustHaveIds.has(p.pl_id) && p.pl_id !== mh.pl_id
+          );
+          if (replaceIdx !== -1) {
+            result[replaceIdx] = mh;
+          }
+        }
+        return result.slice(0, count);
+      };
+
+      selectedWK = forceMustHave(selectedWK, mustHaveWK, wk, wkCount);
+      selectedBat = forceMustHave(selectedBat, mustHaveBAT, bat, batCount);
+      selectedAR = forceMustHave(selectedAR, mustHaveAR, ar, arCount);
+      selectedBowl = forceMustHave(selectedBowl, mustHaveBOWL, bowl, bowlCount);
 
       // Check if we have enough players
       if (selectedWK.length < wkCount || selectedBat.length < batCount ||
@@ -980,6 +1123,17 @@ export function generateTeams(
 
       // Ensure at least 1 from each team
       if (leftCount < 1 || rightCount < 1) continue;
+
+      // === TEAM QUALITY CHECK ===
+      // Score the team and reject low-quality ones (forces retry with better players)
+      const qualityScore = scoreTeamQuality(selected, category);
+      // Quality threshold: reject bottom 20% of teams
+      // H2H needs highest quality, SL moderate, Mega GL allows more variety
+      const qualityThreshold = isH2H ? 80 : isSL ? 60 : 40;
+      if (qualityScore < qualityThreshold && attempts < 150) {
+        // Low quality team — retry with different random seed
+        continue;
+      }
 
       team = selected;
     }
@@ -1010,10 +1164,10 @@ export function generateTeams(
               arCount < MIN_AR || arCount > MAX_AR || bowlCount < MIN_BOWL || bowlCount > MAX_BOWL) continue;
           if (wkCount + batCount + arCount + bowlCount !== CRICKET_TEAM_SIZE) continue;
 
-          const sWK = shuffleArray(wk, sr).slice(0, wkCount);
-          const sBat = shuffleArray(bat, sr).slice(0, batCount);
-          const sAR = shuffleArray(ar, sr).slice(0, arCount);
-          const sBowl = shuffleArray(bowl, sr).slice(0, bowlCount);
+          const sWK = smartSelect(wk, wkCount, genScore, sr, isH2H ? 0.80 : isSL ? 0.70 : 0.60);
+          const sBat = smartSelect(bat, batCount, genScore, sr, isH2H ? 0.80 : isSL ? 0.70 : 0.60);
+          const sAR = smartSelect(ar, arCount, genScore, sr, isH2H ? 0.80 : isSL ? 0.70 : 0.60);
+          const sBowl = smartSelect(bowl, bowlCount, genScore, sr, isH2H ? 0.80 : isSL ? 0.70 : 0.60);
           if (sWK.length < wkCount || sBat.length < batCount || sAR.length < arCount || sBowl.length < bowlCount) continue;
           const sel = [...sWK, ...sBat, ...sAR, ...sBowl];
           if (sel.reduce((s, p) => s + p.credits, 0) > MAX_CREDITS) continue;
@@ -1047,6 +1201,7 @@ export function generateTeams(
     console.warn(`[TEAM GEN] 0 teams generated after lineup! Retrying with relaxed constraints...`);
 
     const RELAXED_MAX_CREDITS = 110;
+    const relaxedScore = (p: TGPlayer) => playerScoreForGen(p, category);
     for (let t = 0; t < count; t++) {
       let attempts = 0;
       let team: TGPlayer[] | null = null;
@@ -1063,15 +1218,11 @@ export function generateTeams(
         arCount = combo.ar;
         bowlCount = combo.bowl;
 
-        const shuffledWK = shuffleArray(wk, sr);
-        const shuffledBat = shuffleArray(bat, sr);
-        const shuffledAR = shuffleArray(ar, sr);
-        const shuffledBowl = shuffleArray(bowl, sr);
-
-        const selectedWK = shuffledWK.slice(0, wkCount);
-        const selectedBat = shuffledBat.slice(0, batCount);
-        const selectedAR = shuffledAR.slice(0, arCount);
-        const selectedBowl = shuffledBowl.slice(0, bowlCount);
+        // Use smartSelect even in relaxed fallback
+        const selectedWK = smartSelect(wk, wkCount, relaxedScore, sr, 0.60);
+        const selectedBat = smartSelect(bat, batCount, relaxedScore, sr, 0.55);
+        const selectedAR = smartSelect(ar, arCount, relaxedScore, sr, 0.60);
+        const selectedBowl = smartSelect(bowl, bowlCount, relaxedScore, sr, 0.55);
 
         if (selectedWK.length < wkCount || selectedBat.length < batCount ||
             selectedAR.length < arCount || selectedBowl.length < bowlCount) continue;
@@ -1113,7 +1264,7 @@ export function generateTeams(
   // Build debug info
   const strategyUsed = combination
     ? `MANUAL(${combination.wk}-${combination.bat}-${combination.ar}-${combination.bowl})`
-    : isH2H ? 'H2H_CONSERVATIVE' : isSL ? 'SL_BALANCED' : 'MEGA_GL_DIFFERENTIAL';
+    : isH2H ? 'H2H_PRO_SAFE' : isSL ? 'SL_PRO_BALANCED' : 'MEGA_GL_PRO_QUALITY';
 
   const debug: GenerationDebugInfo = {
     generationMode: 'NORMAL',
@@ -1131,8 +1282,9 @@ export function generateTeams(
     seed,
   };
 
-  console.log(`[TEAM GEN] Mode: NORMAL | Category: ${category} | Combination: ${debug.combinationMode} | Strategy: ${strategyUsed}`);
-  console.log(`[TEAM GEN] Requested: ${count} | Generated: ${teams.length} | Lineup: ${lineupMode} | Eligible: ${allPlayers.length}/${allPlayersRaw.length} | Seed: ${seed} | Time: ${Date.now() - startTime}ms`);
+  const mustHaveCount = getMustHavePlayers(allPlayers, 70).length;
+  console.log(`[TEAM GEN PRO] Mode: NORMAL | Category: ${category} | Strategy: ${strategyUsed} | Must-have (>70%): ${mustHaveCount}`);
+  console.log(`[TEAM GEN PRO] Requested: ${count} | Generated: ${teams.length} | Lineup: ${lineupMode} | Eligible: ${allPlayers.length}/${allPlayersRaw.length} | Seed: ${seed} | Time: ${Date.now() - startTime}ms`);
 
   return { teams, debug };
 }
