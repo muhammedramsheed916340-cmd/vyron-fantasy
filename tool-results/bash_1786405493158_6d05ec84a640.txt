@@ -1,0 +1,1793 @@
+Available models on prisma:
+[
+  '$metrics',
+  'user',
+  'post',
+  'license',
+  'transferLog',
+  'adminSession',
+  '$parent'
+]
+---
+prisma.adminSession: {
+  findUnique: [Function (anonymous)],
+  findUniqueOrThrow: [Function (anonymous)],
+  findFirst: [Function (anonymous)],
+  findFirstOrThrow: [Function (anonymous)],
+  findMany: [Function (anonymous)],
+  create: [Function (anonymous)],
+  createMany: [Function (anonymous)],
+  createManyAndReturn: [Function (anonymous)],
+  update: [Function (anonymous)],
+  updateMany: [Function (anonymous)],
+  updateManyAndReturn: [Function (anonymous)],
+  upsert: [Function (anonymous)],
+  delete: [Function (anonymous)],
+  deleteMany: [Function (anonymous)],
+  groupBy: [Function (anonymous)],
+  count: [Function (anonymous)],
+  aggregate: [Function (anonymous)],
+  findRaw: [Function (anonymous)],
+  aggregateRaw: [Function (anonymous)],
+  fields: {},
+  name: 'AdminSession',
+  '$name': 'AdminSession',
+  '$parent': {
+    _originalClient: {
+      _originalClient: [Object],
+      _runtimeDataModel: [Object],
+      _requestHandler: [ei [RequestHandler]],
+      _connectionPromise: undefined,
+      _disconnectionPromise: undefined,
+      _engineConfig: [Object],
+      _accelerateEngineConfig: [Object],
+      _clientVersion: '6.19.2',
+      _errorFormat: 'colorless',
+      _tracingHelper: Ao {},
+      _previewFeatures: [],
+      _activeProvider: 'sqlite',
+      _globalOmit: undefined,
+      _extensions: [e],
+      _engine: [Qr],
+      _appliedParent: [Object],
+      _createPrismaPromise: [Function (anonymous)],
+      '$metrics': [Lr],
+      '$extends': [Function: Wa]
+    },
+    _runtimeDataModel: { models: [Object], enums: {}, types: {} },
+    _requestHandler: ei [RequestHandler] {
+      client: [Object],
+      dataloader: [Zn [DataLoader]],
+      logEmitter: [EventEmitter]
+    },
+    _connectionPromise: undefined,
+    _disconnectionPromise: undefined,
+    _engineConfig: {
+      cwd: '/home/z/my-project/prisma',
+      dirname: '/home/z/my-project/node_modules/.prisma/client',
+      enableDebugLogs: false,
+      allowTriggerPanic: undefined,
+      prismaPath: undefined,
+      engineEndpoint: undefined,
+      generator: [Object],
+      showColors: false,
+      logLevel: undefined,
+      logQueries: undefined,
+      env: [Object],
+      flags: [],
+      engineWasm: undefined,
+      compilerWasm: undefined,
+      clientVersion: '6.19.2',
+      engineVersion: 'c2990dca591cba766e3b7ef5d9e8a84796e47ab7',
+      previewFeatures: [],
+      activeProvider: 'sqlite',
+      inlineSchema: '// This is your Prisma schema file,\n' +
+        '// learn more about it in the docs: https://pris.ly/d/prisma-schema\n' +
+        '\n' +
+        'generator client {\n' +
+        '  provider = "prisma-client-js"\n' +
+        '}\n' +
+        '\n' +
+        'datasource db {\n' +
+        '  provider = "sqlite"\n' +
+        '  url      = env("DATABASE_URL")\n' +
+        '}\n' +
+        '\n' +
+        'model User {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  email     String   @unique\n' +
+        '  name      String?\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  updatedAt DateTime @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model Post {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  title     String\n' +
+        '  content   String?\n' +
+        '  published Boolean  @default(false)\n' +
+        '  authorId  String\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  updatedAt DateTime @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model License {\n' +
+        '  id          String    @id @default(cuid())\n' +
+        '  key         String    @unique // Unique license key (e.g. VYRON-XXXX-XXXX-XXXX)\n' +
+        '  type        String // MONTHLY | THREE_MONTHS | SIX_MONTHS | LIFETIME\n' +
+        '  status      String    @default("INACTIVE") // INACTIVE | ACTIVE | REVOKED | EXPIRED\n' +
+        '  createdAt   DateTime  @default(now())\n' +
+        '  activatedAt DateTime?\n' +
+        '  expiresAt   DateTime? // null for LIFETIME\n' +
+        '  assignedTo  String? // Account identifier (phone/email/device)\n' +
+        '  notes       String?\n' +
+        '  updatedAt   DateTime  @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model TransferLog {\n' +
+        '  id           String   @id @default(cuid())\n' +
+        '  licenseKey   String?\n' +
+        '  platform     String // dream11 | my11circle\n' +
+        '  matchId      String\n' +
+        '  transferType String // new | edit | replace_all\n' +
+        '  teamCount    Int      @default(0)\n' +
+        '  successCount Int      @default(0)\n' +
+        '  failCount    Int      @default(0)\n' +
+        '  performedBy  String?\n' +
+        '  createdAt    DateTime @default(now())\n' +
+        '}\n' +
+        '\n' +
+        'model AdminSession {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  token     String   @unique\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  expiresAt DateTime\n' +
+        '}\n',
+      overrideDatasources: {},
+      inlineDatasources: [Object],
+      inlineSchemaHash: 'e42c1a90656cd59e4afdd402c8df2ef37919a3307b11e44fffca2b3c99cf9bb5',
+      tracingHelper: Ao {},
+      transactionOptions: [Object],
+      logEmitter: [EventEmitter],
+      isBundled: undefined,
+      adapter: undefined
+    },
+    _accelerateEngineConfig: {
+      cwd: '/home/z/my-project/prisma',
+      dirname: '/home/z/my-project/node_modules/.prisma/client',
+      enableDebugLogs: false,
+      allowTriggerPanic: undefined,
+      prismaPath: undefined,
+      engineEndpoint: undefined,
+      generator: [Object],
+      showColors: false,
+      logLevel: undefined,
+      logQueries: undefined,
+      env: [Object],
+      flags: [],
+      engineWasm: undefined,
+      compilerWasm: undefined,
+      clientVersion: '6.19.2',
+      engineVersion: 'c2990dca591cba766e3b7ef5d9e8a84796e47ab7',
+      previewFeatures: [],
+      activeProvider: 'sqlite',
+      inlineSchema: '// This is your Prisma schema file,\n' +
+        '// learn more about it in the docs: https://pris.ly/d/prisma-schema\n' +
+        '\n' +
+        'generator client {\n' +
+        '  provider = "prisma-client-js"\n' +
+        '}\n' +
+        '\n' +
+        'datasource db {\n' +
+        '  provider = "sqlite"\n' +
+        '  url      = env("DATABASE_URL")\n' +
+        '}\n' +
+        '\n' +
+        'model User {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  email     String   @unique\n' +
+        '  name      String?\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  updatedAt DateTime @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model Post {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  title     String\n' +
+        '  content   String?\n' +
+        '  published Boolean  @default(false)\n' +
+        '  authorId  String\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  updatedAt DateTime @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model License {\n' +
+        '  id          String    @id @default(cuid())\n' +
+        '  key         String    @unique // Unique license key (e.g. VYRON-XXXX-XXXX-XXXX)\n' +
+        '  type        String // MONTHLY | THREE_MONTHS | SIX_MONTHS | LIFETIME\n' +
+        '  status      String    @default("INACTIVE") // INACTIVE | ACTIVE | REVOKED | EXPIRED\n' +
+        '  createdAt   DateTime  @default(now())\n' +
+        '  activatedAt DateTime?\n' +
+        '  expiresAt   DateTime? // null for LIFETIME\n' +
+        '  assignedTo  String? // Account identifier (phone/email/device)\n' +
+        '  notes       String?\n' +
+        '  updatedAt   DateTime  @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model TransferLog {\n' +
+        '  id           String   @id @default(cuid())\n' +
+        '  licenseKey   String?\n' +
+        '  platform     String // dream11 | my11circle\n' +
+        '  matchId      String\n' +
+        '  transferType String // new | edit | replace_all\n' +
+        '  teamCount    Int      @default(0)\n' +
+        '  successCount Int      @default(0)\n' +
+        '  failCount    Int      @default(0)\n' +
+        '  performedBy  String?\n' +
+        '  createdAt    DateTime @default(now())\n' +
+        '}\n' +
+        '\n' +
+        'model AdminSession {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  token     String   @unique\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  expiresAt DateTime\n' +
+        '}\n',
+      overrideDatasources: {},
+      inlineDatasources: [Object],
+      inlineSchemaHash: 'e42c1a90656cd59e4afdd402c8df2ef37919a3307b11e44fffca2b3c99cf9bb5',
+      tracingHelper: Ao {},
+      transactionOptions: [Object],
+      logEmitter: [EventEmitter],
+      isBundled: undefined,
+      adapter: undefined,
+      accelerateUtils: [Object]
+    },
+    _clientVersion: '6.19.2',
+    _errorFormat: 'colorless',
+    _tracingHelper: Ao {},
+    _previewFeatures: [],
+    _activeProvider: 'sqlite',
+    _globalOmit: undefined,
+    _extensions: e { head: undefined },
+    _engine: Qr {
+      name: 'LibraryEngine',
+      engine: undefined,
+      libraryInstantiationPromise: [Promise],
+      libraryStartingPromise: undefined,
+      libraryStoppingPromise: undefined,
+      libraryStarted: false,
+      executingQueryPromise: undefined,
+      config: [Object],
+      QueryEngineConstructor: undefined,
+      libraryLoader: [Object],
+      library: undefined,
+      logEmitter: [EventEmitter],
+      libQueryEnginePath: undefined,
+      binaryTarget: undefined,
+      datasourceOverrides: undefined,
+      datamodel: '// This is your Prisma schema file,\n' +
+        '// learn more about it in the docs: https://pris.ly/d/prisma-schema\n' +
+        '\n' +
+        'generator client {\n' +
+        '  provider = "prisma-client-js"\n' +
+        '}\n' +
+        '\n' +
+        'datasource db {\n' +
+        '  provider = "sqlite"\n' +
+        '  url      = env("DATABASE_URL")\n' +
+        '}\n' +
+        '\n' +
+        'model User {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  email     String   @unique\n' +
+        '  name      String?\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  updatedAt DateTime @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model Post {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  title     String\n' +
+        '  content   String?\n' +
+        '  published Boolean  @default(false)\n' +
+        '  authorId  String\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  updatedAt DateTime @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model License {\n' +
+        '  id          String    @id @default(cuid())\n' +
+        '  key         String    @unique // Unique license key (e.g. VYRON-XXXX-XXXX-XXXX)\n' +
+        '  type        String // MONTHLY | THREE_MONTHS | SIX_MONTHS | LIFETIME\n' +
+        '  status      String    @default("INACTIVE") // INACTIVE | ACTIVE | REVOKED | EXPIRED\n' +
+        '  createdAt   DateTime  @default(now())\n' +
+        '  activatedAt DateTime?\n' +
+        '  expiresAt   DateTime? // null for LIFETIME\n' +
+        '  assignedTo  String? // Account identifier (phone/email/device)\n' +
+        '  notes       String?\n' +
+        '  updatedAt   DateTime  @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model TransferLog {\n' +
+        '  id           String   @id @default(cuid())\n' +
+        '  licenseKey   String?\n' +
+        '  platform     String // dream11 | my11circle\n' +
+        '  matchId      String\n' +
+        '  transferType String // new | edit | replace_all\n' +
+        '  teamCount    Int      @default(0)\n' +
+        '  successCount Int      @default(0)\n' +
+        '  failCount    Int      @default(0)\n' +
+        '  performedBy  String?\n' +
+        '  createdAt    DateTime @default(now())\n' +
+        '}\n' +
+        '\n' +
+        'model AdminSession {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  token     String   @unique\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  expiresAt DateTime\n' +
+        '}\n',
+      logQueries: false,
+      logLevel: 'error',
+      lastQuery: undefined,
+      loggerRustPanic: undefined,
+      tracingHelper: Ao {},
+      adapterPromise: undefined,
+      versionInfo: undefined
+    },
+    _appliedParent: {
+      _originalClient: [Object],
+      _runtimeDataModel: [Object],
+      _requestHandler: [ei [RequestHandler]],
+      _connectionPromise: undefined,
+      _disconnectionPromise: undefined,
+      _engineConfig: [Object],
+      _accelerateEngineConfig: [Object],
+      _clientVersion: '6.19.2',
+      _errorFormat: 'colorless',
+      _tracingHelper: Ao {},
+      _previewFeatures: [],
+      _activeProvider: 'sqlite',
+      _globalOmit: undefined,
+      _extensions: [e],
+      _engine: [Qr],
+      _appliedParent: [Object],
+      _createPrismaPromise: [Function (anonymous)],
+      '$metrics': [Lr],
+      '$extends': [Function: Wa],
+      constructor: [class r],
+      '$on': [Function: $on],
+      '$connect': [Function: $connect],
+      '$disconnect': [AsyncFunction: $disconnect],
+      '$executeRawInternal': [Function: $executeRawInternal],
+      '$executeRaw': [Function: $executeRaw],
+      '$executeRawUnsafe': [Function: $executeRawUnsafe],
+      '$runCommandRaw': [Function: $runCommandRaw],
+      '$queryRawInternal': [AsyncFunction: $queryRawInternal],
+      '$queryRaw': [Function: $queryRaw],
+      '$queryRawTyped': [Function: $queryRawTyped],
+      '$queryRawUnsafe': [Function: $queryRawUnsafe],
+      _transactionWithArray: [Function: _transactionWithArray],
+      _transactionWithCallback: [AsyncFunction: _transactionWithCallback],
+      _createItxClient: [Function: _createItxClient],
+      '$transaction': [Function: $transaction],
+      _request: [Function: _request],
+      _executeRequest: [AsyncFunction: _executeRequest],
+      _hasPreviewFlag: [Function: _hasPreviewFlag],
+      '$applyPendingMigrations': [Function: $applyPendingMigrations],
+      user: [Object],
+      post: [Object],
+      license: [Object],
+      transferLog: [Object],
+      adminSession: [Object],
+      '$parent': [Object],
+      Symbol(): [Object]
+    },
+    _createPrismaPromise: [Function (anonymous)],
+    '$metrics': Lr { _client: [Object] },
+    '$extends': [Function: Wa],
+    constructor: [class r],
+    '$on': [Function: $on],
+    '$connect': [Function: $connect],
+    '$disconnect': [AsyncFunction: $disconnect],
+    '$executeRawInternal': [Function: $executeRawInternal],
+    '$executeRaw': [Function: $executeRaw],
+    '$executeRawUnsafe': [Function: $executeRawUnsafe],
+    '$runCommandRaw': [Function: $runCommandRaw],
+    '$queryRawInternal': [AsyncFunction: $queryRawInternal],
+    '$queryRaw': [Function: $queryRaw],
+    '$queryRawTyped': [Function: $queryRawTyped],
+    '$queryRawUnsafe': [Function: $queryRawUnsafe],
+    _transactionWithArray: [Function: _transactionWithArray],
+    _transactionWithCallback: [AsyncFunction: _transactionWithCallback],
+    _createItxClient: [Function: _createItxClient],
+    '$transaction': [Function: $transaction],
+    _request: [Function: _request],
+    _executeRequest: [AsyncFunction: _executeRequest],
+    _hasPreviewFlag: [Function: _hasPreviewFlag],
+    '$applyPendingMigrations': [Function: $applyPendingMigrations],
+    user: {
+      findUnique: [Function (anonymous)],
+      findUniqueOrThrow: [Function (anonymous)],
+      findFirst: [Function (anonymous)],
+      findFirstOrThrow: [Function (anonymous)],
+      findMany: [Function (anonymous)],
+      create: [Function (anonymous)],
+      createMany: [Function (anonymous)],
+      createManyAndReturn: [Function (anonymous)],
+      update: [Function (anonymous)],
+      updateMany: [Function (anonymous)],
+      updateManyAndReturn: [Function (anonymous)],
+      upsert: [Function (anonymous)],
+      delete: [Function (anonymous)],
+      deleteMany: [Function (anonymous)],
+      groupBy: [Function (anonymous)],
+      count: [Function (anonymous)],
+      aggregate: [Function (anonymous)],
+      findRaw: [Function (anonymous)],
+      aggregateRaw: [Function (anonymous)],
+      fields: {},
+      name: 'User',
+      '$name': 'User',
+      '$parent': [Object]
+    },
+    post: {
+      findUnique: [Function (anonymous)],
+      findUniqueOrThrow: [Function (anonymous)],
+      findFirst: [Function (anonymous)],
+      findFirstOrThrow: [Function (anonymous)],
+      findMany: [Function (anonymous)],
+      create: [Function (anonymous)],
+      createMany: [Function (anonymous)],
+      createManyAndReturn: [Function (anonymous)],
+      update: [Function (anonymous)],
+      updateMany: [Function (anonymous)],
+      updateManyAndReturn: [Function (anonymous)],
+      upsert: [Function (anonymous)],
+      delete: [Function (anonymous)],
+      deleteMany: [Function (anonymous)],
+      groupBy: [Function (anonymous)],
+      count: [Function (anonymous)],
+      aggregate: [Function (anonymous)],
+      findRaw: [Function (anonymous)],
+      aggregateRaw: [Function (anonymous)],
+      fields: {},
+      name: 'Post',
+      '$name': 'Post',
+      '$parent': [Object]
+    },
+    license: {
+      findUnique: [Function (anonymous)],
+      findUniqueOrThrow: [Function (anonymous)],
+      findFirst: [Function (anonymous)],
+      findFirstOrThrow: [Function (anonymous)],
+      findMany: [Function (anonymous)],
+      create: [Function (anonymous)],
+      createMany: [Function (anonymous)],
+      createManyAndReturn: [Function (anonymous)],
+      update: [Function (anonymous)],
+      updateMany: [Function (anonymous)],
+      updateManyAndReturn: [Function (anonymous)],
+      upsert: [Function (anonymous)],
+      delete: [Function (anonymous)],
+      deleteMany: [Function (anonymous)],
+      groupBy: [Function (anonymous)],
+      count: [Function (anonymous)],
+      aggregate: [Function (anonymous)],
+      findRaw: [Function (anonymous)],
+      aggregateRaw: [Function (anonymous)],
+      fields: {},
+      name: 'License',
+      '$name': 'License',
+      '$parent': [Object]
+    },
+    transferLog: {
+      findUnique: [Function (anonymous)],
+      findUniqueOrThrow: [Function (anonymous)],
+      findFirst: [Function (anonymous)],
+      findFirstOrThrow: [Function (anonymous)],
+      findMany: [Function (anonymous)],
+      create: [Function (anonymous)],
+      createMany: [Function (anonymous)],
+      createManyAndReturn: [Function (anonymous)],
+      update: [Function (anonymous)],
+      updateMany: [Function (anonymous)],
+      updateManyAndReturn: [Function (anonymous)],
+      upsert: [Function (anonymous)],
+      delete: [Function (anonymous)],
+      deleteMany: [Function (anonymous)],
+      groupBy: [Function (anonymous)],
+      count: [Function (anonymous)],
+      aggregate: [Function (anonymous)],
+      findRaw: [Function (anonymous)],
+      aggregateRaw: [Function (anonymous)],
+      fields: {},
+      name: 'TransferLog',
+      '$name': 'TransferLog',
+      '$parent': [Object]
+    },
+    adminSession: {
+      findUnique: [Function (anonymous)],
+      findUniqueOrThrow: [Function (anonymous)],
+      findFirst: [Function (anonymous)],
+      findFirstOrThrow: [Function (anonymous)],
+      findMany: [Function (anonymous)],
+      create: [Function (anonymous)],
+      createMany: [Function (anonymous)],
+      createManyAndReturn: [Function (anonymous)],
+      update: [Function (anonymous)],
+      updateMany: [Function (anonymous)],
+      updateManyAndReturn: [Function (anonymous)],
+      upsert: [Function (anonymous)],
+      delete: [Function (anonymous)],
+      deleteMany: [Function (anonymous)],
+      groupBy: [Function (anonymous)],
+      count: [Function (anonymous)],
+      aggregate: [Function (anonymous)],
+      findRaw: [Function (anonymous)],
+      aggregateRaw: [Function (anonymous)],
+      fields: {},
+      name: 'AdminSession',
+      '$name': 'AdminSession',
+      '$parent': [Object]
+    },
+    '$parent': {
+      _originalClient: [Object],
+      _runtimeDataModel: [Object],
+      _requestHandler: [ei [RequestHandler]],
+      _connectionPromise: undefined,
+      _disconnectionPromise: undefined,
+      _engineConfig: [Object],
+      _accelerateEngineConfig: [Object],
+      _clientVersion: '6.19.2',
+      _errorFormat: 'colorless',
+      _tracingHelper: Ao {},
+      _previewFeatures: [],
+      _activeProvider: 'sqlite',
+      _globalOmit: undefined,
+      _extensions: [e],
+      _engine: [Qr],
+      _appliedParent: [Object],
+      _createPrismaPromise: [Function (anonymous)],
+      '$metrics': [Lr],
+      '$extends': [Function: Wa],
+      constructor: [class r],
+      '$on': [Function: $on],
+      '$connect': [Function: $connect],
+      '$disconnect': [AsyncFunction: $disconnect],
+      '$executeRawInternal': [Function: $executeRawInternal],
+      '$executeRaw': [Function: $executeRaw],
+      '$executeRawUnsafe': [Function: $executeRawUnsafe],
+      '$runCommandRaw': [Function: $runCommandRaw],
+      '$queryRawInternal': [AsyncFunction: $queryRawInternal],
+      '$queryRaw': [Function: $queryRaw],
+      '$queryRawTyped': [Function: $queryRawTyped],
+      '$queryRawUnsafe': [Function: $queryRawUnsafe],
+      _transactionWithArray: [Function: _transactionWithArray],
+      _transactionWithCallback: [AsyncFunction: _transactionWithCallback],
+      _createItxClient: [Function: _createItxClient],
+      '$transaction': [Function: $transaction],
+      _request: [Function: _request],
+      _executeRequest: [AsyncFunction: _executeRequest],
+      _hasPreviewFlag: [Function: _hasPreviewFlag],
+      '$applyPendingMigrations': [Function: $applyPendingMigrations],
+      user: [Object],
+      post: [Object],
+      license: [Object],
+      transferLog: [Object],
+      adminSession: [Object],
+      '$parent': [Object],
+      Symbol(): [Object]
+    },
+    Symbol(): {
+      _originalClient: [Object],
+      _runtimeDataModel: [Object],
+      _requestHandler: [ei [RequestHandler]],
+      _connectionPromise: undefined,
+      _disconnectionPromise: undefined,
+      _engineConfig: [Object],
+      _accelerateEngineConfig: [Object],
+      _clientVersion: '6.19.2',
+      _errorFormat: 'colorless',
+      _tracingHelper: Ao {},
+      _previewFeatures: [],
+      _activeProvider: 'sqlite',
+      _globalOmit: undefined,
+      _extensions: [e],
+      _engine: [Qr],
+      _appliedParent: [Object],
+      _createPrismaPromise: [Function (anonymous)],
+      '$metrics': [Lr],
+      '$extends': [Function: Wa]
+    }
+  }
+}
+prisma.license: {
+  findUnique: [Function (anonymous)],
+  findUniqueOrThrow: [Function (anonymous)],
+  findFirst: [Function (anonymous)],
+  findFirstOrThrow: [Function (anonymous)],
+  findMany: [Function (anonymous)],
+  create: [Function (anonymous)],
+  createMany: [Function (anonymous)],
+  createManyAndReturn: [Function (anonymous)],
+  update: [Function (anonymous)],
+  updateMany: [Function (anonymous)],
+  updateManyAndReturn: [Function (anonymous)],
+  upsert: [Function (anonymous)],
+  delete: [Function (anonymous)],
+  deleteMany: [Function (anonymous)],
+  groupBy: [Function (anonymous)],
+  count: [Function (anonymous)],
+  aggregate: [Function (anonymous)],
+  findRaw: [Function (anonymous)],
+  aggregateRaw: [Function (anonymous)],
+  fields: {},
+  name: 'License',
+  '$name': 'License',
+  '$parent': {
+    _originalClient: {
+      _originalClient: [Object],
+      _runtimeDataModel: [Object],
+      _requestHandler: [ei [RequestHandler]],
+      _connectionPromise: undefined,
+      _disconnectionPromise: undefined,
+      _engineConfig: [Object],
+      _accelerateEngineConfig: [Object],
+      _clientVersion: '6.19.2',
+      _errorFormat: 'colorless',
+      _tracingHelper: Ao {},
+      _previewFeatures: [],
+      _activeProvider: 'sqlite',
+      _globalOmit: undefined,
+      _extensions: [e],
+      _engine: [Qr],
+      _appliedParent: [Object],
+      _createPrismaPromise: [Function (anonymous)],
+      '$metrics': [Lr],
+      '$extends': [Function: Wa]
+    },
+    _runtimeDataModel: { models: [Object], enums: {}, types: {} },
+    _requestHandler: ei [RequestHandler] {
+      client: [Object],
+      dataloader: [Zn [DataLoader]],
+      logEmitter: [EventEmitter]
+    },
+    _connectionPromise: undefined,
+    _disconnectionPromise: undefined,
+    _engineConfig: {
+      cwd: '/home/z/my-project/prisma',
+      dirname: '/home/z/my-project/node_modules/.prisma/client',
+      enableDebugLogs: false,
+      allowTriggerPanic: undefined,
+      prismaPath: undefined,
+      engineEndpoint: undefined,
+      generator: [Object],
+      showColors: false,
+      logLevel: undefined,
+      logQueries: undefined,
+      env: [Object],
+      flags: [],
+      engineWasm: undefined,
+      compilerWasm: undefined,
+      clientVersion: '6.19.2',
+      engineVersion: 'c2990dca591cba766e3b7ef5d9e8a84796e47ab7',
+      previewFeatures: [],
+      activeProvider: 'sqlite',
+      inlineSchema: '// This is your Prisma schema file,\n' +
+        '// learn more about it in the docs: https://pris.ly/d/prisma-schema\n' +
+        '\n' +
+        'generator client {\n' +
+        '  provider = "prisma-client-js"\n' +
+        '}\n' +
+        '\n' +
+        'datasource db {\n' +
+        '  provider = "sqlite"\n' +
+        '  url      = env("DATABASE_URL")\n' +
+        '}\n' +
+        '\n' +
+        'model User {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  email     String   @unique\n' +
+        '  name      String?\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  updatedAt DateTime @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model Post {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  title     String\n' +
+        '  content   String?\n' +
+        '  published Boolean  @default(false)\n' +
+        '  authorId  String\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  updatedAt DateTime @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model License {\n' +
+        '  id          String    @id @default(cuid())\n' +
+        '  key         String    @unique // Unique license key (e.g. VYRON-XXXX-XXXX-XXXX)\n' +
+        '  type        String // MONTHLY | THREE_MONTHS | SIX_MONTHS | LIFETIME\n' +
+        '  status      String    @default("INACTIVE") // INACTIVE | ACTIVE | REVOKED | EXPIRED\n' +
+        '  createdAt   DateTime  @default(now())\n' +
+        '  activatedAt DateTime?\n' +
+        '  expiresAt   DateTime? // null for LIFETIME\n' +
+        '  assignedTo  String? // Account identifier (phone/email/device)\n' +
+        '  notes       String?\n' +
+        '  updatedAt   DateTime  @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model TransferLog {\n' +
+        '  id           String   @id @default(cuid())\n' +
+        '  licenseKey   String?\n' +
+        '  platform     String // dream11 | my11circle\n' +
+        '  matchId      String\n' +
+        '  transferType String // new | edit | replace_all\n' +
+        '  teamCount    Int      @default(0)\n' +
+        '  successCount Int      @default(0)\n' +
+        '  failCount    Int      @default(0)\n' +
+        '  performedBy  String?\n' +
+        '  createdAt    DateTime @default(now())\n' +
+        '}\n' +
+        '\n' +
+        'model AdminSession {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  token     String   @unique\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  expiresAt DateTime\n' +
+        '}\n',
+      overrideDatasources: {},
+      inlineDatasources: [Object],
+      inlineSchemaHash: 'e42c1a90656cd59e4afdd402c8df2ef37919a3307b11e44fffca2b3c99cf9bb5',
+      tracingHelper: Ao {},
+      transactionOptions: [Object],
+      logEmitter: [EventEmitter],
+      isBundled: undefined,
+      adapter: undefined
+    },
+    _accelerateEngineConfig: {
+      cwd: '/home/z/my-project/prisma',
+      dirname: '/home/z/my-project/node_modules/.prisma/client',
+      enableDebugLogs: false,
+      allowTriggerPanic: undefined,
+      prismaPath: undefined,
+      engineEndpoint: undefined,
+      generator: [Object],
+      showColors: false,
+      logLevel: undefined,
+      logQueries: undefined,
+      env: [Object],
+      flags: [],
+      engineWasm: undefined,
+      compilerWasm: undefined,
+      clientVersion: '6.19.2',
+      engineVersion: 'c2990dca591cba766e3b7ef5d9e8a84796e47ab7',
+      previewFeatures: [],
+      activeProvider: 'sqlite',
+      inlineSchema: '// This is your Prisma schema file,\n' +
+        '// learn more about it in the docs: https://pris.ly/d/prisma-schema\n' +
+        '\n' +
+        'generator client {\n' +
+        '  provider = "prisma-client-js"\n' +
+        '}\n' +
+        '\n' +
+        'datasource db {\n' +
+        '  provider = "sqlite"\n' +
+        '  url      = env("DATABASE_URL")\n' +
+        '}\n' +
+        '\n' +
+        'model User {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  email     String   @unique\n' +
+        '  name      String?\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  updatedAt DateTime @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model Post {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  title     String\n' +
+        '  content   String?\n' +
+        '  published Boolean  @default(false)\n' +
+        '  authorId  String\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  updatedAt DateTime @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model License {\n' +
+        '  id          String    @id @default(cuid())\n' +
+        '  key         String    @unique // Unique license key (e.g. VYRON-XXXX-XXXX-XXXX)\n' +
+        '  type        String // MONTHLY | THREE_MONTHS | SIX_MONTHS | LIFETIME\n' +
+        '  status      String    @default("INACTIVE") // INACTIVE | ACTIVE | REVOKED | EXPIRED\n' +
+        '  createdAt   DateTime  @default(now())\n' +
+        '  activatedAt DateTime?\n' +
+        '  expiresAt   DateTime? // null for LIFETIME\n' +
+        '  assignedTo  String? // Account identifier (phone/email/device)\n' +
+        '  notes       String?\n' +
+        '  updatedAt   DateTime  @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model TransferLog {\n' +
+        '  id           String   @id @default(cuid())\n' +
+        '  licenseKey   String?\n' +
+        '  platform     String // dream11 | my11circle\n' +
+        '  matchId      String\n' +
+        '  transferType String // new | edit | replace_all\n' +
+        '  teamCount    Int      @default(0)\n' +
+        '  successCount Int      @default(0)\n' +
+        '  failCount    Int      @default(0)\n' +
+        '  performedBy  String?\n' +
+        '  createdAt    DateTime @default(now())\n' +
+        '}\n' +
+        '\n' +
+        'model AdminSession {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  token     String   @unique\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  expiresAt DateTime\n' +
+        '}\n',
+      overrideDatasources: {},
+      inlineDatasources: [Object],
+      inlineSchemaHash: 'e42c1a90656cd59e4afdd402c8df2ef37919a3307b11e44fffca2b3c99cf9bb5',
+      tracingHelper: Ao {},
+      transactionOptions: [Object],
+      logEmitter: [EventEmitter],
+      isBundled: undefined,
+      adapter: undefined,
+      accelerateUtils: [Object]
+    },
+    _clientVersion: '6.19.2',
+    _errorFormat: 'colorless',
+    _tracingHelper: Ao {},
+    _previewFeatures: [],
+    _activeProvider: 'sqlite',
+    _globalOmit: undefined,
+    _extensions: e { head: undefined },
+    _engine: Qr {
+      name: 'LibraryEngine',
+      engine: undefined,
+      libraryInstantiationPromise: [Promise],
+      libraryStartingPromise: undefined,
+      libraryStoppingPromise: undefined,
+      libraryStarted: false,
+      executingQueryPromise: undefined,
+      config: [Object],
+      QueryEngineConstructor: undefined,
+      libraryLoader: [Object],
+      library: undefined,
+      logEmitter: [EventEmitter],
+      libQueryEnginePath: undefined,
+      binaryTarget: undefined,
+      datasourceOverrides: undefined,
+      datamodel: '// This is your Prisma schema file,\n' +
+        '// learn more about it in the docs: https://pris.ly/d/prisma-schema\n' +
+        '\n' +
+        'generator client {\n' +
+        '  provider = "prisma-client-js"\n' +
+        '}\n' +
+        '\n' +
+        'datasource db {\n' +
+        '  provider = "sqlite"\n' +
+        '  url      = env("DATABASE_URL")\n' +
+        '}\n' +
+        '\n' +
+        'model User {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  email     String   @unique\n' +
+        '  name      String?\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  updatedAt DateTime @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model Post {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  title     String\n' +
+        '  content   String?\n' +
+        '  published Boolean  @default(false)\n' +
+        '  authorId  String\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  updatedAt DateTime @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model License {\n' +
+        '  id          String    @id @default(cuid())\n' +
+        '  key         String    @unique // Unique license key (e.g. VYRON-XXXX-XXXX-XXXX)\n' +
+        '  type        String // MONTHLY | THREE_MONTHS | SIX_MONTHS | LIFETIME\n' +
+        '  status      String    @default("INACTIVE") // INACTIVE | ACTIVE | REVOKED | EXPIRED\n' +
+        '  createdAt   DateTime  @default(now())\n' +
+        '  activatedAt DateTime?\n' +
+        '  expiresAt   DateTime? // null for LIFETIME\n' +
+        '  assignedTo  String? // Account identifier (phone/email/device)\n' +
+        '  notes       String?\n' +
+        '  updatedAt   DateTime  @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model TransferLog {\n' +
+        '  id           String   @id @default(cuid())\n' +
+        '  licenseKey   String?\n' +
+        '  platform     String // dream11 | my11circle\n' +
+        '  matchId      String\n' +
+        '  transferType String // new | edit | replace_all\n' +
+        '  teamCount    Int      @default(0)\n' +
+        '  successCount Int      @default(0)\n' +
+        '  failCount    Int      @default(0)\n' +
+        '  performedBy  String?\n' +
+        '  createdAt    DateTime @default(now())\n' +
+        '}\n' +
+        '\n' +
+        'model AdminSession {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  token     String   @unique\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  expiresAt DateTime\n' +
+        '}\n',
+      logQueries: false,
+      logLevel: 'error',
+      lastQuery: undefined,
+      loggerRustPanic: undefined,
+      tracingHelper: Ao {},
+      adapterPromise: undefined,
+      versionInfo: undefined
+    },
+    _appliedParent: {
+      _originalClient: [Object],
+      _runtimeDataModel: [Object],
+      _requestHandler: [ei [RequestHandler]],
+      _connectionPromise: undefined,
+      _disconnectionPromise: undefined,
+      _engineConfig: [Object],
+      _accelerateEngineConfig: [Object],
+      _clientVersion: '6.19.2',
+      _errorFormat: 'colorless',
+      _tracingHelper: Ao {},
+      _previewFeatures: [],
+      _activeProvider: 'sqlite',
+      _globalOmit: undefined,
+      _extensions: [e],
+      _engine: [Qr],
+      _appliedParent: [Object],
+      _createPrismaPromise: [Function (anonymous)],
+      '$metrics': [Lr],
+      '$extends': [Function: Wa],
+      constructor: [class r],
+      '$on': [Function: $on],
+      '$connect': [Function: $connect],
+      '$disconnect': [AsyncFunction: $disconnect],
+      '$executeRawInternal': [Function: $executeRawInternal],
+      '$executeRaw': [Function: $executeRaw],
+      '$executeRawUnsafe': [Function: $executeRawUnsafe],
+      '$runCommandRaw': [Function: $runCommandRaw],
+      '$queryRawInternal': [AsyncFunction: $queryRawInternal],
+      '$queryRaw': [Function: $queryRaw],
+      '$queryRawTyped': [Function: $queryRawTyped],
+      '$queryRawUnsafe': [Function: $queryRawUnsafe],
+      _transactionWithArray: [Function: _transactionWithArray],
+      _transactionWithCallback: [AsyncFunction: _transactionWithCallback],
+      _createItxClient: [Function: _createItxClient],
+      '$transaction': [Function: $transaction],
+      _request: [Function: _request],
+      _executeRequest: [AsyncFunction: _executeRequest],
+      _hasPreviewFlag: [Function: _hasPreviewFlag],
+      '$applyPendingMigrations': [Function: $applyPendingMigrations],
+      user: [Object],
+      post: [Object],
+      license: [Object],
+      transferLog: [Object],
+      adminSession: [Object],
+      '$parent': [Object],
+      Symbol(): [Object]
+    },
+    _createPrismaPromise: [Function (anonymous)],
+    '$metrics': Lr { _client: [Object] },
+    '$extends': [Function: Wa],
+    constructor: [class r],
+    '$on': [Function: $on],
+    '$connect': [Function: $connect],
+    '$disconnect': [AsyncFunction: $disconnect],
+    '$executeRawInternal': [Function: $executeRawInternal],
+    '$executeRaw': [Function: $executeRaw],
+    '$executeRawUnsafe': [Function: $executeRawUnsafe],
+    '$runCommandRaw': [Function: $runCommandRaw],
+    '$queryRawInternal': [AsyncFunction: $queryRawInternal],
+    '$queryRaw': [Function: $queryRaw],
+    '$queryRawTyped': [Function: $queryRawTyped],
+    '$queryRawUnsafe': [Function: $queryRawUnsafe],
+    _transactionWithArray: [Function: _transactionWithArray],
+    _transactionWithCallback: [AsyncFunction: _transactionWithCallback],
+    _createItxClient: [Function: _createItxClient],
+    '$transaction': [Function: $transaction],
+    _request: [Function: _request],
+    _executeRequest: [AsyncFunction: _executeRequest],
+    _hasPreviewFlag: [Function: _hasPreviewFlag],
+    '$applyPendingMigrations': [Function: $applyPendingMigrations],
+    user: {
+      findUnique: [Function (anonymous)],
+      findUniqueOrThrow: [Function (anonymous)],
+      findFirst: [Function (anonymous)],
+      findFirstOrThrow: [Function (anonymous)],
+      findMany: [Function (anonymous)],
+      create: [Function (anonymous)],
+      createMany: [Function (anonymous)],
+      createManyAndReturn: [Function (anonymous)],
+      update: [Function (anonymous)],
+      updateMany: [Function (anonymous)],
+      updateManyAndReturn: [Function (anonymous)],
+      upsert: [Function (anonymous)],
+      delete: [Function (anonymous)],
+      deleteMany: [Function (anonymous)],
+      groupBy: [Function (anonymous)],
+      count: [Function (anonymous)],
+      aggregate: [Function (anonymous)],
+      findRaw: [Function (anonymous)],
+      aggregateRaw: [Function (anonymous)],
+      fields: {},
+      name: 'User',
+      '$name': 'User',
+      '$parent': [Object]
+    },
+    post: {
+      findUnique: [Function (anonymous)],
+      findUniqueOrThrow: [Function (anonymous)],
+      findFirst: [Function (anonymous)],
+      findFirstOrThrow: [Function (anonymous)],
+      findMany: [Function (anonymous)],
+      create: [Function (anonymous)],
+      createMany: [Function (anonymous)],
+      createManyAndReturn: [Function (anonymous)],
+      update: [Function (anonymous)],
+      updateMany: [Function (anonymous)],
+      updateManyAndReturn: [Function (anonymous)],
+      upsert: [Function (anonymous)],
+      delete: [Function (anonymous)],
+      deleteMany: [Function (anonymous)],
+      groupBy: [Function (anonymous)],
+      count: [Function (anonymous)],
+      aggregate: [Function (anonymous)],
+      findRaw: [Function (anonymous)],
+      aggregateRaw: [Function (anonymous)],
+      fields: {},
+      name: 'Post',
+      '$name': 'Post',
+      '$parent': [Object]
+    },
+    license: {
+      findUnique: [Function (anonymous)],
+      findUniqueOrThrow: [Function (anonymous)],
+      findFirst: [Function (anonymous)],
+      findFirstOrThrow: [Function (anonymous)],
+      findMany: [Function (anonymous)],
+      create: [Function (anonymous)],
+      createMany: [Function (anonymous)],
+      createManyAndReturn: [Function (anonymous)],
+      update: [Function (anonymous)],
+      updateMany: [Function (anonymous)],
+      updateManyAndReturn: [Function (anonymous)],
+      upsert: [Function (anonymous)],
+      delete: [Function (anonymous)],
+      deleteMany: [Function (anonymous)],
+      groupBy: [Function (anonymous)],
+      count: [Function (anonymous)],
+      aggregate: [Function (anonymous)],
+      findRaw: [Function (anonymous)],
+      aggregateRaw: [Function (anonymous)],
+      fields: {},
+      name: 'License',
+      '$name': 'License',
+      '$parent': [Object]
+    },
+    transferLog: {
+      findUnique: [Function (anonymous)],
+      findUniqueOrThrow: [Function (anonymous)],
+      findFirst: [Function (anonymous)],
+      findFirstOrThrow: [Function (anonymous)],
+      findMany: [Function (anonymous)],
+      create: [Function (anonymous)],
+      createMany: [Function (anonymous)],
+      createManyAndReturn: [Function (anonymous)],
+      update: [Function (anonymous)],
+      updateMany: [Function (anonymous)],
+      updateManyAndReturn: [Function (anonymous)],
+      upsert: [Function (anonymous)],
+      delete: [Function (anonymous)],
+      deleteMany: [Function (anonymous)],
+      groupBy: [Function (anonymous)],
+      count: [Function (anonymous)],
+      aggregate: [Function (anonymous)],
+      findRaw: [Function (anonymous)],
+      aggregateRaw: [Function (anonymous)],
+      fields: {},
+      name: 'TransferLog',
+      '$name': 'TransferLog',
+      '$parent': [Object]
+    },
+    adminSession: {
+      findUnique: [Function (anonymous)],
+      findUniqueOrThrow: [Function (anonymous)],
+      findFirst: [Function (anonymous)],
+      findFirstOrThrow: [Function (anonymous)],
+      findMany: [Function (anonymous)],
+      create: [Function (anonymous)],
+      createMany: [Function (anonymous)],
+      createManyAndReturn: [Function (anonymous)],
+      update: [Function (anonymous)],
+      updateMany: [Function (anonymous)],
+      updateManyAndReturn: [Function (anonymous)],
+      upsert: [Function (anonymous)],
+      delete: [Function (anonymous)],
+      deleteMany: [Function (anonymous)],
+      groupBy: [Function (anonymous)],
+      count: [Function (anonymous)],
+      aggregate: [Function (anonymous)],
+      findRaw: [Function (anonymous)],
+      aggregateRaw: [Function (anonymous)],
+      fields: {},
+      name: 'AdminSession',
+      '$name': 'AdminSession',
+      '$parent': [Object]
+    },
+    '$parent': {
+      _originalClient: [Object],
+      _runtimeDataModel: [Object],
+      _requestHandler: [ei [RequestHandler]],
+      _connectionPromise: undefined,
+      _disconnectionPromise: undefined,
+      _engineConfig: [Object],
+      _accelerateEngineConfig: [Object],
+      _clientVersion: '6.19.2',
+      _errorFormat: 'colorless',
+      _tracingHelper: Ao {},
+      _previewFeatures: [],
+      _activeProvider: 'sqlite',
+      _globalOmit: undefined,
+      _extensions: [e],
+      _engine: [Qr],
+      _appliedParent: [Object],
+      _createPrismaPromise: [Function (anonymous)],
+      '$metrics': [Lr],
+      '$extends': [Function: Wa],
+      constructor: [class r],
+      '$on': [Function: $on],
+      '$connect': [Function: $connect],
+      '$disconnect': [AsyncFunction: $disconnect],
+      '$executeRawInternal': [Function: $executeRawInternal],
+      '$executeRaw': [Function: $executeRaw],
+      '$executeRawUnsafe': [Function: $executeRawUnsafe],
+      '$runCommandRaw': [Function: $runCommandRaw],
+      '$queryRawInternal': [AsyncFunction: $queryRawInternal],
+      '$queryRaw': [Function: $queryRaw],
+      '$queryRawTyped': [Function: $queryRawTyped],
+      '$queryRawUnsafe': [Function: $queryRawUnsafe],
+      _transactionWithArray: [Function: _transactionWithArray],
+      _transactionWithCallback: [AsyncFunction: _transactionWithCallback],
+      _createItxClient: [Function: _createItxClient],
+      '$transaction': [Function: $transaction],
+      _request: [Function: _request],
+      _executeRequest: [AsyncFunction: _executeRequest],
+      _hasPreviewFlag: [Function: _hasPreviewFlag],
+      '$applyPendingMigrations': [Function: $applyPendingMigrations],
+      user: [Object],
+      post: [Object],
+      license: [Object],
+      transferLog: [Object],
+      adminSession: [Object],
+      '$parent': [Object],
+      Symbol(): [Object]
+    },
+    Symbol(): {
+      _originalClient: [Object],
+      _runtimeDataModel: [Object],
+      _requestHandler: [ei [RequestHandler]],
+      _connectionPromise: undefined,
+      _disconnectionPromise: undefined,
+      _engineConfig: [Object],
+      _accelerateEngineConfig: [Object],
+      _clientVersion: '6.19.2',
+      _errorFormat: 'colorless',
+      _tracingHelper: Ao {},
+      _previewFeatures: [],
+      _activeProvider: 'sqlite',
+      _globalOmit: undefined,
+      _extensions: [e],
+      _engine: [Qr],
+      _appliedParent: [Object],
+      _createPrismaPromise: [Function (anonymous)],
+      '$metrics': [Lr],
+      '$extends': [Function: Wa]
+    }
+  }
+}
+prisma.transferLog: {
+  findUnique: [Function (anonymous)],
+  findUniqueOrThrow: [Function (anonymous)],
+  findFirst: [Function (anonymous)],
+  findFirstOrThrow: [Function (anonymous)],
+  findMany: [Function (anonymous)],
+  create: [Function (anonymous)],
+  createMany: [Function (anonymous)],
+  createManyAndReturn: [Function (anonymous)],
+  update: [Function (anonymous)],
+  updateMany: [Function (anonymous)],
+  updateManyAndReturn: [Function (anonymous)],
+  upsert: [Function (anonymous)],
+  delete: [Function (anonymous)],
+  deleteMany: [Function (anonymous)],
+  groupBy: [Function (anonymous)],
+  count: [Function (anonymous)],
+  aggregate: [Function (anonymous)],
+  findRaw: [Function (anonymous)],
+  aggregateRaw: [Function (anonymous)],
+  fields: {},
+  name: 'TransferLog',
+  '$name': 'TransferLog',
+  '$parent': {
+    _originalClient: {
+      _originalClient: [Object],
+      _runtimeDataModel: [Object],
+      _requestHandler: [ei [RequestHandler]],
+      _connectionPromise: undefined,
+      _disconnectionPromise: undefined,
+      _engineConfig: [Object],
+      _accelerateEngineConfig: [Object],
+      _clientVersion: '6.19.2',
+      _errorFormat: 'colorless',
+      _tracingHelper: Ao {},
+      _previewFeatures: [],
+      _activeProvider: 'sqlite',
+      _globalOmit: undefined,
+      _extensions: [e],
+      _engine: [Qr],
+      _appliedParent: [Object],
+      _createPrismaPromise: [Function (anonymous)],
+      '$metrics': [Lr],
+      '$extends': [Function: Wa]
+    },
+    _runtimeDataModel: { models: [Object], enums: {}, types: {} },
+    _requestHandler: ei [RequestHandler] {
+      client: [Object],
+      dataloader: [Zn [DataLoader]],
+      logEmitter: [EventEmitter]
+    },
+    _connectionPromise: undefined,
+    _disconnectionPromise: undefined,
+    _engineConfig: {
+      cwd: '/home/z/my-project/prisma',
+      dirname: '/home/z/my-project/node_modules/.prisma/client',
+      enableDebugLogs: false,
+      allowTriggerPanic: undefined,
+      prismaPath: undefined,
+      engineEndpoint: undefined,
+      generator: [Object],
+      showColors: false,
+      logLevel: undefined,
+      logQueries: undefined,
+      env: [Object],
+      flags: [],
+      engineWasm: undefined,
+      compilerWasm: undefined,
+      clientVersion: '6.19.2',
+      engineVersion: 'c2990dca591cba766e3b7ef5d9e8a84796e47ab7',
+      previewFeatures: [],
+      activeProvider: 'sqlite',
+      inlineSchema: '// This is your Prisma schema file,\n' +
+        '// learn more about it in the docs: https://pris.ly/d/prisma-schema\n' +
+        '\n' +
+        'generator client {\n' +
+        '  provider = "prisma-client-js"\n' +
+        '}\n' +
+        '\n' +
+        'datasource db {\n' +
+        '  provider = "sqlite"\n' +
+        '  url      = env("DATABASE_URL")\n' +
+        '}\n' +
+        '\n' +
+        'model User {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  email     String   @unique\n' +
+        '  name      String?\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  updatedAt DateTime @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model Post {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  title     String\n' +
+        '  content   String?\n' +
+        '  published Boolean  @default(false)\n' +
+        '  authorId  String\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  updatedAt DateTime @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model License {\n' +
+        '  id          String    @id @default(cuid())\n' +
+        '  key         String    @unique // Unique license key (e.g. VYRON-XXXX-XXXX-XXXX)\n' +
+        '  type        String // MONTHLY | THREE_MONTHS | SIX_MONTHS | LIFETIME\n' +
+        '  status      String    @default("INACTIVE") // INACTIVE | ACTIVE | REVOKED | EXPIRED\n' +
+        '  createdAt   DateTime  @default(now())\n' +
+        '  activatedAt DateTime?\n' +
+        '  expiresAt   DateTime? // null for LIFETIME\n' +
+        '  assignedTo  String? // Account identifier (phone/email/device)\n' +
+        '  notes       String?\n' +
+        '  updatedAt   DateTime  @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model TransferLog {\n' +
+        '  id           String   @id @default(cuid())\n' +
+        '  licenseKey   String?\n' +
+        '  platform     String // dream11 | my11circle\n' +
+        '  matchId      String\n' +
+        '  transferType String // new | edit | replace_all\n' +
+        '  teamCount    Int      @default(0)\n' +
+        '  successCount Int      @default(0)\n' +
+        '  failCount    Int      @default(0)\n' +
+        '  performedBy  String?\n' +
+        '  createdAt    DateTime @default(now())\n' +
+        '}\n' +
+        '\n' +
+        'model AdminSession {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  token     String   @unique\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  expiresAt DateTime\n' +
+        '}\n',
+      overrideDatasources: {},
+      inlineDatasources: [Object],
+      inlineSchemaHash: 'e42c1a90656cd59e4afdd402c8df2ef37919a3307b11e44fffca2b3c99cf9bb5',
+      tracingHelper: Ao {},
+      transactionOptions: [Object],
+      logEmitter: [EventEmitter],
+      isBundled: undefined,
+      adapter: undefined
+    },
+    _accelerateEngineConfig: {
+      cwd: '/home/z/my-project/prisma',
+      dirname: '/home/z/my-project/node_modules/.prisma/client',
+      enableDebugLogs: false,
+      allowTriggerPanic: undefined,
+      prismaPath: undefined,
+      engineEndpoint: undefined,
+      generator: [Object],
+      showColors: false,
+      logLevel: undefined,
+      logQueries: undefined,
+      env: [Object],
+      flags: [],
+      engineWasm: undefined,
+      compilerWasm: undefined,
+      clientVersion: '6.19.2',
+      engineVersion: 'c2990dca591cba766e3b7ef5d9e8a84796e47ab7',
+      previewFeatures: [],
+      activeProvider: 'sqlite',
+      inlineSchema: '// This is your Prisma schema file,\n' +
+        '// learn more about it in the docs: https://pris.ly/d/prisma-schema\n' +
+        '\n' +
+        'generator client {\n' +
+        '  provider = "prisma-client-js"\n' +
+        '}\n' +
+        '\n' +
+        'datasource db {\n' +
+        '  provider = "sqlite"\n' +
+        '  url      = env("DATABASE_URL")\n' +
+        '}\n' +
+        '\n' +
+        'model User {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  email     String   @unique\n' +
+        '  name      String?\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  updatedAt DateTime @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model Post {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  title     String\n' +
+        '  content   String?\n' +
+        '  published Boolean  @default(false)\n' +
+        '  authorId  String\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  updatedAt DateTime @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model License {\n' +
+        '  id          String    @id @default(cuid())\n' +
+        '  key         String    @unique // Unique license key (e.g. VYRON-XXXX-XXXX-XXXX)\n' +
+        '  type        String // MONTHLY | THREE_MONTHS | SIX_MONTHS | LIFETIME\n' +
+        '  status      String    @default("INACTIVE") // INACTIVE | ACTIVE | REVOKED | EXPIRED\n' +
+        '  createdAt   DateTime  @default(now())\n' +
+        '  activatedAt DateTime?\n' +
+        '  expiresAt   DateTime? // null for LIFETIME\n' +
+        '  assignedTo  String? // Account identifier (phone/email/device)\n' +
+        '  notes       String?\n' +
+        '  updatedAt   DateTime  @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model TransferLog {\n' +
+        '  id           String   @id @default(cuid())\n' +
+        '  licenseKey   String?\n' +
+        '  platform     String // dream11 | my11circle\n' +
+        '  matchId      String\n' +
+        '  transferType String // new | edit | replace_all\n' +
+        '  teamCount    Int      @default(0)\n' +
+        '  successCount Int      @default(0)\n' +
+        '  failCount    Int      @default(0)\n' +
+        '  performedBy  String?\n' +
+        '  createdAt    DateTime @default(now())\n' +
+        '}\n' +
+        '\n' +
+        'model AdminSession {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  token     String   @unique\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  expiresAt DateTime\n' +
+        '}\n',
+      overrideDatasources: {},
+      inlineDatasources: [Object],
+      inlineSchemaHash: 'e42c1a90656cd59e4afdd402c8df2ef37919a3307b11e44fffca2b3c99cf9bb5',
+      tracingHelper: Ao {},
+      transactionOptions: [Object],
+      logEmitter: [EventEmitter],
+      isBundled: undefined,
+      adapter: undefined,
+      accelerateUtils: [Object]
+    },
+    _clientVersion: '6.19.2',
+    _errorFormat: 'colorless',
+    _tracingHelper: Ao {},
+    _previewFeatures: [],
+    _activeProvider: 'sqlite',
+    _globalOmit: undefined,
+    _extensions: e { head: undefined },
+    _engine: Qr {
+      name: 'LibraryEngine',
+      engine: undefined,
+      libraryInstantiationPromise: [Promise],
+      libraryStartingPromise: undefined,
+      libraryStoppingPromise: undefined,
+      libraryStarted: false,
+      executingQueryPromise: undefined,
+      config: [Object],
+      QueryEngineConstructor: undefined,
+      libraryLoader: [Object],
+      library: undefined,
+      logEmitter: [EventEmitter],
+      libQueryEnginePath: undefined,
+      binaryTarget: undefined,
+      datasourceOverrides: undefined,
+      datamodel: '// This is your Prisma schema file,\n' +
+        '// learn more about it in the docs: https://pris.ly/d/prisma-schema\n' +
+        '\n' +
+        'generator client {\n' +
+        '  provider = "prisma-client-js"\n' +
+        '}\n' +
+        '\n' +
+        'datasource db {\n' +
+        '  provider = "sqlite"\n' +
+        '  url      = env("DATABASE_URL")\n' +
+        '}\n' +
+        '\n' +
+        'model User {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  email     String   @unique\n' +
+        '  name      String?\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  updatedAt DateTime @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model Post {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  title     String\n' +
+        '  content   String?\n' +
+        '  published Boolean  @default(false)\n' +
+        '  authorId  String\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  updatedAt DateTime @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model License {\n' +
+        '  id          String    @id @default(cuid())\n' +
+        '  key         String    @unique // Unique license key (e.g. VYRON-XXXX-XXXX-XXXX)\n' +
+        '  type        String // MONTHLY | THREE_MONTHS | SIX_MONTHS | LIFETIME\n' +
+        '  status      String    @default("INACTIVE") // INACTIVE | ACTIVE | REVOKED | EXPIRED\n' +
+        '  createdAt   DateTime  @default(now())\n' +
+        '  activatedAt DateTime?\n' +
+        '  expiresAt   DateTime? // null for LIFETIME\n' +
+        '  assignedTo  String? // Account identifier (phone/email/device)\n' +
+        '  notes       String?\n' +
+        '  updatedAt   DateTime  @updatedAt\n' +
+        '}\n' +
+        '\n' +
+        'model TransferLog {\n' +
+        '  id           String   @id @default(cuid())\n' +
+        '  licenseKey   String?\n' +
+        '  platform     String // dream11 | my11circle\n' +
+        '  matchId      String\n' +
+        '  transferType String // new | edit | replace_all\n' +
+        '  teamCount    Int      @default(0)\n' +
+        '  successCount Int      @default(0)\n' +
+        '  failCount    Int      @default(0)\n' +
+        '  performedBy  String?\n' +
+        '  createdAt    DateTime @default(now())\n' +
+        '}\n' +
+        '\n' +
+        'model AdminSession {\n' +
+        '  id        String   @id @default(cuid())\n' +
+        '  token     String   @unique\n' +
+        '  createdAt DateTime @default(now())\n' +
+        '  expiresAt DateTime\n' +
+        '}\n',
+      logQueries: false,
+      logLevel: 'error',
+      lastQuery: undefined,
+      loggerRustPanic: undefined,
+      tracingHelper: Ao {},
+      adapterPromise: undefined,
+      versionInfo: undefined
+    },
+    _appliedParent: {
+      _originalClient: [Object],
+      _runtimeDataModel: [Object],
+      _requestHandler: [ei [RequestHandler]],
+      _connectionPromise: undefined,
+      _disconnectionPromise: undefined,
+      _engineConfig: [Object],
+      _accelerateEngineConfig: [Object],
+      _clientVersion: '6.19.2',
+      _errorFormat: 'colorless',
+      _tracingHelper: Ao {},
+      _previewFeatures: [],
+      _activeProvider: 'sqlite',
+      _globalOmit: undefined,
+      _extensions: [e],
+      _engine: [Qr],
+      _appliedParent: [Object],
+      _createPrismaPromise: [Function (anonymous)],
+      '$metrics': [Lr],
+      '$extends': [Function: Wa],
+      constructor: [class r],
+      '$on': [Function: $on],
+      '$connect': [Function: $connect],
+      '$disconnect': [AsyncFunction: $disconnect],
+      '$executeRawInternal': [Function: $executeRawInternal],
+      '$executeRaw': [Function: $executeRaw],
+      '$executeRawUnsafe': [Function: $executeRawUnsafe],
+      '$runCommandRaw': [Function: $runCommandRaw],
+      '$queryRawInternal': [AsyncFunction: $queryRawInternal],
+      '$queryRaw': [Function: $queryRaw],
+      '$queryRawTyped': [Function: $queryRawTyped],
+      '$queryRawUnsafe': [Function: $queryRawUnsafe],
+      _transactionWithArray: [Function: _transactionWithArray],
+      _transactionWithCallback: [AsyncFunction: _transactionWithCallback],
+      _createItxClient: [Function: _createItxClient],
+      '$transaction': [Function: $transaction],
+      _request: [Function: _request],
+      _executeRequest: [AsyncFunction: _executeRequest],
+      _hasPreviewFlag: [Function: _hasPreviewFlag],
+      '$applyPendingMigrations': [Function: $applyPendingMigrations],
+      user: [Object],
+      post: [Object],
+      license: [Object],
+      transferLog: [Object],
+      adminSession: [Object],
+      '$parent': [Object],
+      Symbol(): [Object]
+    },
+    _createPrismaPromise: [Function (anonymous)],
+    '$metrics': Lr { _client: [Object] },
+    '$extends': [Function: Wa],
+    constructor: [class r],
+    '$on': [Function: $on],
+    '$connect': [Function: $connect],
+    '$disconnect': [AsyncFunction: $disconnect],
+    '$executeRawInternal': [Function: $executeRawInternal],
+    '$executeRaw': [Function: $executeRaw],
+    '$executeRawUnsafe': [Function: $executeRawUnsafe],
+    '$runCommandRaw': [Function: $runCommandRaw],
+    '$queryRawInternal': [AsyncFunction: $queryRawInternal],
+    '$queryRaw': [Function: $queryRaw],
+    '$queryRawTyped': [Function: $queryRawTyped],
+    '$queryRawUnsafe': [Function: $queryRawUnsafe],
+    _transactionWithArray: [Function: _transactionWithArray],
+    _transactionWithCallback: [AsyncFunction: _transactionWithCallback],
+    _createItxClient: [Function: _createItxClient],
+    '$transaction': [Function: $transaction],
+    _request: [Function: _request],
+    _executeRequest: [AsyncFunction: _executeRequest],
+    _hasPreviewFlag: [Function: _hasPreviewFlag],
+    '$applyPendingMigrations': [Function: $applyPendingMigrations],
+    user: {
+      findUnique: [Function (anonymous)],
+      findUniqueOrThrow: [Function (anonymous)],
+      findFirst: [Function (anonymous)],
+      findFirstOrThrow: [Function (anonymous)],
+      findMany: [Function (anonymous)],
+      create: [Function (anonymous)],
+      createMany: [Function (anonymous)],
+      createManyAndReturn: [Function (anonymous)],
+      update: [Function (anonymous)],
+      updateMany: [Function (anonymous)],
+      updateManyAndReturn: [Function (anonymous)],
+      upsert: [Function (anonymous)],
+      delete: [Function (anonymous)],
+      deleteMany: [Function (anonymous)],
+      groupBy: [Function (anonymous)],
+      count: [Function (anonymous)],
+      aggregate: [Function (anonymous)],
+      findRaw: [Function (anonymous)],
+      aggregateRaw: [Function (anonymous)],
+      fields: {},
+      name: 'User',
+      '$name': 'User',
+      '$parent': [Object]
+    },
+    post: {
+      findUnique: [Function (anonymous)],
+      findUniqueOrThrow: [Function (anonymous)],
+      findFirst: [Function (anonymous)],
+      findFirstOrThrow: [Function (anonymous)],
+      findMany: [Function (anonymous)],
+      create: [Function (anonymous)],
+      createMany: [Function (anonymous)],
+      createManyAndReturn: [Function (anonymous)],
+      update: [Function (anonymous)],
+      updateMany: [Function (anonymous)],
+      updateManyAndReturn: [Function (anonymous)],
+      upsert: [Function (anonymous)],
+      delete: [Function (anonymous)],
+      deleteMany: [Function (anonymous)],
+      groupBy: [Function (anonymous)],
+      count: [Function (anonymous)],
+      aggregate: [Function (anonymous)],
+      findRaw: [Function (anonymous)],
+      aggregateRaw: [Function (anonymous)],
+      fields: {},
+      name: 'Post',
+      '$name': 'Post',
+      '$parent': [Object]
+    },
+    license: {
+      findUnique: [Function (anonymous)],
+      findUniqueOrThrow: [Function (anonymous)],
+      findFirst: [Function (anonymous)],
+      findFirstOrThrow: [Function (anonymous)],
+      findMany: [Function (anonymous)],
+      create: [Function (anonymous)],
+      createMany: [Function (anonymous)],
+      createManyAndReturn: [Function (anonymous)],
+      update: [Function (anonymous)],
+      updateMany: [Function (anonymous)],
+      updateManyAndReturn: [Function (anonymous)],
+      upsert: [Function (anonymous)],
+      delete: [Function (anonymous)],
+      deleteMany: [Function (anonymous)],
+      groupBy: [Function (anonymous)],
+      count: [Function (anonymous)],
+      aggregate: [Function (anonymous)],
+      findRaw: [Function (anonymous)],
+      aggregateRaw: [Function (anonymous)],
+      fields: {},
+      name: 'License',
+      '$name': 'License',
+      '$parent': [Object]
+    },
+    transferLog: {
+      findUnique: [Function (anonymous)],
+      findUniqueOrThrow: [Function (anonymous)],
+      findFirst: [Function (anonymous)],
+      findFirstOrThrow: [Function (anonymous)],
+      findMany: [Function (anonymous)],
+      create: [Function (anonymous)],
+      createMany: [Function (anonymous)],
+      createManyAndReturn: [Function (anonymous)],
+      update: [Function (anonymous)],
+      updateMany: [Function (anonymous)],
+      updateManyAndReturn: [Function (anonymous)],
+      upsert: [Function (anonymous)],
+      delete: [Function (anonymous)],
+      deleteMany: [Function (anonymous)],
+      groupBy: [Function (anonymous)],
+      count: [Function (anonymous)],
+      aggregate: [Function (anonymous)],
+      findRaw: [Function (anonymous)],
+      aggregateRaw: [Function (anonymous)],
+      fields: {},
+      name: 'TransferLog',
+      '$name': 'TransferLog',
+      '$parent': [Object]
+    },
+    adminSession: {
+      findUnique: [Function (anonymous)],
+      findUniqueOrThrow: [Function (anonymous)],
+      findFirst: [Function (anonymous)],
+      findFirstOrThrow: [Function (anonymous)],
+      findMany: [Function (anonymous)],
+      create: [Function (anonymous)],
+      createMany: [Function (anonymous)],
+      createManyAndReturn: [Function (anonymous)],
+      update: [Function (anonymous)],
+      updateMany: [Function (anonymous)],
+      updateManyAndReturn: [Function (anonymous)],
+      upsert: [Function (anonymous)],
+      delete: [Function (anonymous)],
+      deleteMany: [Function (anonymous)],
+      groupBy: [Function (anonymous)],
+      count: [Function (anonymous)],
+      aggregate: [Function (anonymous)],
+      findRaw: [Function (anonymous)],
+      aggregateRaw: [Function (anonymous)],
+      fields: {},
+      name: 'AdminSession',
+      '$name': 'AdminSession',
+      '$parent': [Object]
+    },
+    '$parent': {
+      _originalClient: [Object],
+      _runtimeDataModel: [Object],
+      _requestHandler: [ei [RequestHandler]],
+      _connectionPromise: undefined,
+      _disconnectionPromise: undefined,
+      _engineConfig: [Object],
+      _accelerateEngineConfig: [Object],
+      _clientVersion: '6.19.2',
+      _errorFormat: 'colorless',
+      _tracingHelper: Ao {},
+      _previewFeatures: [],
+      _activeProvider: 'sqlite',
+      _globalOmit: undefined,
+      _extensions: [e],
+      _engine: [Qr],
+      _appliedParent: [Object],
+      _createPrismaPromise: [Function (anonymous)],
+      '$metrics': [Lr],
+      '$extends': [Function: Wa],
+      constructor: [class r],
+      '$on': [Function: $on],
+      '$connect': [Function: $connect],
+      '$disconnect': [AsyncFunction: $disconnect],
+      '$executeRawInternal': [Function: $executeRawInternal],
+      '$executeRaw': [Function: $executeRaw],
+      '$executeRawUnsafe': [Function: $executeRawUnsafe],
+      '$runCommandRaw': [Function: $runCommandRaw],
+      '$queryRawInternal': [AsyncFunction: $queryRawInternal],
+      '$queryRaw': [Function: $queryRaw],
+      '$queryRawTyped': [Function: $queryRawTyped],
+      '$queryRawUnsafe': [Function: $queryRawUnsafe],
+      _transactionWithArray: [Function: _transactionWithArray],
+      _transactionWithCallback: [AsyncFunction: _transactionWithCallback],
+      _createItxClient: [Function: _createItxClient],
+      '$transaction': [Function: $transaction],
+      _request: [Function: _request],
+      _executeRequest: [AsyncFunction: _executeRequest],
+      _hasPreviewFlag: [Function: _hasPreviewFlag],
+      '$applyPendingMigrations': [Function: $applyPendingMigrations],
+      user: [Object],
+      post: [Object],
+      license: [Object],
+      transferLog: [Object],
+      adminSession: [Object],
+      '$parent': [Object],
+      Symbol(): [Object]
+    },
+    Symbol(): {
+      _originalClient: [Object],
+      _runtimeDataModel: [Object],
+      _requestHandler: [ei [RequestHandler]],
+      _connectionPromise: undefined,
+      _disconnectionPromise: undefined,
+      _engineConfig: [Object],
+      _accelerateEngineConfig: [Object],
+      _clientVersion: '6.19.2',
+      _errorFormat: 'colorless',
+      _tracingHelper: Ao {},
+      _previewFeatures: [],
+      _activeProvider: 'sqlite',
+      _globalOmit: undefined,
+      _extensions: [e],
+      _engine: [Qr],
+      _appliedParent: [Object],
+      _createPrismaPromise: [Function (anonymous)],
+      '$metrics': [Lr],
+      '$extends': [Function: Wa]
+    }
+  }
+}

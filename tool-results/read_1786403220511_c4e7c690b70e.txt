@@ -1,0 +1,502 @@
+     1→  3131→          </div>
+     2→  3132→        </DialogContent>
+     3→  3133→      </Dialog>
+     4→  3134→
+     5→  3135→      {/* ============ TRANSFER DIALOG (New Team / Existing / Replace) ============ */}
+     6→  3136→      <Dialog open={showTransferDialog} onOpenChange={(open) => {
+     7→  3137→        if (!transferring) {
+     8→  3138→          setShowTransferDialog(open)
+     9→  3139→          if (!open) {
+    10→  3140→            setTransferProgress({ current: 0, total: 0, status: 'idle' })
+    11→  3141→            setTransferResults([])
+    12→  3142→            setTransferSuccessCount(0)
+    13→  3143→            setTransferFailCount(0)
+    14→  3144→            setExistingTeams([])
+    15→  3145→            setSelectedReplaceIds(new Set())
+    16→  3146→          }
+    17→  3147→        }
+    18→  3148→      }}>
+    19→  3149→        <DialogContent className="max-w-[90vw] max-h-[85vh] overflow-y-auto">
+    20→  3150→          <DialogTitle className="sr-only">
+    21→  3151→            Transfer to {transferPlatform}
+    22→  3152→          </DialogTitle>
+    23→  3153→          <button
+    24→  3154→            onClick={() => { if (!transferring) setShowTransferDialog(false) }}
+    25→  3155→            className="absolute top-3 right-3 p-1 hover:bg-gray-100 rounded-md z-10"
+    26→  3156→          >
+    27→  3157→            <X className="w-4 h-4" />
+    28→  3158→          </button>
+    29→  3159→
+    30→  3160→          <div className="space-y-4">
+    31→  3161→            {/* Platform logo & title */}
+    32→  3162→            <div className="flex items-center gap-3">
+    33→  3163→              {transferPlatform === 'dream11' ? (
+    34→  3164→                <div className="w-12 h-12 rounded-xl bg-[#e74c3c] flex items-center justify-center text-white font-bold text-lg">D11</div>
+    35→  3165→              ) : (
+    36→  3166→                <div className="w-12 h-12 rounded-xl bg-[#2196f3] flex items-center justify-center text-white font-bold text-lg">M11</div>
+    37→  3167→              )}
+    38→  3168→              <div>
+    39→  3169→                <h3 className="text-lg font-bold text-gray-900">Transfer to {transferPlatform === 'dream11' ? 'Dream11' : 'My11Circle'}</h3>
+    40→  3170→                <p className="text-sm text-gray-500">{generatedTeams.length} teams ready to transfer</p>
+    41→  3171→              </div>
+    42→  3172→            </div>
+    43→  3173→
+    44→  3174→            {/* Auth status check */}
+    45→  3175→            {!fantasyAccounts[transferPlatform!]?.authToken ? (
+    46→  3176→              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+    47→  3177→                <p className="text-sm text-amber-800 font-medium">⚠️ Link your {transferPlatform === 'dream11' ? 'Dream11' : 'My11Circle'} account first to transfer teams directly</p>
+    48→  3178→                <button
+    49→  3179→                  onClick={() => {
+    50→  3180→                    setShowTransferDialog(false)
+    51→  3181→                    setLoginPlatform(transferPlatform)
+    52→  3182→                    setShowLoginDialog(true)
+    53→  3183→                  }}
+    54→  3184→                  className="mt-2 text-sm text-[#6C63FF] font-semibold hover:underline flex items-center gap-1"
+    55→  3185→                >
+    56→  3186→                  <Phone className="w-3.5 h-3.5" />
+    57→  3187→                  Link via OTP →
+    58→  3188→                </button>
+    59→  3189→              </div>
+    60→  3190→            ) : (
+    61→  3191→              <div className="bg-green-50 border border-green-200 rounded-lg p-2.5">
+    62→  3192→                <div className="flex items-center gap-2">
+    63→  3193→                  <CheckCircle2 className="w-4 h-4 text-green-600" />
+    64→  3194→                  <span className="text-sm text-green-700 font-medium">{transferPlatform === 'dream11' ? 'Dream11' : 'My11Circle'} account linked</span>
+    65→  3195→                </div>
+    66→  3196→                <p className="text-xs text-green-600 mt-0.5 ml-6">+91 {fantasyAccounts[transferPlatform!]?.mobileNumber}</p>
+    67→  3197→              </div>
+    68→  3198→            )}
+    69→  3199→
+    70→  3200→            {/* Transfer Options */}
+    71→  3201→            <div className="space-y-2">
+    72→  3202→              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Select Transfer Option</p>
+    73→  3203→
+    74→  3204→              {/* New Team Option */}
+    75→  3205→              <button
+    76→  3206→                onClick={() => setTransferOption('new')}
+    77→  3207→                disabled={transferring}
+    78→  3208→                className={`w-full text-left rounded-xl border-2 p-3.5 transition-all ${
+    79→  3209→                  transferOption === 'new'
+    80→  3210→                    ? 'border-[#6C63FF] bg-[#6C63FF]/5 shadow-sm'
+    81→  3211→                    : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50'
+    82→  3212→                } ${transferring ? 'opacity-60 pointer-events-none' : ''}`}
+    83→  3213→              >
+    84→  3214→                <div className="flex items-start gap-3">
+    85→  3215→                  <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
+    86→  3216→                    transferOption === 'new' ? 'bg-[#6C63FF] text-white' : 'bg-gray-100 text-gray-500'
+    87→  3217→                  }`}>
+    88→  3218→                    <Plus className="w-5 h-5" />
+    89→  3219→                  </div>
+    90→  3220→                  <div>
+    91→  3221→                    <p className={`font-semibold text-sm ${transferOption === 'new' ? 'text-[#6C63FF]' : 'text-gray-900'}`}>New Team</p>
+    92→  3222→                    <p className="text-xs text-gray-500 mt-0.5">Create {generatedTeams.length} new team{generatedTeams.length > 1 ? 's' : ''} on {transferPlatform === 'dream11' ? 'Dream11' : 'My11Circle'}</p>
+    93→  3223→                  </div>
+    94→  3224→                  {transferOption === 'new' && (
+    95→  3225→                    <CheckCircle2 className="w-5 h-5 text-[#6C63FF] shrink-0 ml-auto" />
+    96→  3226→                  )}
+    97→  3227→                </div>
+    98→  3228→              </button>
+    99→  3229→
+   100→  3230→              {/* Existing Team Option */}
+   101→  3231→              <button
+   102→  3232→                onClick={() => setTransferOption('existing')}
+   103→  3233→                disabled={transferring}
+   104→  3234→                className={`w-full text-left rounded-xl border-2 p-3.5 transition-all ${
+   105→  3235→                  transferOption === 'existing'
+   106→  3236→                    ? 'border-[#00bfa5] bg-[#00bfa5]/5 shadow-sm'
+   107→  3237→                    : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50'
+   108→  3238→                } ${transferring ? 'opacity-60 pointer-events-none' : ''}`}
+   109→  3239→              >
+   110→  3240→                <div className="flex items-start gap-3">
+   111→  3241→                  <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
+   112→  3242→                    transferOption === 'existing' ? 'bg-[#00bfa5] text-white' : 'bg-gray-100 text-gray-500'
+   113→  3243→                  }`}>
+   114→  3244→                    <BookmarkCheck className="w-5 h-5" />
+   115→  3245→                  </div>
+   116→  3246→                  <div>
+   117→  3247→                    <p className={`font-semibold text-sm ${transferOption === 'existing' ? 'text-[#00bfa5]' : 'text-gray-900'}`}>Existing Team</p>
+   118→  3248→                    <p className="text-xs text-gray-500 mt-0.5">Add players to your existing team{generatedTeams.length > 1 ? 's' : ''} on the platform</p>
+   119→  3249→                  </div>
+   120→  3250→                  {transferOption === 'existing' && (
+   121→  3251→                    <CheckCircle2 className="w-5 h-5 text-[#00bfa5] shrink-0 ml-auto" />
+   122→  3252→                  )}
+   123→  3253→                </div>
+   124→  3254→              </button>
+   125→  3255→
+   126→  3256→              {/* Replace Team Option */}
+   127→  3257→              <button
+   128→  3258→                onClick={() => {
+   129→  3259→                  setTransferOption('replace')
+   130→  3260→                  // Auto-fetch existing teams when replace is selected
+   131→  3261→                  if (fantasyAccounts[transferPlatform!]?.authToken && existingTeams.length === 0) {
+   132→  3262→                    fetchExistingTeams()
+   133→  3263→                  }
+   134→  3264→                }}
+   135→  3265→                disabled={transferring}
+   136→  3266→                className={`w-full text-left rounded-xl border-2 p-3.5 transition-all ${
+   137→  3267→                  transferOption === 'replace'
+   138→  3268→                    ? 'border-[#f44336] bg-[#f44336]/5 shadow-sm'
+   139→  3269→                    : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50'
+   140→  3270→                } ${transferring ? 'opacity-60 pointer-events-none' : ''}`}
+   141→  3271→              >
+   142→  3272→                <div className="flex items-start gap-3">
+   143→  3273→                  <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
+   144→  3274→                    transferOption === 'replace' ? 'bg-[#f44336] text-white' : 'bg-gray-100 text-gray-500'
+   145→  3275→                  }`}>
+   146→  3276→                    <RefreshCw className="w-5 h-5" />
+   147→  3277→                  </div>
+   148→  3278→                  <div>
+   149→  3279→                    <p className={`font-semibold text-sm ${transferOption === 'replace' ? 'text-[#f44336]' : 'text-gray-900'}`}>Replace Team</p>
+   150→  3280→                    <p className="text-xs text-gray-500 mt-0.5">Replace existing team{generatedTeams.length > 1 ? 's' : ''} with generated team{generatedTeams.length > 1 ? 's' : ''}</p>
+   151→  3281→                  </div>
+   152→  3282→                  {transferOption === 'replace' && (
+   153→  3283→                    <CheckCircle2 className="w-5 h-5 text-[#f44336] shrink-0 ml-auto" />
+   154→  3284→                  )}
+   155→  3285→                </div>
+   156→  3286→              </button>
+   157→  3287→            </div>
+   158→  3288→
+   159→  3289→            {/* Replace Team: Existing Teams Selection UI */}
+   160→  3290→            {transferOption === 'replace' && (
+   161→  3291→              <div className="space-y-2">
+   162→  3292→                <div className="flex items-center justify-between">
+   163→  3293→                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Select Teams to Replace</p>
+   164→  3294→                  <button
+   165→  3295→                    onClick={fetchExistingTeams}
+   166→  3296→                    disabled={existingTeamsLoading || !fantasyAccounts[transferPlatform!]?.authToken}
+   167→  3297→                    className="text-xs text-[#6C63FF] font-medium hover:underline disabled:opacity-50"
+   168→  3298→                  >
+   169→  3299→                    {existingTeamsLoading ? 'Loading...' : 'Refresh list'}
+   170→  3300→                  </button>
+   171→  3301→                </div>
+   172→  3302→
+   173→  3303→                {!fantasyAccounts[transferPlatform!]?.authToken ? (
+   174→  3304→                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 text-xs text-amber-800">
+   175→  3305→                    Link your {transferPlatform === 'dream11' ? 'Dream11' : 'My11Circle'} account first to see existing teams
+   176→  3306→                  </div>
+   177→  3307→                ) : existingTeamsLoading ? (
+   178→  3308→                  <div className="flex items-center justify-center py-4">
+   179→  3309→                    <Loader2 className="w-5 h-5 animate-spin text-[#6C63FF]" />
+   180→  3310→                    <span className="ml-2 text-sm text-gray-500">Loading existing teams...</span>
+   181→  3311→                  </div>
+   182→  3312→                ) : existingTeams.length === 0 ? (
+   183→  3313→                  <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-center">
+   184→  3314→                    <p className="text-sm text-gray-500">No existing teams found for this match</p>
+   185→  3315→                    <p className="text-xs text-gray-400 mt-1">Create teams first using &quot;New Team&quot; mode</p>
+   186→  3316→                  </div>
+   187→  3317→                ) : (
+   188→  3318→                  <>
+   189→  3319→                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-2 text-xs text-blue-700">
+   190→  3320→                      Select up to {Math.min(generatedTeams.length, existingTeams.length)} existing team{Math.min(generatedTeams.length, existingTeams.length) > 1 ? 's' : ''} to replace with your generated teams
+   191→  3321→                    </div>
+   192→  3322→                    {/* Select All / Deselect All buttons */}
+   193→  3323→                    <div className="flex items-center gap-2">
+   194→  3324→                      <button
+   195→  3325→                        onClick={() => {
+   196→  3326→                          const maxSelectable = Math.min(generatedTeams.length, existingTeams.length)
+   197→  3327→                          const allIds = existingTeams.slice(0, maxSelectable).map(t => t.id)
+   198→  3328→                          setSelectedReplaceIds(new Set(allIds))
+   199→  3329→                        }}
+   200→  3330→                        disabled={selectedReplaceIds.size === Math.min(generatedTeams.length, existingTeams.length)}
+   201→  3331→                        className="flex-1 py-1.5 rounded-lg text-xs font-semibold border-2 border-[#f44336]/30 bg-[#f44336]/5 text-[#f44336] hover:bg-[#f44336]/10 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+   202→  3332→                      >
+   203→  3333→                        Select All ({Math.min(generatedTeams.length, existingTeams.length)})
+   204→  3334→                      </button>
+   205→  3335→                      <button
+   206→  3336→                        onClick={() => setSelectedReplaceIds(new Set())}
+   207→  3337→                        disabled={selectedReplaceIds.size === 0}
+   208→  3338→                        className="flex-1 py-1.5 rounded-lg text-xs font-semibold border-2 border-gray-200 bg-white text-gray-500 hover:bg-gray-50 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+   209→  3339→                      >
+   210→  3340→                        Deselect All
+   211→  3341→                      </button>
+   212→  3342→                    </div>
+   213→  3343→                    <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
+   214→  3344→                      {existingTeams.map((team) => {
+   215→  3345→                        const isSelected = selectedReplaceIds.has(team.id)
+   216→  3346→                        const maxSelectable = Math.min(generatedTeams.length, existingTeams.length)
+   217→  3347→                        return (
+   218→  3348→                          <button
+   219→  3349→                            key={team.id}
+   220→  3350→                            onClick={() => {
+   221→  3351→                              setSelectedReplaceIds(prev => {
+   222→  3352→                                const next = new Set(prev)
+   223→  3353→                                if (next.has(team.id)) {
+   224→  3354→                                  next.delete(team.id)
+   225→  3355→                                } else if (next.size < maxSelectable) {
+   226→  3356→                                  next.add(team.id)
+   227→  3357→                                }
+   228→  3358→                                return next
+   229→  3359→                              })
+   230→  3360→                            }}
+   231→  3361→                            className={`w-full text-left rounded-lg border-2 p-2.5 transition-all ${
+   232→  3362→                              isSelected
+   233→  3363→                                ? 'border-[#f44336] bg-[#f44336]/5'
+   234→  3364→                                : selectedReplaceIds.size >= maxSelectable
+   235→  3365→                                  ? 'border-gray-200 bg-white opacity-50 cursor-not-allowed'
+   236→  3366→                                  : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50'
+   237→  3367→                            }`}
+   238→  3368→                          >
+   239→  3369→                            <div className="flex items-center gap-2">
+   240→  3370→                              <div className={`w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 ${
+   241→  3371→                                isSelected ? 'border-[#f44336] bg-[#f44336]' : 'border-gray-300'
+   242→  3372→                              }`}>
+   243→  3373→                                {isSelected && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
+   244→  3374→                              </div>
+   245→  3375→                              <div className="flex-1 min-w-0">
+   246→  3376→                                <p className="text-sm font-medium text-gray-900 truncate">{team.name}</p>
+   247→  3377→                                <div className="flex items-center gap-2 text-xs text-gray-500">
+   248→  3378→                                  {team.captain && <span>C: {team.captain}</span>}
+   249→  3379→                                  {team.players && <span>{team.players} players</span>}
+   250→  3380→                                  <span className="text-gray-400">ID: {team.id}</span>
+   251→  3381→                                </div>
+   252→  3382→                              </div>
+   253→  3383→                            </div>
+   254→  3384→                          </button>
+   255→  3385→                        )
+   256→  3386→                      })}
+   257→  3387→                    </div>
+   258→  3388→                    {selectedReplaceIds.size > 0 && (
+   259→  3389→                      <div className="bg-[#f44336]/5 border border-[#f44336]/20 rounded-lg p-2 text-xs">
+   260→  3390→                        <span className="text-[#f44336] font-semibold">{selectedReplaceIds.size}</span> of {Math.min(generatedTeams.length, existingTeams.length)} teams selected —
+   261→  3391→                        each selected team will be replaced by a generated team
+   262→  3392→                      </div>
+   263→  3393→                    )}
+   264→  3394→                  </>
+   265→  3395→                )}
+   266→  3396→              </div>
+   267→  3397→            )}
+   268→  3398→
+   269→  3399→            {/* Transfer summary before start */}
+   270→  3400→            {transferProgress.status === 'idle' && (
+   271→  3401→              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+   272→  3402→                <div className="flex items-center justify-between text-sm">
+   273→  3403→                  <span className="text-gray-600">Teams</span>
+   274→  3404→                  <span className="font-semibold text-gray-900">
+   275→  3405→                    {transferOption === 'replace' ? Math.min(selectedReplaceIds.size, generatedTeams.length) : generatedTeams.length}
+   276→  3406→                  </span>
+   277→  3407→                </div>
+   278→  3408→                <div className="flex items-center justify-between text-sm mt-1">
+   279→  3409→                  <span className="text-gray-600">Mode</span>
+   280→  3410→                  <span className="font-semibold text-gray-900">
+   281→  3411→                    {transferOption === 'new' ? 'New Team' : transferOption === 'existing' ? 'Existing Team' : 'Replace Team'}
+   282→  3412→                  </span>
+   283→  3413→                </div>
+   284→  3414→                {transferOption === 'replace' && selectedReplaceIds.size > 0 && (
+   285→  3415→                  <div className="flex items-center justify-between text-sm mt-1">
+   286→  3416→                    <span className="text-gray-600">Replacing</span>
+   287→  3417→                    <span className="font-semibold text-[#f44336]">{selectedReplaceIds.size} existing team{selectedReplaceIds.size > 1 ? 's' : ''}</span>
+   288→  3418→                  </div>
+   289→  3419→                )}
+   290→  3420→                <div className="flex items-center justify-between text-sm mt-1">
+   291→  3421→                  <span className="text-gray-600">Platform</span>
+   292→  3422→                  <span className="font-semibold text-gray-900">{transferPlatform === 'dream11' ? 'Dream11' : 'My11Circle'}</span>
+   293→  3423→                </div>
+   294→  3424→                <div className="flex items-center justify-between text-sm mt-1">
+   295→  3425→                  <span className="text-gray-600">Rate limit</span>
+   296→  3426→                  <span className="font-semibold text-gray-900">{transferPlatform === 'dream11' ? '200ms' : '2000ms'} between teams</span>
+   297→  3427→                </div>
+   298→  3428→              </div>
+   299→  3429→            )}
+   300→  3430→
+   301→  3431→            {/* Live per-team progress during transfer */}
+   302→  3432→            {transferProgress.status === 'transferring' && (
+   303→  3433→              <div className="space-y-3">
+   304→  3434→                {/* Overall progress bar */}
+   305→  3435→                <div className="bg-[#6C63FF]/5 border border-[#6C63FF]/20 rounded-lg p-3">
+   306→  3436→                  <div className="flex items-center justify-between mb-2">
+   307→  3437→                    <span className="text-sm font-semibold text-[#6C63FF]">Transferring teams...</span>
+   308→  3438→                    <span className="text-sm font-bold text-[#6C63FF]">{transferProgress.current}/{transferProgress.total}</span>
+   309→  3439→                  </div>
+   310→  3440→                  <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+   311→  3441→                    <div
+   312→  3442→                      className="bg-[#6C63FF] h-3 rounded-full transition-all duration-300 ease-out"
+   313→  3443→                      style={{ width: `${(transferProgress.current / transferProgress.total) * 100}%` }}
+   314→  3444→                    />
+   315→  3445→                  </div>
+   316→  3446→                  <div className="flex justify-between mt-2 text-xs text-gray-500">
+   317→  3447→                    <span className="text-green-600 font-medium">✓ {transferSuccessCount} success</span>
+   318→  3448→                    <span className="text-red-500 font-medium">✗ {transferFailCount} failed</span>
+   319→  3449→                  </div>
+   320→  3450→                </div>
+   321→  3451→
+   322→  3452→                {/* Per-team status list (scrollable for many teams) */}
+   323→  3453→                <div className="max-h-48 overflow-y-auto space-y-1 pr-1">
+   324→  3454→                  {transferResults.map((result) => (
+   325→  3455→                    <div key={result.teamNumber} className="flex items-center gap-2 text-xs py-0.5">
+   326→  3456→                      {result.status === 'pending' && (
+   327→  3457→                        <div className="w-3.5 h-3.5 rounded-full bg-gray-200 shrink-0" />
+   328→  3458→                      )}
+   329→  3459→                      {result.status === 'processing' && (
+   330→  3460→                        <Loader2 className="w-3.5 h-3.5 animate-spin text-[#6C63FF] shrink-0" />
+   331→  3461→                      )}
+   332→  3462→                      {result.status === 'success' && (
+   333→  3463→                        <CheckCircle2 className="w-3.5 h-3.5 text-green-500 shrink-0" />
+   334→  3464→                      )}
+   335→  3465→                      {result.status === 'fail' && (
+   336→  3466→                        <X className="w-3.5 h-3.5 text-red-500 shrink-0" />
+   337→  3467→                      )}
+   338→  3468→                      <span className={`font-medium ${
+   339→  3469→                        result.status === 'success' ? 'text-green-600' :
+   340→  3470→                        result.status === 'fail' ? 'text-red-500' :
+   341→  3471→                        result.status === 'processing' ? 'text-[#6C63FF]' :
+   342→  3472→                        'text-gray-400'
+   343→  3473→                      }`}>
+   344→  3474→                        Team {result.teamNumber}
+   345→  3475→                      </span>
+   346→  3476→                      {result.status === 'processing' && (
+   347→  3477→                        <span className="text-gray-400">Processing...</span>
+   348→  3478→                      )}
+   349→  3479→                      {result.status === 'fail' && result.message && (
+   350→  3480→                        <span className="text-red-400 truncate max-w-[200px]">- {result.message}</span>
+   351→  3481→                      )}
+   352→  3482→                    </div>
+   353→  3483→                  ))}
+   354→  3484→                </div>
+   355→  3485→              </div>
+   356→  3486→            )}
+   357→  3487→
+   358→  3488→            {/* Transfer Complete Summary */}
+   359→  3489→            {transferProgress.status === 'done' && (
+   360→  3490→              <div className="space-y-3">
+   361→  3491→                {transferFailCount === 0 ? (
+   362→  3492→                  <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+   363→  3493→                    <div className="flex items-center gap-2 mb-1">
+   364→  3494→                      <CheckCircle2 className="w-5 h-5 text-green-600" />
+   365→  3495→                      <span className="text-sm font-semibold text-green-700">All Teams Transferred!</span>
+   366→  3496→                    </div>
+   367→  3497→                    <p className="text-sm text-green-600">
+   368→  3498→                      {transferSuccessCount} team{transferSuccessCount > 1 ? 's' : ''} successfully transferred to {transferPlatform === 'dream11' ? 'Dream11' : 'My11Circle'}
+   369→  3499→                    </p>
+   370→  3500→                  </div>
+   371→  3501→                ) : transferSuccessCount > 0 ? (
+   372→  3502→                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+   373→  3503→                    <div className="flex items-center gap-2 mb-1">
+   374→  3504→                      <AlertTriangle className="w-5 h-5 text-amber-600" />
+   375→  3505→                      <span className="text-sm font-semibold text-amber-700">Partial Transfer</span>
+   376→  3506→                    </div>
+   377→  3507→                    <p className="text-sm text-amber-600">
+   378→  3508→                      {transferSuccessCount} succeeded, {transferFailCount} failed out of {transferProgress.total} teams
+   379→  3509→                    </p>
+   380→  3510→                  </div>
+   381→  3511→                ) : (
+   382→  3512→                  <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+   383→  3513→                    <div className="flex items-center gap-2 mb-1">
+   384→  3514→                      <X className="w-5 h-5 text-red-600" />
+   385→  3515→                      <span className="text-sm font-semibold text-red-700">Transfer Failed</span>
+   386→  3516→                    </div>
+   387→  3517→                    <p className="text-sm text-red-600">
+   388→  3518→                      All {transferFailCount} team transfers failed
+   389→  3519→                    </p>
+   390→  3520→                  </div>
+   391→  3521→                )}
+   392→  3522→
+   393→  3523→                {/* Per-team results */}
+   394→  3524→                <div className="max-h-40 overflow-y-auto space-y-1 pr-1">
+   395→  3525→                  {transferResults.map((result) => (
+   396→  3526→                    <div key={result.teamNumber} className="flex items-center gap-2 text-xs py-0.5">
+   397→  3527→                      {result.status === 'success' ? (
+   398→  3528→                        <CheckCircle2 className="w-3.5 h-3.5 text-green-500 shrink-0" />
+   399→  3529→                      ) : (
+   400→  3530→                        <X className="w-3.5 h-3.5 text-red-500 shrink-0" />
+   401→  3531→                      )}
+   402→  3532→                      <span className={result.status === 'success' ? 'text-green-600 font-medium' : 'text-red-500 font-medium'}>
+   403→  3533→                        Team {result.teamNumber}
+   404→  3534→                      </span>
+   405→  3535→                      {result.status === 'fail' && result.message && (
+   406→  3536→                        <span className="text-red-400 truncate max-w-[200px]">- {result.message}</span>
+   407→  3537→                      )}
+   408→  3538→                    </div>
+   409→  3539→                  ))}
+   410→  3540→                </div>
+   411→  3541→
+   412→  3542→                <Button
+   413→  3543→                  className="w-full bg-[#6C63FF] hover:bg-[#5B54E0] text-white h-10 text-sm font-semibold"
+   414→  3544→                  onClick={() => {
+   415→  3545→                    setShowTransferDialog(false)
+   416→  3546→                    setTransferProgress({ current: 0, total: 0, status: 'idle' })
+   417→  3547→                    setTransferResults([])
+   418→  3548→                    setTransferSuccessCount(0)
+   419→  3549→                    setTransferFailCount(0)
+   420→  3550→                  }}
+   421→  3551→                >
+   422→  3552→                  Done
+   423→  3553→                </Button>
+   424→  3554→              </div>
+   425→  3555→            )}
+   426→  3556→
+   427→  3557→            {/* Error state */}
+   428→  3558→            {transferProgress.status === 'error' && (
+   429→  3559→              <div className="space-y-3">
+   430→  3560→                <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+   431→  3561→                  <div className="flex items-center gap-2">
+   432→  3562→                    <X className="w-5 h-5 text-red-600" />
+   433→  3563→                    <span className="text-sm font-semibold text-red-700">Cannot Transfer</span>
+   434→  3564→                  </div>
+   435→  3565→                  <p className="text-sm text-red-600 mt-1">
+   436→  3566→                    Please link your {transferPlatform === 'dream11' ? 'Dream11' : 'My11Circle'} account first using OTP login.
+   437→  3567→                  </p>
+   438→  3568→                </div>
+   439→  3569→                <Button
+   440→  3570→                  variant="outline"
+   441→  3571→                  className="w-full h-10 text-sm font-semibold"
+   442→  3572→                  onClick={() => {
+   443→  3573→                    setShowTransferDialog(false)
+   444→  3574→                    setLoginPlatform(transferPlatform)
+   445→  3575→                    setShowLoginDialog(true)
+   446→  3576→                    setTransferProgress({ current: 0, total: 0, status: 'idle' })
+   447→  3577→                  }}
+   448→  3578→                >
+   449→  3579→                  <Phone className="w-4 h-4 mr-2" />
+   450→  3580→                  Link {transferPlatform === 'dream11' ? 'Dream11' : 'My11Circle'} Account
+   451→  3581→                </Button>
+   452→  3582→              </div>
+   453→  3583→            )}
+   454→  3584→
+   455→  3585→            {/* Transfer Button (shown before transfer starts) */}
+   456→  3586→            {transferProgress.status === 'idle' && (
+   457→  3587→              <Button
+   458→  3588→                className="w-full bg-[#6C63FF] hover:bg-[#5B54E0] text-white h-12 text-sm font-semibold"
+   459→  3589→                disabled={transferring || !fantasyAccounts[transferPlatform!]?.authToken || (transferOption === 'replace' && selectedReplaceIds.size === 0)}
+   460→  3590→                onClick={handleTransfer}
+   461→  3591→              >
+   462→  3592→                <Share2 className="w-4 h-4 mr-2" />
+   463→  3593→                {transferOption === 'replace'
+   464→  3594→                  ? `Replace ${selectedReplaceIds.size} Team${selectedReplaceIds.size !== 1 ? 's' : ''}`
+   465→  3595→                  : `Transfer ${generatedTeams.length} Team${generatedTeams.length > 1 ? 's' : ''} (${transferOption === 'new' ? 'New' : 'Existing'})`
+   466→  3596→                }
+   467→  3597→              </Button>
+   468→  3598→            )}
+   469→  3599→          </div>
+   470→  3600→        </DialogContent>
+   471→  3601→      </Dialog>
+   472→  3602→
+   473→  3603→      {/* ============ EXTRA TEAM PLAYER PICKER DIALOG ============ */}
+   474→  3604→      <Dialog open={extraPlayerPickerOpen !== null} onOpenChange={(open) => { if (!open) setExtraPlayerPickerOpen(null) }}>
+   475→  3605→        <DialogContent className="max-w-[90vw] max-h-[80vh] overflow-y-auto">
+   476→  3606→          <DialogTitle className="sr-only">
+   477→  3607→            Select Player
+   478→  3608→          </DialogTitle>
+   479→  3609→          <button
+   480→  3610→            onClick={() => setExtraPlayerPickerOpen(null)}
+   481→  3611→            className="absolute top-3 right-3 p-1 hover:bg-gray-100 rounded-md z-10"
+   482→  3612→          >
+   483→  3613→            <X className="w-4 h-4" />
+   484→  3614→          </button>
+   485→  3615→
+   486→  3616→          {matchDetail && extraPlayerPickerOpen && (
+   487→  3617→            <div className="space-y-3">
+   488→  3618→              {/* Title */}
+   489→  3619→              <div className="flex items-center gap-2">
+   490→  3620→                {extraPlayerPickerOpen === 'fix' && (
+   491→  3621→                  <>
+   492→  3622→                    <Users className="w-5 h-5 text-[#6C63FF]" />
+   493→  3623→                    <div>
+   494→  3624→                      <h3 className="text-sm font-bold text-gray-900">Select Fix Player {extraPlayerPickerSlot + 1}</h3>
+   495→  3625→                      <p className="text-xs text-gray-500">{extraFixedPlayers.length}/8 selected</p>
+   496→  3626→                    </div>
+   497→  3627→                  </>
+   498→  3628→                )}
+   499→  3629→                {extraPlayerPickerOpen === 'captain' && (
+   500→  3630→                  <>
+   501→
+   502→[showing lines 3131-3630 of 3874; use offset=3631 with limit to continue reading]

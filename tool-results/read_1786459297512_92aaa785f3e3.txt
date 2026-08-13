@@ -1,0 +1,1742 @@
+     1→import CryptoJS from 'crypto-js';
+     2→
+     3→const ENCRYPTION_KEY = 'coder_bobby_believer01_tg_software';
+     4→const TG_API_BASE = 'https://tgsoftware-api.online/api';
+     5→
+     6→// ============ Platform Name Normalization ============
+     7→
+     8→/**
+     9→ * Normalize platform names to consistent lowercase identifiers.
+    10→ * The TG API may return varied casing in fantasy_id_list[].name
+    11→ * (e.g., "Dream11", "dream11", "My11Circle", "my11circle").
+    12→ * All internal references use lowercase: "dream11", "my11circle".
+    13→ */
+    14→export function normalizePlatformName(name: string): string {
+    15→  return name.toLowerCase().replace(/[\s_-]/g, '');
+    16→}
+    17→
+    18→/**
+    19→ * Resolve a player's platform-specific ID from their fantasy_id_list.
+    20→ * Uses case-insensitive matching to handle API casing variations.
+    21→ */
+    22→export function resolvePlatformPlayerId(
+    23→  player: TGPlayer,
+    24→  platform: string,
+    25→): number | null {
+    26→  if (!player.fantasy_id_list || player.fantasy_id_list.length === 0) return null;
+    27→  const target = normalizePlatformName(platform);
+    28→  const found = player.fantasy_id_list.find(
+    29→    f => normalizePlatformName(f.name) === target
+    30→  );
+    31→  return found ? found.id : null;
+    32→}
+    33→
+    34→// Player role constants
+    35→export const PLAYER_ROLES = {
+    36→  BATSMAN: 0,
+    37→  WICKET_KEEPER: 1,
+    38→  ALL_ROUNDER: 2,
+    39→  BOWLER: 3,
+    40→} as const;
+    41→
+    42→export function getRoleName(role: number): string {
+    43→  switch (role) {
+    44→    case 0: return 'Batsman';
+    45→    case 1: return 'Wicket Keeper';
+    46→    case 2: return 'All-Rounder';
+    47→    case 3: return 'Bowler';
+    48→    default: return 'Unknown';
+    49→  }
+    50→}
+    51→
+    52→export function getRoleShort(role: number): string {
+    53→  switch (role) {
+    54→    case 0: return 'BAT';
+    55→    case 1: return 'WK';
+    56→    case 2: return 'AR';
+    57→    case 3: return 'BOWL';
+    58→    default: return '?';
+    59→  }
+    60→}
+    61→
+    62→// ============ Lineup Utilities ============
+    63→
+    64→/**
+    65→ * Determine lineup mode based on player data.
+    66→ * AFTER LINEUP: enough players have playing === 1 to form valid teams.
+    67→ *   Requires at least 11 confirmed total AND at least 4 from each team
+    68→ *   (due to max-7-from-one-team constraint: 11 - 7 = 4).
+    69→ *   If only a few players are confirmed (partial lineup), we stay in
+    70→ *   'before' mode so team generation doesn't fail with too few eligible players.
+    71→ * BEFORE LINEUP: lineup not fully confirmed yet — all players eligible.
+    72→ *
+    73→ * BUG FIX: Previously used players.some(p => p.playing === 1) which
+    74→ * switched to 'after' mode when even ONE player was confirmed, causing
+    75→ * getEligiblePlayers to filter out all non-confirmed players and leaving
+    76→ * too few to form valid 11-player teams → 0 teams generated.
+    77→ */
+    78→export function getLineupMode(players: TGPlayer[]): 'before' | 'after' {
+    79→  const confirmed = players.filter(p => p.playing === 1);
+    80→
+    81→  // Need at least 11 confirmed players total to form a valid team
+    82→  if (confirmed.length < 11) return 'before';
+    83→
+    84→  // Need at least 4 confirmed from each team
+    85→  // (max 7 from one team → need at least 11-7=4 from the other)
+    86→  const teamNames = [...new Set(players.map(p => p.team_name))];
+    87→  for (const team of teamNames) {
+    88→    if (team && confirmed.filter(p => p.team_name === team).length < 4) {
+    89→      return 'before';
+    90→    }
+    91→  }
+    92→
+    93→  return 'after';
+    94→}
+    95→
+    96→/**
+    97→ * Filter players based on lineup mode.
+    98→ * BEFORE LINEUP: all players are eligible (no one confirmed OUT yet).
+    99→ * AFTER LINEUP: ONLY players with playing === 1 are eligible.
+   100→ */
+   101→export function getEligiblePlayers(
+   102→  allPlayers: TGPlayer[],
+   103→  avoidPlayerIds: Set<number> = new Set(),
+   104→): TGPlayer[] {
+   105→  const mode = getLineupMode(allPlayers);
+   106→
+   107→  return allPlayers.filter(p => {
+   108→    // Avoid players are always excluded
+   109→    if (avoidPlayerIds.has(p.pl_id)) return false;
+   110→
+   111→    if (mode === 'after') {
+   112→      // AFTER LINEUP: ONLY confirmed Playing XI players
+   113→      return p.playing === 1;
+   114→    }
+   115→
+   116→    // BEFORE LINEUP: all players eligible
+   117→    return true;
+   118→  });
+   119→}
+   120→
+   121→/**
+   122→ * Check if a specific player is eligible based on lineup mode.
+   123→ */
+   124→export function isPlayerEligible(
+   125→  player: TGPlayer,
+   126→  allPlayers: TGPlayer[],
+   127→  avoidPlayerIds: Set<number> = new Set(),
+   128→): { eligible: boolean; reason?: string } {
+   129→  if (avoidPlayerIds.has(player.pl_id)) {
+   130→    return { eligible: false, reason: 'AVOID' };
+   131→  }
+   132→
+   133→  const mode = getLineupMode(allPlayers);
+   134→
+   135→  if (mode === 'after' && player.playing !== 1) {
+   136→    return { eligible: false, reason: 'OUT / NOT IN PLAYING XI' };
+   137→  }
+   138→
+   139→  return { eligible: true };
+   140→}
+   141→
+   142→/**
+   143→ * Validate a team for lineup eligibility.
+   144→ * Returns list of invalid players with reasons.
+   145→ */
+   146→export function validateTeamForLineup(
+   147→  team: GeneratedTeam,
+   148→  allPlayers: TGPlayer[],
+   149→  avoidPlayerIds: Set<number> = new Set(),
+   150→): { valid: boolean; invalidPlayers: { player: TGPlayer; reason: string }[] } {
+   151→  const mode = getLineupMode(allPlayers);
+   152→  const invalidPlayers: { player: TGPlayer; reason: string }[] = [];
+   153→
+   154→  for (const player of team.players) {
+   155→    if (avoidPlayerIds.has(player.pl_id)) {
+   156→      invalidPlayers.push({ player, reason: 'AVOID' });
+   157→      continue;
+   158→    }
+   159→
+   160→    if (mode === 'after' && player.playing !== 1) {
+   161→      invalidPlayers.push({ player, reason: 'OUT / NOT IN PLAYING XI' });
+   162→    }
+   163→  }
+   164→
+   165→  return { valid: invalidPlayers.length === 0, invalidPlayers };
+   166→}
+   167→
+   168→// ============ Combination Utilities ============
+   169→
+   170→export interface RoleCombination {
+   171→  wk: number;
+   172→  bat: number;
+   173→  ar: number;
+   174→  bowl: number;
+   175→}
+   176→
+   177→export type CombinationMode = 'manual' | 'auto';
+   178→
+   179→/**
+   180→ * Get all valid role combinations for an 11-player cricket team.
+   181→ */
+   182→export function getAllValidCombinations(): RoleCombination[] {
+   183→  const combos: RoleCombination[] = [];
+   184→  for (let wk = MIN_WK; wk <= MAX_WK; wk++) {
+   185→    for (let bat = MIN_BAT; bat <= MAX_BAT; bat++) {
+   186→      for (let ar = MIN_AR; ar <= MAX_AR; ar++) {
+   187→        const bowl = CRICKET_TEAM_SIZE - wk - bat - ar;
+   188→        if (bowl < MIN_BOWL || bowl > MAX_BOWL) continue;
+   189→        combos.push({ wk, bat, ar, bowl });
+   190→      }
+   191→    }
+   192→  }
+   193→  return combos;
+   194→}
+   195→
+   196→/**
+   197→ * Check if a role combination is compatible with a set of fixed players.
+   198→ */
+   199→export function isCombinationCompatibleWithFixed(
+   200→  combo: RoleCombination,
+   201→  fixedPlayers: TGPlayer[],
+   202→): boolean {
+   203→  const fixedWK = fixedPlayers.filter(p => p.role === PLAYER_ROLES.WICKET_KEEPER).length;
+   204→  const fixedBat = fixedPlayers.filter(p => p.role === PLAYER_ROLES.BATSMAN).length;
+   205→  const fixedAR = fixedPlayers.filter(p => p.role === PLAYER_ROLES.ALL_ROUNDER).length;
+   206→  const fixedBowl = fixedPlayers.filter(p => p.role === PLAYER_ROLES.BOWLER).length;
+   207→
+   208→  // Fixed players must not exceed combination totals
+   209→  if (fixedWK > combo.wk) return false;
+   210→  if (fixedBat > combo.bat) return false;
+   211→  if (fixedAR > combo.ar) return false;
+   212→  if (fixedBowl > combo.bowl) return false;
+   213→
+   214→  // Remaining slots must be fillable
+   215→  const remainingPlayers = CRICKET_TEAM_SIZE - fixedPlayers.length;
+   216→  const neededWK = combo.wk - fixedWK;
+   217→  const neededBat = combo.bat - fixedBat;
+   218→  const neededAR = combo.ar - fixedAR;
+   219→  const neededBowl = combo.bowl - fixedBowl;
+   220→
+   221→  return (neededWK + neededBat + neededAR + neededBowl) === remainingPlayers;
+   222→}
+   223→
+   224→/**
+   225→ * Get combinations compatible with fixed players and available player pool.
+   226→ */
+   227→export function getCompatibleCombinations(
+   228→  fixedPlayers: TGPlayer[],
+   229→  eligiblePlayers: TGPlayer[],
+   230→): RoleCombination[] {
+   231→  const all = getAllValidCombinations();
+   232→  const fixedIds = new Set(fixedPlayers.map(p => p.pl_id));
+   233→  const remaining = eligiblePlayers.filter(p => !fixedIds.has(p.pl_id));
+   234→
+   235→  const remWK = remaining.filter(p => p.role === PLAYER_ROLES.WICKET_KEEPER).length;
+   236→  const remBat = remaining.filter(p => p.role === PLAYER_ROLES.BATSMAN).length;
+   237→  const remAR = remaining.filter(p => p.role === PLAYER_ROLES.ALL_ROUNDER).length;
+   238→  const remBowl = remaining.filter(p => p.role === PLAYER_ROLES.BOWLER).length;
+   239→
+   240→  return all.filter(combo => {
+   241→    if (!isCombinationCompatibleWithFixed(combo, fixedPlayers)) return false;
+   242→
+   243→    const fixedWK = fixedPlayers.filter(p => p.role === PLAYER_ROLES.WICKET_KEEPER).length;
+   244→    const fixedBat = fixedPlayers.filter(p => p.role === PLAYER_ROLES.BATSMAN).length;
+   245→    const fixedAR = fixedPlayers.filter(p => p.role === PLAYER_ROLES.ALL_ROUNDER).length;
+   246→    const fixedBowl = fixedPlayers.filter(p => p.role === PLAYER_ROLES.BOWLER).length;
+   247→
+   248→    if (remWK < combo.wk - fixedWK) return false;
+   249→    if (remBat < combo.bat - fixedBat) return false;
+   250→    if (remAR < combo.ar - fixedAR) return false;
+   251→    if (remBowl < combo.bowl - fixedBowl) return false;
+   252→
+   253→    return true;
+   254→  });
+   255→}
+   256→
+   257→/**
+   258→ * Auto-select the best combination based on player pool and category.
+   259→ * For multiple teams, rotates combinations intelligently.
+   260→ */
+   261→export function autoSelectCombination(
+   262→  eligiblePlayers: TGPlayer[],
+   263→  category: string,
+   264→  fixedPlayers: TGPlayer[] = [],
+   265→  teamIndex: number = 0,
+   266→): RoleCombination {
+   267→  const compatible = getCompatibleCombinations(fixedPlayers, eligiblePlayers);
+   268→
+   269→  if (compatible.length === 0) {
+   270→    return { wk: 1, bat: 4, ar: 2, bowl: 4 };
+   271→  }
+   272→
+   273→  // Category-preferred patterns
+   274→  const preferredPatterns: RoleCombination[] =
+   275→    category === 'H2H'
+   276→      ? [{ wk: 1, bat: 5, ar: 2, bowl: 3 }, { wk: 1, bat: 4, ar: 2, bowl: 4 }, { wk: 1, bat: 3, ar: 3, bowl: 4 }]
+   277→      : category === 'SL'
+   278→      ? [{ wk: 1, bat: 4, ar: 2, bowl: 4 }, { wk: 1, bat: 3, ar: 3, bowl: 4 }, { wk: 2, bat: 3, ar: 2, bowl: 4 }]
+   279→      : [ // Mega GL
+   280→        { wk: 1, bat: 3, ar: 2, bowl: 5 }, { wk: 1, bat: 4, ar: 1, bowl: 5 },
+   281→        { wk: 1, bat: 3, ar: 3, bowl: 4 }, { wk: 1, bat: 4, ar: 2, bowl: 4 },
+   282→        { wk: 2, bat: 3, ar: 2, bowl: 4 }, { wk: 1, bat: 5, ar: 1, bowl: 4 },
+   283→        { wk: 2, bat: 3, ar: 1, bowl: 5 }, { wk: 1, bat: 4, ar: 3, bowl: 3 },
+   284→        { wk: 2, bat: 4, ar: 1, bowl: 4 }, { wk: 1, bat: 3, ar: 1, bowl: 6 },
+   285→        { wk: 2, bat: 2, ar: 3, bowl: 4 }, { wk: 1, bat: 5, ar: 2, bowl: 3 },
+   286→      ];
+   287→
+   288→  const preferredCompatible = preferredPatterns.filter(p =>
+   289→    compatible.some(c => c.wk === p.wk && c.bat === p.bat && c.ar === p.ar && c.bowl === p.bowl)
+   290→  );
+   291→
+   292→  const pool = preferredCompatible.length > 0 ? preferredCompatible : compatible;
+   293→  const index = teamIndex % pool.length;
+   294→
+   295→  return pool[index];
+   296→}
+   297→
+   298→/**
+   299→ * Validate a manual combination against available players.
+   300→ */
+   301→export function validateCombination(
+   302→  combo: RoleCombination,
+   303→  eligiblePlayers: TGPlayer[],
+   304→  fixedPlayers: TGPlayer[] = [],
+   305→): { valid: boolean; errors: string[] } {
+   306→  const errors: string[] = [];
+   307→
+   308→  if (combo.wk + combo.bat + combo.ar + combo.bowl !== CRICKET_TEAM_SIZE) {
+   309→    errors.push(`Total players must be 11 (got ${combo.wk + combo.bat + combo.ar + combo.bowl})`);
+   310→  }
+   311→
+   312→  if (combo.wk < MIN_WK || combo.wk > MAX_WK) errors.push(`WK must be ${MIN_WK}-${MAX_WK}`);
+   313→  if (combo.bat < MIN_BAT || combo.bat > MAX_BAT) errors.push(`BAT must be ${MIN_BAT}-${MAX_BAT}`);
+   314→  if (combo.ar < MIN_AR || combo.ar > MAX_AR) errors.push(`AR must be ${MIN_AR}-${MAX_AR}`);
+   315→  if (combo.bowl < MIN_BOWL || combo.bowl > MAX_BOWL) errors.push(`BOWL must be ${MIN_BOWL}-${MAX_BOWL}`);
+   316→
+   317→  if (fixedPlayers.length > 0 && !isCombinationCompatibleWithFixed(combo, fixedPlayers)) {
+   318→    errors.push('Combination is not compatible with selected fixed players');
+   319→  }
+   320→
+   321→  const fixedIds = new Set(fixedPlayers.map(p => p.pl_id));
+   322→  const remaining = eligiblePlayers.filter(p => !fixedIds.has(p.pl_id));
+   323→
+   324→  const fixedWK = fixedPlayers.filter(p => p.role === PLAYER_ROLES.WICKET_KEEPER).length;
+   325→  const fixedBat = fixedPlayers.filter(p => p.role === PLAYER_ROLES.BATSMAN).length;
+   326→  const fixedAR = fixedPlayers.filter(p => p.role === PLAYER_ROLES.ALL_ROUNDER).length;
+   327→  const fixedBowl = fixedPlayers.filter(p => p.role === PLAYER_ROLES.BOWLER).length;
+   328→
+   329→  const needWK = Math.max(0, combo.wk - fixedWK);
+   330→  const needBat = Math.max(0, combo.bat - fixedBat);
+   331→  const needAR = Math.max(0, combo.ar - fixedAR);
+   332→  const needBowl = Math.max(0, combo.bowl - fixedBowl);
+   333→
+   334→  const availWK = remaining.filter(p => p.role === PLAYER_ROLES.WICKET_KEEPER).length;
+   335→  const availBat = remaining.filter(p => p.role === PLAYER_ROLES.BATSMAN).length;
+   336→  const availAR = remaining.filter(p => p.role === PLAYER_ROLES.ALL_ROUNDER).length;
+   337→  const availBowl = remaining.filter(p => p.role === PLAYER_ROLES.BOWLER).length;
+   338→
+   339→  if (availWK < needWK) errors.push(`Need ${needWK} WK but only ${availWK} available`);
+   340→  if (availBat < needBat) errors.push(`Need ${needBat} BAT but only ${availBat} available`);
+   341→  if (availAR < needAR) errors.push(`Need ${needAR} AR but only ${availAR} available`);
+   342→  if (availBowl < needBowl) errors.push(`Need ${needBowl} BOWL but only ${availBowl} available`);
+   343→
+   344→  return { valid: errors.length === 0, errors };
+   345→}
+   346→
+   347→export interface TGPlayer {
+   348→  name: string;
+   349→  image: string;
+   350→  playing: number;
+   351→  last_play: number;
+   352→  last_play_text: string;
+   353→  role: number;
+   354→  credits: number;
+   355→  points: number;
+   356→  selected_by: number;
+   357→  captain_percentage: number;
+   358→  vice_captain_percentage: number;
+   359→  team_index: number;
+   360→  team_name: string;
+   361→  player_fixed_id: number;
+   362→  pl_id: number;
+   363→  player_type: string;
+   364→  fantasy_id_list: { name: string; id: number }[];
+   365→  player_index: number;
+   366→}
+   367→
+   368→export interface TGMatch {
+   369→  _id: string;
+   370→  id: string;
+   371→  tour_id: string;
+   372→  left_team_name: string;
+   373→  right_team_name: string;
+   374→  left_team_image: string;
+   375→  right_team_image: string;
+   376→  series_name: string;
+   377→  match_time: string;
+   378→  sport_index: number;
+   379→  lineup_out: number;
+   380→  automatic: boolean;
+   381→  match_type: string;
+   382→  apiSource: string | null;
+   383→  prime_team: number;
+   384→  prime_booking: number;
+   385→  group_team: unknown[];
+   386→  group_booking: unknown[];
+   387→  expert_video: number;
+   388→  expert_teams: number;
+   389→  expert_prediction: number;
+   390→  direct_teams: number;
+   391→  cb11_key: string;
+   392→  fantasy_list: string[];
+   393→  createdAt: string;
+   394→  categories: string[];
+   395→}
+   396→
+   397→export interface TGMatchDetail {
+   398→  _id: string;
+   399→  id: string;
+   400→  left_team_name: string;
+   401→  right_team_name: string;
+   402→  left_team_image: string;
+   403→  right_team_image: string;
+   404→  match_time: string;
+   405→  match_type: string;
+   406→  sport_index: number;
+   407→  lineup_status: number;
+   408→  toss: string;
+   409→  left_team_players: TGPlayer[];
+   410→  right_team_players: TGPlayer[];
+   411→  fantasy_version: { name: string; version: number }[];
+   412→}
+   413→
+   414→export interface TGPromotion {
+   415→  _id: string;
+   416→  label: string;
+   417→  imageUrl: string;
+   418→  notificationUrl: string;
+   419→  urlType: number;
+   420→  order: number;
+   421→  active: boolean;
+   422→  createdAt: string;
+   423→}
+   424→
+   425→function decryptField(encrypted: string): string {
+   426→  try {
+   427→    const bytes = CryptoJS.AES.decrypt(encrypted, ENCRYPTION_KEY);
+   428→    const decrypted = bytes.toString(CryptoJS.enc.Utf8);
+   429→    if (!decrypted) return encrypted;
+   430→    return decrypted;
+   431→  } catch {
+   432→    return encrypted;
+   433→  }
+   434→}
+   435→
+   436→function decryptPlayerData(encrypted: string): TGPlayer | null {
+   437→  try {
+   438→    const decrypted = decryptField(encrypted);
+   439→    const parsed = JSON.parse(decrypted);
+   440→    return {
+   441→      name: parsed.name || '',
+   442→      image: parsed.image || '',
+   443→      playing: parsed.playing ?? 0,
+   444→      last_play: parsed.last_play ?? 0,
+   445→      last_play_text: parsed.last_play_text || '',
+   446→      role: parsed.role ?? 0,
+   447→      credits: parsed.credits ?? 0,
+   448→      points: parsed.points ?? 0,
+   449→      selected_by: parsed.selected_by ?? 0,
+   450→      captain_percentage: parsed.captain_percentage ?? 0,
+   451→      vice_captain_percentage: parsed.vice_captain_percentage ?? 0,
+   452→      team_index: parsed.team_index ?? 0,
+   453→      team_name: parsed.team_name || '',
+   454→      player_fixed_id: parsed.player_fixed_id ?? 0,
+   455→      pl_id: parsed.pl_id ?? 0,
+   456→      player_type: parsed.player_type || '',
+   457→      fantasy_id_list: parsed.fantasy_id_list || [],
+   458→      player_index: parsed.player_index ?? 0,
+   459→    };
+   460→  } catch {
+   461→    return null;
+   462→  }
+   463→}
+   464→
+   465→function decryptMatchData(encryptedMatch: string): TGMatch | null {
+   466→  try {
+   467→    const bytes = CryptoJS.AES.decrypt(encryptedMatch, ENCRYPTION_KEY);
+   468→    const decrypted = bytes.toString(CryptoJS.enc.Utf8);
+   469→    if (!decrypted) return null;
+   470→    const parsed = JSON.parse(decrypted);
+   471→
+   472→    const match: TGMatch = {
+   473→      _id: parsed._id || '',
+   474→      id: parsed.id || '',
+   475→      tour_id: parsed.tour_id || '',
+   476→      left_team_name: parsed.left_team_name || '',
+   477→      right_team_name: parsed.right_team_name || '',
+   478→      left_team_image: parsed.left_team_image || '',
+   479→      right_team_image: parsed.right_team_image || '',
+   480→      series_name: parsed.series_name || '',
+   481→      match_time: parsed.match_time || '',
+   482→      sport_index: parsed.sport_index ?? 0,
+   483→      lineup_out: parsed.lineup_out ?? 0,
+   484→      automatic: parsed.automatic ?? false,
+   485→      match_type: parsed.match_type || 'normal',
+   486→      apiSource: parsed.apiSource || null,
+   487→      prime_team: parsed.prime_team ?? 0,
+   488→      prime_booking: parsed.prime_booking ?? 0,
+   489→      group_team: parsed.group_team || [],
+   490→      group_booking: parsed.group_booking || [],
+   491→      expert_video: parsed.expert_video ?? 0,
+   492→      expert_teams: parsed.expert_teams ?? 0,
+   493→      expert_prediction: parsed.expert_prediction ?? 0,
+   494→      direct_teams: parsed.direct_teams ?? 0,
+   495→      cb11_key: parsed.cb11_key || 'NA',
+   496→      fantasy_list: parsed.fantasy_list || [],
+   497→      createdAt: parsed.createdAt || '',
+   498→      categories: parsed.categories || ['Mega GL', 'SL', 'H2H'],
+   499→    };
+   500→
+   501→    return match;
+   502→  } catch (error) {
+   503→    console.error('Error decrypting match data:', error);
+   504→    return null;
+   505→  }
+   506→}
+   507→
+   508→export async function fetchMatches(sport: string = 'cricket'): Promise<TGMatch[]> {
+   509→  try {
+   510→    const response = await fetch(`${TG_API_BASE}/fantasy/matches/${sport}`, {
+   511→      next: { revalidate: 60 },
+   512→    });
+   513→
+   514→    if (!response.ok) {
+   515→      throw new Error(`Failed to fetch matches: ${response.status}`);
+   516→    }
+   517→
+   518→    const data = await response.json();
+   519→
+   520→    if (data.status !== 'success' || !Array.isArray(data.data)) {
+   521→      return [];
+   522→    }
+   523→
+   524→    const matches: TGMatch[] = [];
+   525→    for (const encryptedMatch of data.data) {
+   526→      const match = decryptMatchData(encryptedMatch);
+   527→      if (match) {
+   528→        matches.push(match);
+   529→      }
+   530→    }
+   531→
+   532→    return matches;
+   533→  } catch (error) {
+   534→    console.error('Error fetching matches:', error);
+   535→    return [];
+   536→  }
+   537→}
+   538→
+   539→export async function fetchMatchDetail(matchId: string | number): Promise<TGMatchDetail | null> {
+   540→  try {
+   541→    const response = await fetch(`${TG_API_BASE}/fantasy/match/${matchId}`, {
+   542→      next: { revalidate: 30 },
+   543→    });
+   544→
+   545→    if (!response.ok) {
+   546→      throw new Error(`Failed to fetch match detail: ${response.status}`);
+   547→    }
+   548→
+   549→    const data = await response.json();
+   550→
+   551→    if (data.status !== 'success' || !data.data) {
+   552→      return null;
+   553→    }
+   554→
+   555→    const raw = data.data;
+   556→
+   557→    // Decrypt player lists
+   558→    const leftPlayers: TGPlayer[] = [];
+   559→    if (Array.isArray(raw.left_team_players)) {
+   560→      for (const ep of raw.left_team_players) {
+   561→        const player = decryptPlayerData(ep);
+   562→        if (player) leftPlayers.push(player);
+   563→      }
+   564→    }
+   565→
+   566→    const rightPlayers: TGPlayer[] = [];
+   567→    if (Array.isArray(raw.right_team_players)) {
+   568→      for (const ep of raw.right_team_players) {
+   569→        const player = decryptPlayerData(ep);
+   570→        if (player) rightPlayers.push(player);
+   571→      }
+   572→    }
+   573→
+   574→    return {
+   575→      _id: raw._id || '',
+   576→      id: raw.id || '',
+   577→      left_team_name: decryptField(raw.left_team_name || ''),
+   578→      right_team_name: decryptField(raw.right_team_name || ''),
+   579→      left_team_image: decryptField(raw.left_team_image || ''),
+   580→      right_team_image: decryptField(raw.right_team_image || ''),
+   581→      match_time: decryptField(raw.match_time || ''),
+   582→      match_type: raw.match_type || 'normal',
+   583→      sport_index: raw.sport_index ?? 0,
+   584→      lineup_status: raw.lineup_status ?? 0,
+   585→      toss: raw.toss || 'NA',
+   586→      left_team_players: leftPlayers,
+   587→      right_team_players: rightPlayers,
+   588→      fantasy_version: raw.fantasy_version || [],
+   589→    };
+   590→  } catch (error) {
+   591→    console.error('Error fetching match detail:', error);
+   592→    return null;
+   593→  }
+   594→}
+   595→
+   596→export async function fetchPromotions(): Promise<TGPromotion[]> {
+   597→  try {
+   598→    const response = await fetch(`${TG_API_BASE}/promotion/getlist`, {
+   599→      next: { revalidate: 300 },
+   600→    });
+   601→
+   602→    if (!response.ok) {
+   603→      throw new Error(`Failed to fetch promotions: ${response.status}`);
+   604→    }
+   605→
+   606→    const data = await response.json();
+   607→
+   608→    if (data.status !== 'success' || !Array.isArray(data.data)) {
+   609→      return [];
+   610→    }
+   611→
+   612→    return data.data
+   613→      .filter((p: TGPromotion) => p.active)
+   614→      .sort((a: TGPromotion, b: TGPromotion) => a.order - b.order);
+   615→  } catch (error) {
+   616→    console.error('Error fetching promotions:', error);
+   617→    return [];
+   618→  }
+   619→}
+   620→
+   621→// ============ Team Generation Algorithm ============
+   622→
+   623→export interface GeneratedTeam {
+   624→  id: number;
+   625→  captain: TGPlayer;
+   626→  viceCaptain: TGPlayer;
+   627→  players: TGPlayer[];
+   628→}
+   629→
+   630→// ============ Generation Debug Info ============
+   631→
+   632→export interface GenerationDebugInfo {
+   633→  generationMode: 'NORMAL' | 'EXTRA';
+   634→  category: string;
+   635→  combinationMode: 'MANUAL' | 'AUTO';
+   636→  requestedTeams: number;
+   637→  generatedTeams: number;
+   638→  duplicateRemoved: number;
+   639→  invalidLineupRemoved: number;
+   640→  validTeams: number;
+   641→  strategyUsed: string;
+   642→  lineupMode: 'before' | 'after';
+   643→  eligiblePlayers: number;
+   644→  totalPlayers: number;
+   645→  seed: number;
+   646→}
+   647→
+   648→export interface GenerationResult {
+   649→  teams: GeneratedTeam[];
+   650→  debug: GenerationDebugInfo;
+   651→}
+   652→
+   653→// ============ Team Signature & Deduplication ============
+   654→
+   655→/**
+   656→ * Create a unique signature for a team based on sorted player IDs + C/VC IDs.
+   657→ * Used for deduplication — two teams with identical signatures are duplicates.
+   658→ */
+   659→export function makeTeamSignature(players: TGPlayer[], captain: TGPlayer, viceCaptain: TGPlayer): string {
+   660→  const playerIds = players.map(p => p.pl_id).sort((a, b) => a - b).join(',');
+   661→  return `${playerIds}|C${captain.pl_id}|VC${viceCaptain.pl_id}`;
+   662→}
+   663→
+   664→/**
+   665→ * Deduplicate and validate a list of generated teams.
+   666→ * Removes exact duplicate player combinations.
+   667→ * Separates valid and invalid teams based on lineup eligibility.
+   668→ *
+   669→ * Returns: { valid, invalid, duplicateCount, invalidLineupCount }
+   670→ */
+   671→export function deduplicateAndValidateTeams(
+   672→  teams: GeneratedTeam[],
+   673→  allPlayers: TGPlayer[],
+   674→  avoidPlayerIds: Set<number> = new Set(),
+   675→): {
+   676→  valid: GeneratedTeam[];
+   677→  invalid: GeneratedTeam[];
+   678→  duplicateCount: number;
+   679→  invalidLineupCount: number;
+   680→} {
+   681→  const seen = new Set<string>();
+   682→  const valid: GeneratedTeam[] = [];
+   683→  const invalid: GeneratedTeam[] = [];
+   684→  let duplicateCount = 0;
+   685→  let invalidLineupCount = 0;
+   686→
+   687→  for (let i = 0; i < teams.length; i++) {
+   688→    const team = teams[i];
+   689→    const sig = makeTeamSignature(team.players, team.captain, team.viceCaptain);
+   690→
+   691→    // Skip duplicates
+   692→    if (seen.has(sig)) {
+   693→      duplicateCount++;
+   694→      continue;
+   695→    }
+   696→    seen.add(sig);
+   697→
+   698→    // Check lineup validity
+   699→    const validation = validateTeamForLineup(team, allPlayers, avoidPlayerIds);
+   700→    if (!validation.valid) {
+   701→      invalidLineupCount++;
+   702→      invalid.push({ ...team, id: invalid.length + 1 });
+   703→    } else {
+   704→      valid.push({ ...team, id: valid.length + 1 });
+   705→    }
+   706→  }
+   707→
+   708→  return { valid, invalid, duplicateCount, invalidLineupCount };
+   709→}
+   710→
+   711→// Cricket team constraints
+   712→export const CRICKET_TEAM_SIZE = 11;
+   713→export const MIN_WK = 1;
+   714→export const MAX_WK = 4;
+   715→export const MIN_BAT = 3;
+   716→export const MAX_BAT = 6;
+   717→export const MIN_AR = 1;
+   718→export const MAX_AR = 4;
+   719→export const MIN_BOWL = 3;
+   720→export const MAX_BOWL = 6;
+   721→export const MAX_CREDITS = 100;
+   722→export const MAX_FROM_ONE_TEAM = 7;
+   723→
+   724→function seededRandom(seed: number): () => number {
+   725→  let s = seed;
+   726→  return () => {
+   727→    s = (s * 16807 + 0) % 2147483647;
+   728→    return (s - 1) / 2147483646;
+   729→  };
+   730→}
+   731→
+   732→function shuffleArray<T>(arr: T[], rng: () => number): T[] {
+   733→  const result = [...arr];
+   734→  for (let i = result.length - 1; i > 0; i--) {
+   735→    const j = Math.floor(rng() * (i + 1));
+   736→    [result[i], result[j]] = [result[j], result[i]];
+   737→  }
+   738→  return result;
+   739→}
+   740→
+   741→/**
+   742→ * Category-specific C/VC scoring functions.
+   743→ * Each category has a genuinely different strategy for selecting Captain and Vice-Captain.
+   744→ *
+   745→ * Mega GL: Prioritize differential captains (low selection % but high points).
+   746→ *          Wider C/VC rotation across teams — different C/VC per team.
+   747→ * SL:      Prioritize consistent/form players. Higher weight on selection % and captain %.
+   748→ *          More stable C/VC — top 2 players usually.
+   749→ * H2H:     Prioritize most-selected, safest players. Highest weight on selection %.
+   750→ *          Most conservative C/VC — always the safest picks.
+   751→ */
+   752→function scoreCaptain(player: TGPlayer, category: string): number {
+   753→  if (category === 'H2H') {
+   754→    // H2H: Safest picks — highest selection % and captain % weighted most
+   755→    return player.selected_by * 0.45 + player.captain_percentage * 0.35 + player.points * 0.2;
+   756→  } else if (category === 'SL') {
+   757→    // SL: Balanced — form players with good captain record
+   758→    return player.captain_percentage * 0.35 + player.selected_by * 0.35 + player.points * 0.3;
+   759→  } else {
+   760→    // Mega GL: Differential — rotate captains, some differential (lower selection but higher upside)
+   761→    return player.points * 0.4 + player.captain_percentage * 0.3 + player.selected_by * 0.2 + player.vice_captain_percentage * 0.1;
+   762→  }
+   763→}
+   764→
+   765→function scoreViceCaptain(player: TGPlayer, category: string): number {
+   766→  if (category === 'H2H') {
+   767→    return player.selected_by * 0.4 + player.vice_captain_percentage * 0.35 + player.points * 0.25;
+   768→  } else if (category === 'SL') {
+   769→    return player.vice_captain_percentage * 0.35 + player.selected_by * 0.35 + player.points * 0.3;
+   770→  } else {
+   771→    // Mega GL: Wider VC rotation
+   772→    return player.points * 0.35 + player.vice_captain_percentage * 0.3 + player.selected_by * 0.2 + player.captain_percentage * 0.15;
+   773→  }
+   774→}
+   775→
+   776→/**
+   777→ * Select Captain and Vice-Captain based on category strategy.
+   778→ * Mega GL: Rotates C/VC across team members (wider differential).
+   779→ * SL: Picks the top 2 most reliable.
+   780→ * H2H: Picks the safest 2.
+   781→ */
+   782→function selectCaptainViceCaptain(
+   783→  team: TGPlayer[],
+   784→  category: string,
+   785→  teamIndex: number,
+   786→): { captain: TGPlayer; viceCaptain: TGPlayer } {
+   787→  const isMegaGL = category !== 'H2H' && category !== 'SL';
+   788→
+   789→  if (isMegaGL) {
+   790→    // Mega GL: Sort by captain score, then rotate C/VC position based on teamIndex
+   791→    // This gives wider C/VC distribution across teams
+   792→    const sorted = [...team].sort((a, b) => scoreCaptain(b, category) - scoreCaptain(a, category));
+   793→    // Rotate: sometimes pick #1 as C and #2 as VC, sometimes #1 as C and #3 as VC, etc.
+   794→    const cIdx = 0; // Always pick top scorer as C
+   795→    let vcIdx = 1 + (teamIndex % Math.min(4, sorted.length - 1)); // Rotate VC among top 2-5
+   796→    if (vcIdx >= sorted.length) vcIdx = 1;
+   797→    return { captain: sorted[cIdx], viceCaptain: sorted[vcIdx] };
+   798→  } else {
+   799→    // H2H and SL: Pick top 2 by category-specific scoring
+   800→    const sorted = [...team].sort((a, b) => scoreCaptain(b, category) - scoreCaptain(a, category));
+   801→    return { captain: sorted[0], viceCaptain: sorted.length > 1 ? sorted[1] : sorted[0] };
+   802→  }
+   803→}
+   804→
+   805→export function generateTeams(
+   806→  leftPlayers: TGPlayer[],
+   807→  rightPlayers: TGPlayer[],
+   808→  category: string,
+   809→  count: number,
+   810→  seed: number = Date.now(),
+   811→  avoidPlayerIds: Set<number> = new Set(),
+   812→  combination: RoleCombination | null = null,
+   813→  combinationMode: 'manual' | 'auto' = 'auto',
+   814→): GenerationResult {
+   815→  const startTime = Date.now();
+   816→  const allPlayersRaw = [...leftPlayers, ...rightPlayers];
+   817→  const lineupMode = getLineupMode(allPlayersRaw);
+   818→  let allPlayers = getEligiblePlayers(allPlayersRaw, avoidPlayerIds);
+   819→  const leftTeamName = leftPlayers[0]?.team_name || 'A';
+   820→  const rightTeamName = rightPlayers[0]?.team_name || 'B';
+   821→
+   822→  // After filtering, rebuild left/right pools for team distribution checks
+   823→  let eligibleLeft = allPlayers.filter(p => p.team_name === leftTeamName);
+   824→  let eligibleRight = allPlayers.filter(p => p.team_name === rightTeamName);
+   825→
+   826→  // Separate by role
+   827→  let wk = allPlayers.filter(p => p.role === PLAYER_ROLES.WICKET_KEEPER);
+   828→  let bat = allPlayers.filter(p => p.role === PLAYER_ROLES.BATSMAN);
+   829→  let ar = allPlayers.filter(p => p.role === PLAYER_ROLES.ALL_ROUNDER);
+   830→  let bowl = allPlayers.filter(p => p.role === PLAYER_ROLES.BOWLER);
+   831→
+   832→  // AFTER LINEUP DIAGNOSTIC: Check if we have enough eligible players
+   833→  if (lineupMode === 'after') {
+   834→    console.log(`[TEAM GEN] AFTER LINEUP — Eligible: ${allPlayers.length}, Left: ${eligibleLeft.length}, Right: ${eligibleRight.length}, WK: ${wk.length}, BAT: ${bat.length}, AR: ${ar.length}, BOWL: ${bowl.length}`);
+   835→    const totalCredits = allPlayers.reduce((s, p) => s + p.credits, 0);
+   836→    console.log(`[TEAM GEN] Total eligible credits: ${totalCredits}, Avg: ${(totalCredits / allPlayers.length).toFixed(1)}`);
+   837→
+   838→    // If too few eligible players after lineup, fall back to including probable players
+   839→    if (allPlayers.length < 11 || eligibleLeft.length < 1 || eligibleRight.length < 1 ||
+   840→        wk.length < MIN_WK || bat.length < MIN_BAT || ar.length < MIN_AR || bowl.length < MIN_BOWL) {
+   841→      console.warn(`[TEAM GEN] Not enough eligible players after lineup. Including probable players (playing=0) as fallback.`);
+   842→      allPlayers = allPlayersRaw.filter(p => !avoidPlayerIds.has(p.pl_id) && p.playing !== -1);
+   843→      eligibleLeft = allPlayers.filter(p => p.team_name === leftTeamName);
+   844→      eligibleRight = allPlayers.filter(p => p.team_name === rightTeamName);
+   845→      wk = allPlayers.filter(p => p.role === PLAYER_ROLES.WICKET_KEEPER);
+   846→      bat = allPlayers.filter(p => p.role === PLAYER_ROLES.BATSMAN);
+   847→      ar = allPlayers.filter(p => p.role === PLAYER_ROLES.ALL_ROUNDER);
+   848→      bowl = allPlayers.filter(p => p.role === PLAYER_ROLES.BOWLER);
+   849→      console.log(`[TEAM GEN] Fallback — Eligible: ${allPlayers.length}, Left: ${eligibleLeft.length}, Right: ${eligibleRight.length}, WK: ${wk.length}, BAT: ${bat.length}, AR: ${ar.length}, BOWL: ${bowl.length}`);
+   850→    }
+   851→  }
+   852→
+   853→  const teams: GeneratedTeam[] = [];
+   854→  const teamSignatures = new Set<string>(); // Deduplication
+   855→  const rng = seededRandom(seed);
+   856→
+   857→  // Category-specific strategies
+   858→  const isH2H = category === 'H2H';
+   859→  const isSL = category === 'SL';
+   860→  const isMegaGL = !isH2H && !isSL;
+   861→
+   862→  // Category-specific role distribution patterns
+   863→  const MEGA_GL_PATTERNS = [
+   864→    [1, 3, 2, 5], [1, 4, 1, 5], [1, 3, 3, 4], [1, 4, 2, 4],
+   865→    [2, 3, 2, 4], [1, 5, 1, 4], [2, 3, 1, 5], [1, 4, 3, 3],
+   866→    [2, 4, 1, 4], [1, 3, 1, 6], [2, 2, 3, 4], [1, 5, 2, 3],
+   867→  ];
+   868→  const SL_PATTERNS = [
+   869→    [1, 4, 2, 4], [1, 3, 3, 4], [2, 3, 2, 4], [1, 5, 2, 3],
+   870→    [1, 4, 3, 3], [2, 4, 1, 4], [1, 3, 2, 5],
+   871→  ];
+   872→  const H2H_PATTERNS = [
+   873→    [1, 5, 2, 3], [1, 4, 2, 4], [1, 3, 3, 4], [1, 4, 3, 3],
+   874→    [2, 4, 1, 4], [1, 5, 1, 4],
+   875→  ];
+   876→
+   877→  for (let t = 0; t < count; t++) {
+   878→    let attempts = 0;
+   879→    let team: TGPlayer[] | null = null;
+   880→
+   881→    while (!team && attempts < 200) {
+   882→      attempts++;
+   883→      const sr = seededRandom(seed + t * 1000 + attempts);
+   884→
+   885→      // Determine role counts based on category or explicit combination
+   886→      let wkCount, batCount, arCount, bowlCount;
+   887→
+   888→      if (combination) {
+   889→        // MANUAL mode: Use explicit combination exactly as provided
+   890→        wkCount = combination.wk;
+   891→        batCount = combination.bat;
+   892→        arCount = combination.ar;
+   893→        bowlCount = combination.bowl;
+   894→      } else if (isH2H) {
+   895→        // H2H: Conservative patterns — more batsmen, stable bowling
+   896→        const pattern = H2H_PATTERNS[Math.floor(sr() * H2H_PATTERNS.length)];
+   897→        [wkCount, batCount, arCount, bowlCount] = pattern;
+   898→      } else if (isSL) {
+   899→        // SL: Balanced patterns — moderate risk
+   900→        const pattern = SL_PATTERNS[Math.floor(sr() * SL_PATTERNS.length)];
+   901→        [wkCount, batCount, arCount, bowlCount] = pattern;
+   902→      } else {
+   903→        // Mega GL: Differential patterns — wider variety
+   904→        const pattern = MEGA_GL_PATTERNS[Math.floor(sr() * MEGA_GL_PATTERNS.length)];
+   905→        [wkCount, batCount, arCount, bowlCount] = pattern;
+   906→      }
+   907→
+   908→      // Validate counts
+   909→      if (wkCount < MIN_WK || wkCount > MAX_WK) continue;
+   910→      if (batCount < MIN_BAT || batCount > MAX_BAT) continue;
+   911→      if (arCount < MIN_AR || arCount > MAX_AR) continue;
+   912→      if (bowlCount < MIN_BOWL || bowlCount > MAX_BOWL) continue;
+   913→      if (wkCount + batCount + arCount + bowlCount !== CRICKET_TEAM_SIZE) continue;
+   914→
+   915→      // Pick players for each role — CATEGORY-SPECIFIC player selection
+   916→      const shuffledWK = shuffleArray(wk, sr);
+   917→      const shuffledBat = shuffleArray(bat, sr);
+   918→      const shuffledAR = shuffleArray(ar, sr);
+   919→      const shuffledBowl = shuffleArray(bowl, sr);
+   920→
+   921→      let selectedWK, selectedBat, selectedAR, selectedBowl;
+   922→
+   923→      if (isH2H) {
+   924→        // H2H: ALWAYS pick most-selected/consistent players — safest strategy
+   925→        const sortFn = (a: TGPlayer, b: TGPlayer) => b.selected_by - a.selected_by;
+   926→        selectedWK = [...wk].sort(sortFn).slice(0, wkCount);
+   927→        selectedBat = shuffleArray([...bat].sort(sortFn), sr).slice(0, batCount);
+   928→        selectedAR = [...ar].sort(sortFn).slice(0, arCount);
+   929→        selectedBowl = shuffleArray([...bowl].sort(sortFn), sr).slice(0, bowlCount);
+   930→      } else if (isSL) {
+   931→        // SL: Mostly form players, some rotation — balanced strategy
+   932→        // 60% form players, 40% rotation for variety
+   933→        const formSort = (a: TGPlayer, b: TGPlayer) =>
+   934→          (b.selected_by * 0.5 + b.points * 0.3 + b.captain_percentage * 0.2) -
+   935→          (a.selected_by * 0.5 + a.points * 0.3 + a.captain_percentage * 0.2);
+   936→        if (sr() > 0.4) {
+   937→          // Form-based with light shuffle
+   938→          selectedWK = shuffleArray([...wk].sort(formSort), sr).slice(0, wkCount);
+   939→          selectedBat = shuffleArray([...bat].sort(formSort), sr).slice(0, batCount);
+   940→          selectedAR = shuffleArray([...ar].sort(formSort), sr).slice(0, arCount);
+   941→          selectedBowl = shuffleArray([...bowl].sort(formSort), sr).slice(0, bowlCount);
+   942→        } else {
+   943→          selectedWK = shuffledWK.slice(0, wkCount);
+   944→          selectedBat = shuffledBat.slice(0, batCount);
+   945→          selectedAR = shuffledAR.slice(0, arCount);
+   946→          selectedBowl = shuffledBowl.slice(0, bowlCount);
+   947→        }
+   948→      } else {
+   949→        // Mega GL: Strong differential rotation — low selection % players preferred
+   950→        // 70% differential (low selection %), 30% random
+   951→        const diffSort = (a: TGPlayer, b: TGPlayer) => a.selected_by - b.selected_by;
+   952→        if (sr() > 0.3) {
+   953→          // Differential picks — favor low selection % for Grand League upside
+   954→          selectedWK = shuffleArray([...wk].sort(diffSort), sr).slice(0, wkCount);
+   955→          selectedBat = shuffleArray([...bat].sort(diffSort), sr).slice(0, batCount);
+   956→          selectedAR = shuffleArray([...ar].sort(diffSort), sr).slice(0, arCount);
+   957→          selectedBowl = shuffleArray([...bowl].sort(diffSort), sr).slice(0, bowlCount);
+   958→        } else {
+   959→          selectedWK = shuffledWK.slice(0, wkCount);
+   960→          selectedBat = shuffledBat.slice(0, batCount);
+   961→          selectedAR = shuffledAR.slice(0, arCount);
+   962→          selectedBowl = shuffledBowl.slice(0, bowlCount);
+   963→        }
+   964→      }
+   965→
+   966→      // Check if we have enough players
+   967→      if (selectedWK.length < wkCount || selectedBat.length < batCount ||
+   968→          selectedAR.length < arCount || selectedBowl.length < bowlCount) continue;
+   969→
+   970→      const selected = [...selectedWK, ...selectedBat, ...selectedAR, ...selectedBowl];
+   971→
+   972→      // Check total credits
+   973→      const totalCredits = selected.reduce((sum, p) => sum + p.credits, 0);
+   974→      if (totalCredits > MAX_CREDITS) continue;
+   975→
+   976→      // Check team distribution (max 7 from one team)
+   977→      const leftCount = selected.filter(p => p.team_name === leftTeamName).length;
+   978→      const rightCount = selected.filter(p => p.team_name === rightTeamName).length;
+   979→      if (leftCount > MAX_FROM_ONE_TEAM || rightCount > MAX_FROM_ONE_TEAM) continue;
+   980→
+   981→      // Ensure at least 1 from each team
+   982→      if (leftCount < 1 || rightCount < 1) continue;
+   983→
+   984→      team = selected;
+   985→    }
+   986→
+   987→    if (team) {
+   988→      // Category-specific C/VC selection
+   989→      const { captain, viceCaptain } = selectCaptainViceCaptain(team, category, t);
+   990→
+   991→      // Deduplication check
+   992→      const sig = makeTeamSignature(team, captain, viceCaptain);
+   993→      if (teamSignatures.has(sig)) {
+   994→        // Duplicate — skip and try to find another combination
+   995→        team = null;
+   996→        // Extra attempts to find unique team
+   997→        let extraAttempts = 0;
+   998→        while (!team && extraAttempts < 100) {
+   999→          extraAttempts++;
+  1000→          const sr = seededRandom(seed + t * 3000 + extraAttempts * 7 + 77777);
+  1001→          let wkCount, batCount, arCount, bowlCount;
+  1002→          if (combination) {
+  1003→            wkCount = combination.wk; batCount = combination.bat; arCount = combination.ar; bowlCount = combination.bowl;
+  1004→          } else {
+  1005→            const patterns = isH2H ? H2H_PATTERNS : isSL ? SL_PATTERNS : MEGA_GL_PATTERNS;
+  1006→            const pattern = patterns[Math.floor(sr() * patterns.length)];
+  1007→            [wkCount, batCount, arCount, bowlCount] = pattern;
+  1008→          }
+  1009→          if (wkCount < MIN_WK || wkCount > MAX_WK || batCount < MIN_BAT || batCount > MAX_BAT ||
+  1010→              arCount < MIN_AR || arCount > MAX_AR || bowlCount < MIN_BOWL || bowlCount > MAX_BOWL) continue;
+  1011→          if (wkCount + batCount + arCount + bowlCount !== CRICKET_TEAM_SIZE) continue;
+  1012→
+  1013→          const sWK = shuffleArray(wk, sr).slice(0, wkCount);
+  1014→          const sBat = shuffleArray(bat, sr).slice(0, batCount);
+  1015→          const sAR = shuffleArray(ar, sr).slice(0, arCount);
+  1016→          const sBowl = shuffleArray(bowl, sr).slice(0, bowlCount);
+  1017→          if (sWK.length < wkCount || sBat.length < batCount || sAR.length < arCount || sBowl.length < bowlCount) continue;
+  1018→          const sel = [...sWK, ...sBat, ...sAR, ...sBowl];
+  1019→          if (sel.reduce((s, p) => s + p.credits, 0) > MAX_CREDITS) continue;
+  1020→          const lc = sel.filter(p => p.team_name === leftTeamName).length;
+  1021→          const rc = sel.filter(p => p.team_name === rightTeamName).length;
+  1022→          if (lc > MAX_FROM_ONE_TEAM || rc > MAX_FROM_ONE_TEAM || lc < 1 || rc < 1) continue;
+  1023→
+  1024→          const { captain: c2, viceCaptain: vc2 } = selectCaptainViceCaptain(sel, category, t + extraAttempts);
+  1025→          const sig2 = makeTeamSignature(sel, c2, vc2);
+  1026→          if (!teamSignatures.has(sig2)) {
+  1027→            team = sel;
+  1028→            teams.push({ id: teams.length + 1, captain: c2, viceCaptain: vc2, players: sel });
+  1029→            teamSignatures.add(sig2);
+  1030→          }
+  1031→        }
+  1032→        continue; // Skip the normal push below
+  1033→      }
+  1034→
+  1035→      teamSignatures.add(sig);
+  1036→      teams.push({
+  1037→        id: teams.length + 1,
+  1038→        captain,
+  1039→        viceCaptain,
+  1040→        players: team,
+  1041→      });
+  1042→    }
+  1043→  }
+  1044→
+  1045→  // AFTER LINEUP FALLBACK: If 0 teams generated, retry with relaxed constraints
+  1046→  if (teams.length === 0 && lineupMode === 'after') {
+  1047→    console.warn(`[TEAM GEN] 0 teams generated after lineup! Retrying with relaxed constraints...`);
+  1048→
+  1049→    const RELAXED_MAX_CREDITS = 110;
+  1050→    for (let t = 0; t < count; t++) {
+  1051→      let attempts = 0;
+  1052→      let team: TGPlayer[] | null = null;
+  1053→
+  1054→      while (!team && attempts < 500) {
+  1055→        attempts++;
+  1056→        const sr = seededRandom(seed + t * 2000 + attempts + 99999);
+  1057→
+  1058→        let wkCount, batCount, arCount, bowlCount;
+  1059→        const combos = getAllValidCombinations();
+  1060→        const combo = combos[Math.floor(sr() * combos.length)];
+  1061→        wkCount = combo.wk;
+  1062→        batCount = combo.bat;
+  1063→        arCount = combo.ar;
+  1064→        bowlCount = combo.bowl;
+  1065→
+  1066→        const shuffledWK = shuffleArray(wk, sr);
+  1067→        const shuffledBat = shuffleArray(bat, sr);
+  1068→        const shuffledAR = shuffleArray(ar, sr);
+  1069→        const shuffledBowl = shuffleArray(bowl, sr);
+  1070→
+  1071→        const selectedWK = shuffledWK.slice(0, wkCount);
+  1072→        const selectedBat = shuffledBat.slice(0, batCount);
+  1073→        const selectedAR = shuffledAR.slice(0, arCount);
+  1074→        const selectedBowl = shuffledBowl.slice(0, bowlCount);
+  1075→
+  1076→        if (selectedWK.length < wkCount || selectedBat.length < batCount ||
+  1077→            selectedAR.length < arCount || selectedBowl.length < bowlCount) continue;
+  1078→
+  1079→        const selected = [...selectedWK, ...selectedBat, ...selectedAR, ...selectedBowl];
+  1080→        const totalCredits = selected.reduce((sum, p) => sum + p.credits, 0);
+  1081→        if (totalCredits > RELAXED_MAX_CREDITS) continue;
+  1082→
+  1083→        const leftCount = selected.filter(p => p.team_name === leftTeamName).length;
+  1084→        const rightCount = selected.filter(p => p.team_name === rightTeamName).length;
+  1085→        if (leftCount > 8 || rightCount > 8) continue;
+  1086→        if (leftCount < 1 || rightCount < 1) continue;
+  1087→
+  1088→        team = selected;
+  1089→      }
+  1090→
+  1091→      if (team) {
+  1092→        const { captain, viceCaptain } = selectCaptainViceCaptain(team, category, t);
+  1093→        const sig = makeTeamSignature(team, captain, viceCaptain);
+  1094→        if (!teamSignatures.has(sig)) {
+  1095→          teamSignatures.add(sig);
+  1096→          teams.push({
+  1097→            id: teams.length + 1,
+  1098→            captain,
+  1099→            viceCaptain,
+  1100→            players: team,
+  1101→          });
+  1102→        }
+  1103→      }
+  1104→    }
+  1105→
+  1106→    if (teams.length > 0) {
+  1107→      console.log(`[TEAM GEN] Relaxed constraints generated ${teams.length} teams`);
+  1108→    } else {
+  1109→      console.error(`[TEAM GEN] Still 0 teams after relaxed constraints. Eligible: ${allPlayers.length}, WK: ${wk.length}, BAT: ${bat.length}, AR: ${ar.length}, BOWL: ${bowl.length}`);
+  1110→    }
+  1111→  }
+  1112→
+  1113→  // Build debug info
+  1114→  const strategyUsed = combination
+  1115→    ? `MANUAL(${combination.wk}-${combination.bat}-${combination.ar}-${combination.bowl})`
+  1116→    : isH2H ? 'H2H_CONSERVATIVE' : isSL ? 'SL_BALANCED' : 'MEGA_GL_DIFFERENTIAL';
+  1117→
+  1118→  const debug: GenerationDebugInfo = {
+  1119→    generationMode: 'NORMAL',
+  1120→    category,
+  1121→    combinationMode: combination ? 'MANUAL' as const : (combinationMode === 'manual' ? 'MANUAL' as const : 'AUTO' as const),
+  1122→    requestedTeams: count,
+  1123→    generatedTeams: teams.length,
+  1124→    duplicateRemoved: 0, // Tracked during generation via signature skips
+  1125→    invalidLineupRemoved: 0,
+  1126→    validTeams: teams.length,
+  1127→    strategyUsed,
+  1128→    lineupMode,
+  1129→    eligiblePlayers: allPlayers.length,
+  1130→    totalPlayers: allPlayersRaw.length,
+  1131→    seed,
+  1132→  };
+  1133→
+  1134→  console.log(`[TEAM GEN] Mode: NORMAL | Category: ${category} | Combination: ${debug.combinationMode} | Strategy: ${strategyUsed}`);
+  1135→  console.log(`[TEAM GEN] Requested: ${count} | Generated: ${teams.length} | Lineup: ${lineupMode} | Eligible: ${allPlayers.length}/${allPlayersRaw.length} | Seed: ${seed} | Time: ${Date.now() - startTime}ms`);
+  1136→
+  1137→  return { teams, debug };
+  1138→}
+  1139→
+  1140→// ============ Extra Team Generation Algorithm ============
+  1141→// 8 Fixed Players + remaining players filled by engine
+  1142→// 5 Captain options + 5 Vice Captain options distributed across teams
+  1143→
+  1144→export interface ExtraTeamGenInput {
+  1145→  fixedPlayers: TGPlayer[];      // Exactly 8 fixed players
+  1146→  captainOptions: TGPlayer[];    // Exactly 5 captain options
+  1147→  viceCaptainOptions: TGPlayer[]; // Exactly 5 vice captain options
+  1148→  leftPlayers: TGPlayer[];       // Full left team player pool
+  1149→  rightPlayers: TGPlayer[];      // Full right team player pool
+  1150→  category: string;              // 'Mega GL' | 'SL' | 'H2H'
+  1151→  count: number;                 // Number of teams to generate
+  1152→  seed?: number;
+  1153→  avoidPlayerIds?: Set<number>;  // Players to avoid
+  1154→  combination?: RoleCombination | null; // Explicit role combination
+  1155→  combinationMode?: 'manual' | 'auto'; // Whether combination is manual or auto
+  1156→}
+  1157→
+  1158→// Helper to build debug info for extra generation
+  1159→function makeExtraDebug(
+  1160→  teamCount: number,
+  1161→  category: string,
+  1162→  combinationMode: string,
+  1163→  count: number,
+  1164→  lineupMode: 'before' | 'after',
+  1165→  eligible: number,
+  1166→  total: number,
+  1167→  seed: number,
+  1168→  strategy: string,
+  1169→): GenerationDebugInfo {
+  1170→  return {
+  1171→    generationMode: 'EXTRA',
+  1172→    category,
+  1173→    combinationMode: combinationMode as 'MANUAL' | 'AUTO',
+  1174→    requestedTeams: count,
+  1175→    generatedTeams: teamCount,
+  1176→    duplicateRemoved: 0,
+  1177→    invalidLineupRemoved: 0,
+  1178→    validTeams: teamCount,
+  1179→    strategyUsed: `EXTRA_${strategy}`,
+  1180→    lineupMode,
+  1181→    eligiblePlayers: eligible,
+  1182→    totalPlayers: total,
+  1183→    seed,
+  1184→  };
+  1185→}
+  1186→
+  1187→export function generateExtraTeams(input: ExtraTeamGenInput): GenerationResult {
+  1188→  const startTime = Date.now();
+  1189→  const {
+  1190→    fixedPlayers,
+  1191→    captainOptions,
+  1192→    viceCaptainOptions,
+  1193→    leftPlayers,
+  1194→    rightPlayers,
+  1195→    category,
+  1196→    count,
+  1197→    seed = Date.now(),
+  1198→    avoidPlayerIds = new Set(),
+  1199→    combination = null,
+  1200→    combinationMode: inputComboMode = 'auto',
+  1201→  } = input;
+  1202→
+  1203→  const effectiveComboMode = combination ? 'manual' : inputComboMode;
+  1204→
+  1205→  // Apply lineup-aware filtering to the full player pool
+  1206→  const allPlayersRaw = [...leftPlayers, ...rightPlayers];
+  1207→  const lineupMode = getLineupMode(allPlayersRaw);
+  1208→  let allPlayers = getEligiblePlayers(allPlayersRaw, avoidPlayerIds);
+  1209→  const leftTeamName = leftPlayers[0]?.team_name || 'A';
+  1210→  const rightTeamName = rightPlayers[0]?.team_name || 'B';
+  1211→
+  1212→  // AFTER LINEUP FALLBACK: If too few eligible players, include probable players
+  1213→  if (lineupMode === 'after' && allPlayers.length < 14) {
+  1214→    console.warn(`[EXTRA TEAM GEN] Only ${allPlayers.length} eligible after lineup, including probable players as fallback.`);
+  1215→    allPlayers = allPlayersRaw.filter(p => !avoidPlayerIds.has(p.pl_id) && p.playing !== -1);
+  1216→  }
+  1217→
+  1218→  // Pool of players excluding the 8 fixed ones (use pl_id for identity)
+  1219→  const fixedIds = new Set(fixedPlayers.map(p => p.pl_id));
+  1220→  const remainingPool = allPlayers.filter(p => !fixedIds.has(p.pl_id));
+  1221→
+  1222→  // Separate remaining pool by role
+  1223→  const remWK = remainingPool.filter(p => p.role === PLAYER_ROLES.WICKET_KEEPER);
+  1224→  const remBat = remainingPool.filter(p => p.role === PLAYER_ROLES.BATSMAN);
+  1225→  const remAR = remainingPool.filter(p => p.role === PLAYER_ROLES.ALL_ROUNDER);
+  1226→  const remBowl = remainingPool.filter(p => p.role === PLAYER_ROLES.BOWLER);
+  1227→
+  1228→  // Count fixed players by role
+  1229→  const fixedWKCount = fixedPlayers.filter(p => p.role === PLAYER_ROLES.WICKET_KEEPER).length;
+  1230→  const fixedBatCount = fixedPlayers.filter(p => p.role === PLAYER_ROLES.BATSMAN).length;
+  1231→  const fixedARCount = fixedPlayers.filter(p => p.role === PLAYER_ROLES.ALL_ROUNDER).length;
+  1232→  const fixedBowlCount = fixedPlayers.filter(p => p.role === PLAYER_ROLES.BOWLER).length;
+  1233→
+  1234→  const fixedCredits = fixedPlayers.reduce((sum, p) => sum + p.credits, 0);
+  1235→  const remainingCredits = MAX_CREDITS - fixedCredits;
+  1236→  const neededPlayers = CRICKET_TEAM_SIZE - fixedPlayers.length; // 3
+  1237→
+  1238→  const teams: GeneratedTeam[] = [];
+  1239→
+  1240→  // Pre-validate: fixed players must have credits <= 100
+  1241→  if (fixedCredits > MAX_CREDITS) {
+  1242→    return { teams, debug: makeExtraDebug(0, category, effectiveComboMode, count, lineupMode, allPlayers.length, allPlayersRaw.length, seed, 'INVALID_FIXED_CREDITS') };
+  1243→  }
+  1244→
+  1245→  // Pre-validate: fixed players must respect max 7 from one team
+  1246→  const fixedLeftCount = fixedPlayers.filter(p => p.team_name === leftTeamName).length;
+  1247→  const fixedRightCount = fixedPlayers.filter(p => p.team_name === rightTeamName).length;
+  1248→  if (fixedLeftCount > MAX_FROM_ONE_TEAM || fixedRightCount > MAX_FROM_ONE_TEAM) {
+  1249→    return { teams, debug: makeExtraDebug(0, category, effectiveComboMode, count, lineupMode, allPlayers.length, allPlayersRaw.length, seed, 'INVALID_TEAM_DIST') };
+  1250→  }
+  1251→
+  1252→  // Generate all valid C/VC combinations from the 5C and 5VC options
+  1253→  // C must be in the team, VC must be in the team, C ≠ VC
+  1254→  const cVCCombos: { c: TGPlayer; vc: TGPlayer }[] = [];
+  1255→  for (const c of captainOptions) {
+  1256→    for (const vc of viceCaptainOptions) {
+  1257→      if (c.pl_id !== vc.pl_id) {
+  1258→        cVCCombos.push({ c, vc });
+  1259→      }
+  1260→    }
+  1261→  }
+  1262→  // If no valid combos, return empty
+  1263→  if (cVCCombos.length === 0) {
+  1264→    return { teams, debug: makeExtraDebug(0, category, effectiveComboMode, count, lineupMode, allPlayers.length, allPlayersRaw.length, seed, 'NO_VALID_CVC') };
+  1265→  }
+  1266→
+  1267→  // Category-specific role distribution preferences for remaining players
+  1268→  const isH2H = category === 'H2H';
+  1269→  const isSL = category === 'SL';
+  1270→
+  1271→  // EACH CATEGORY HAS ITS OWN DISTINCT PATTERNS — never reuse Mega GL patterns for H2H/SL
+  1272→  const categoryPatterns: number[][] = isH2H
+  1273→    ? [
+  1274→        [1, 5, 2, 3], [1, 4, 2, 4], [1, 3, 3, 4], [1, 4, 3, 3],
+  1275→        [2, 4, 1, 4], [1, 5, 1, 4],
+  1276→      ]
+  1277→    : isSL
+  1278→    ? [
+  1279→        [1, 4, 2, 4], [1, 3, 3, 4], [2, 3, 2, 4], [1, 5, 2, 3],
+  1280→        [1, 4, 3, 3], [2, 4, 1, 4], [1, 3, 2, 5],
+  1281→      ]
+  1282→    : [ // Mega GL — most differential/varied patterns
+  1283→        [1, 3, 2, 5], [1, 4, 1, 5], [1, 3, 3, 4], [1, 4, 2, 4],
+  1284→        [2, 3, 2, 4], [1, 5, 1, 4], [2, 3, 1, 5], [1, 4, 3, 3],
+  1285→        [2, 4, 1, 4], [1, 3, 1, 6], [2, 2, 3, 4], [1, 5, 2, 3],
+  1286→      ];
+  1287→
+  1288→  // Build list of valid target distributions: [WK, BAT, AR, BOWL]
+  1289→  const validDistributions: number[][] = [];
+  1290→  for (let wk = MIN_WK; wk <= MAX_WK; wk++) {
+  1291→    for (let bat = MIN_BAT; bat <= MAX_BAT; bat++) {
+  1292→      for (let ar = MIN_AR; ar <= MAX_AR; ar++) {
+  1293→        const bowl = CRICKET_TEAM_SIZE - wk - bat - ar;
+  1294→        if (bowl < MIN_BOWL || bowl > MAX_BOWL) continue;
+  1295→        // Check compatibility with fixed players
+  1296→        const nWK = Math.max(0, wk - fixedWKCount);
+  1297→        const nBat = Math.max(0, bat - fixedBatCount);
+  1298→        const nAR = Math.max(0, ar - fixedARCount);
+  1299→        const nBowl = Math.max(0, bowl - fixedBowlCount);
+  1300→        if (nWK + nBat + nAR + nBowl !== neededPlayers) continue;
+  1301→        // Check we have enough remaining players for each role
+  1302→        if (remWK.length < nWK || remBat.length < nBat || remAR.length < nAR || remBowl.length < nBowl) continue;
+  1303→        // For Mega GL / SL / H2H: prefer category-specific patterns but include all valid ones
+  1304→        validDistributions.push([wk, bat, ar, bowl]);
+  1305→      }
+  1306→    }
+  1307→  }
+  1308→
+  1309→  // Sort: prefer category-specific patterns first, then others
+  1310→  if (categoryPatterns.length > 0) {
+  1311→    const patternSet = new Set(categoryPatterns.map(p => p.join(',')));
+  1312→    validDistributions.sort((a, b) => {
+  1313→      const aInCat = patternSet.has(a.join(',')) ? 0 : 1;
+  1314→      const bInCat = patternSet.has(b.join(',')) ? 0 : 1;
+  1315→      return aInCat - bInCat;
+  1316→    });
+  1317→  }
+  1318→
+  1319→  if (validDistributions.length === 0) {
+  1320→    return { teams, debug: makeExtraDebug(0, category, effectiveComboMode, count, lineupMode, allPlayers.length, allPlayersRaw.length, seed, 'NO_VALID_DISTRIBUTIONS') };
+  1321→  }
+  1322→
+  1323→  // Team signature set for uniqueness check — uses the exported makeTeamSignature
+  1324→  const teamSignatures = new Set<string>();
+  1325→
+  1326→  // Generation loop with retry: keep trying until we have `count` unique teams
+  1327→  // or we exhaust the maximum total attempts
+  1328→  const MAX_TOTAL_ATTEMPTS = count * 500; // generous budget
+  1329→  let totalAttempts = 0;
+  1330→
+  1331→  for (let t = 0; t < count && totalAttempts < MAX_TOTAL_ATTEMPTS; t++) {
+  1332→    let attempts = 0;
+  1333→    let team: TGPlayer[] | null = null;
+  1334→    let teamC: TGPlayer | null = null;
+  1335→    let teamVC: TGPlayer | null = null;
+  1336→
+  1337→    while (!team && attempts < 500) {
+  1338→      attempts++;
+  1339→      totalAttempts++;
+  1340→      const sr = seededRandom(seed + t * 1000 + attempts);
+  1341→
+  1342→      // Pick a valid target distribution (or use explicit combination)
+  1343→      let targetWK: number, targetBat: number, targetAR: number, targetBowl: number;
+  1344→
+  1345→      if (combination) {
+  1346→        // MANUAL mode: Use explicit combination exactly as provided
+  1347→        targetWK = combination.wk;
+  1348→        targetBat = combination.bat;
+  1349→        targetAR = combination.ar;
+  1350→        targetBowl = combination.bowl;
+  1351→      } else if (validDistributions.length === 1) {
+  1352→        [targetWK, targetBat, targetAR, targetBowl] = validDistributions[0];
+  1353→      } else {
+  1354→        // Bias towards category-preferred patterns (first half of sorted list)
+  1355→        const idx = sr() < 0.7
+  1356→          ? Math.floor(sr() * Math.ceil(validDistributions.length / 2)) // 70% chance from preferred half
+  1357→          : Math.floor(sr() * validDistributions.length); // 30% from any
+  1358→        [targetWK, targetBat, targetAR, targetBowl] = validDistributions[Math.min(idx, validDistributions.length - 1)];
+  1359→      }
+  1360→
+  1361→      // How many more of each role do we need?
+  1362→      const needWK = Math.max(0, targetWK - fixedWKCount);
+  1363→      const needBat = Math.max(0, targetBat - fixedBatCount);
+  1364→      const needAR = Math.max(0, targetAR - fixedARCount);
+  1365→      const needBowl = Math.max(0, targetBowl - fixedBowlCount);
+  1366→
+  1367→      // Check if we have enough remaining players for each role
+  1368→      if (remWK.length < needWK || remBat.length < needBat ||
+  1369→          remAR.length < needAR || remBowl.length < needBowl) continue;
+  1370→
+  1371→      // Pick remaining players for each role — CATEGORY-SPECIFIC strategies
+  1372→      let pickedWK: TGPlayer[], pickedBat: TGPlayer[], pickedAR: TGPlayer[], pickedBowl: TGPlayer[];
+  1373→
+  1374→      if (isH2H) {
+  1375→        // H2H: ALWAYS pick most-selected/consistent remaining players — safest
+  1376→        const sortFn = (a: TGPlayer, b: TGPlayer) => b.selected_by - a.selected_by;
+  1377→        pickedWK = [...remWK].sort(sortFn).slice(0, needWK);
+  1378→        pickedBat = shuffleArray([...remBat].sort(sortFn), sr).slice(0, needBat);
+  1379→        pickedAR = [...remAR].sort(sortFn).slice(0, needAR);
+  1380→        pickedBowl = shuffleArray([...remBowl].sort(sortFn), sr).slice(0, needBowl);
+  1381→      } else if (isSL) {
+  1382→        // SL: Form-based with some rotation — balanced
+  1383→        const formSort = (a: TGPlayer, b: TGPlayer) =>
+  1384→          (b.selected_by * 0.5 + b.points * 0.3 + b.captain_percentage * 0.2) -
+  1385→          (a.selected_by * 0.5 + a.points * 0.3 + a.captain_percentage * 0.2);
+  1386→        if (sr() > 0.4) {
+  1387→          pickedWK = shuffleArray([...remWK].sort(formSort), sr).slice(0, needWK);
+  1388→          pickedBat = shuffleArray([...remBat].sort(formSort), sr).slice(0, needBat);
+  1389→          pickedAR = shuffleArray([...remAR].sort(formSort), sr).slice(0, needAR);
+  1390→          pickedBowl = shuffleArray([...remBowl].sort(formSort), sr).slice(0, needBowl);
+  1391→        } else {
+  1392→          pickedWK = shuffleArray(remWK, sr).slice(0, needWK);
+  1393→          pickedBat = shuffleArray(remBat, sr).slice(0, needBat);
+  1394→          pickedAR = shuffleArray(remAR, sr).slice(0, needAR);
+  1395→          pickedBowl = shuffleArray(remBowl, sr).slice(0, needBowl);
+  1396→        }
+  1397→      } else {
+  1398→        // Mega GL: Differential picks — low selection % preferred
+  1399→        const diffSort = (a: TGPlayer, b: TGPlayer) => a.selected_by - b.selected_by;
+  1400→        if (sr() > 0.3) {
+  1401→          pickedWK = shuffleArray([...remWK].sort(diffSort), sr).slice(0, needWK);
+  1402→          pickedBat = shuffleArray([...remBat].sort(diffSort), sr).slice(0, needBat);
+  1403→          pickedAR = shuffleArray([...remAR].sort(diffSort), sr).slice(0, needAR);
+  1404→          pickedBowl = shuffleArray([...remBowl].sort(diffSort), sr).slice(0, needBowl);
+  1405→        } else {
+  1406→          pickedWK = shuffleArray(remWK, sr).slice(0, needWK);
+  1407→          pickedBat = shuffleArray(remBat, sr).slice(0, needBat);
+  1408→          pickedAR = shuffleArray(remAR, sr).slice(0, needAR);
+  1409→          pickedBowl = shuffleArray(remBowl, sr).slice(0, needBowl);
+  1410→        }
+  1411→      }
+  1412→
+  1413→      if (pickedWK.length < needWK || pickedBat.length < needBat ||
+  1414→          pickedAR.length < needAR || pickedBowl.length < needBowl) continue;
+  1415→
+  1416→      const remaining = [...pickedWK, ...pickedBat, ...pickedAR, ...pickedBowl];
+  1417→      const fullTeam = [...fixedPlayers, ...remaining];
+  1418→
+  1419→      // Check no duplicates (shouldn't happen but safety check)
+  1420→      const uniqueIds = new Set(fullTeam.map(p => p.pl_id));
+  1421→      if (uniqueIds.size !== fullTeam.length) continue;
+  1422→
+  1423→      // Check total credits
+  1424→      const totalCredits = fullTeam.reduce((sum, p) => sum + p.credits, 0);
+  1425→      if (totalCredits > MAX_CREDITS) continue;
+  1426→
+  1427→      // Check team distribution
+  1428→      const leftCount = fullTeam.filter(p => p.team_name === leftTeamName).length;
+  1429→      const rightCount = fullTeam.filter(p => p.team_name === rightTeamName).length;
+  1430→      if (leftCount > MAX_FROM_ONE_TEAM || rightCount > MAX_FROM_ONE_TEAM) continue;
+  1431→      if (leftCount < 1 || rightCount < 1) continue;
+  1432→
+  1433→      // Select C/VC combination for this team
+  1434→      // Round-robin through the valid combos, also try to ensure C and VC are in the team
+  1435→      const comboIndex = (t + attempts) % cVCCombos.length;
+  1436→      let combo = cVCCombos[comboIndex];
+  1437→
+  1438→      // Ensure C and VC are in this team
+  1439→      const teamPlayerIds = new Set(fullTeam.map(p => p.pl_id));
+  1440→      if (!teamPlayerIds.has(combo.c.pl_id) || !teamPlayerIds.has(combo.vc.pl_id)) {
+  1441→        // Try to find a valid combo where both C and VC are in the team
+  1442→        let foundValidCombo = false;
+  1443→        for (let ci = 0; ci < cVCCombos.length; ci++) {
+  1444→          const tryCombo = cVCCombos[(comboIndex + ci) % cVCCombos.length];
+  1445→          if (teamPlayerIds.has(tryCombo.c.pl_id) && teamPlayerIds.has(tryCombo.vc.pl_id)) {
+  1446→            combo = tryCombo;
+  1447→            foundValidCombo = true;
+  1448→            break;
+  1449→          }
+  1450→        }
+  1451→        if (!foundValidCombo) {
+  1452→          // Fallback: use category-specific C/VC scoring
+  1453→          const { captain: fbC, viceCaptain: fbVC } = selectCaptainViceCaptain(fullTeam, category, t);
+  1454→          combo = { c: fbC, vc: fbVC };
+  1455→        }
+  1456→      }
+  1457→
+  1458→      // Uniqueness check: skip if this team signature already exists
+  1459→      const signature = makeTeamSignature(fullTeam, combo.c, combo.vc);
+  1460→      if (teamSignatures.has(signature)) continue;
+  1461→
+  1462→      team = fullTeam;
+  1463→      teamC = combo.c;
+  1464→      teamVC = combo.vc;
+  1465→      teamSignatures.add(signature);
+  1466→    }
+  1467→
+  1468→    if (team && teamC && teamVC) {
+  1469→      teams.push({
+  1470→        id: teams.length + 1,
+  1471→        captain: teamC,
+  1472→        viceCaptain: teamVC,
+  1473→        players: team,
+  1474→      });
+  1475→    } else {
+  1476→      // If we failed to generate a unique team for this slot,
+  1477→      // try extra attempts with different seeds before giving up
+  1478→      let extraAttempts = 0;
+  1479→      const MAX_EXTRA = 200;
+  1480→      while (teams.length < count && extraAttempts < MAX_EXTRA && totalAttempts < MAX_TOTAL_ATTEMPTS) {
+  1481→        extraAttempts++;
+  1482→        totalAttempts++;
+  1483→        const extraSeed = seed + count * 1000 + extraAttempts * 37;
+  1484→        const sr = seededRandom(extraSeed);
+  1485→
+  1486→        // Pick distribution (or use explicit combination)
+  1487→        let targetWK: number, targetBat: number, targetAR: number, targetBowl: number;
+  1488→        if (combination) {
+  1489→          targetWK = combination.wk;
+  1490→          targetBat = combination.bat;
+  1491→          targetAR = combination.ar;
+  1492→          targetBowl = combination.bowl;
+  1493→        } else if (validDistributions.length === 1) {
+  1494→          [targetWK, targetBat, targetAR, targetBowl] = validDistributions[0];
+  1495→        } else {
+  1496→          const idx = Math.floor(sr() * validDistributions.length);
+  1497→          [targetWK, targetBat, targetAR, targetBowl] = validDistributions[idx];
+  1498→        }
+  1499→
+  1500→        const needWK = Math.max(0, targetWK - fixedWKCount);
+  1501→        const needBat = Math.max(0, targetBat - fixedBatCount);
+  1502→        const needAR = Math.max(0, targetAR - fixedARCount);
+  1503→        const needBowl = Math.max(0, targetBowl - fixedBowlCount);
+  1504→
+  1505→        if (remWK.length < needWK || remBat.length < needBat ||
+  1506→            remAR.length < needAR || remBowl.length < needBowl) continue;
+  1507→
+  1508→        const sortFn = (a: TGPlayer, b: TGPlayer) => a.selected_by - b.selected_by;
+  1509→        const pickedWK = shuffleArray([...remWK].sort(sortFn), sr).slice(0, needWK);
+  1510→        const pickedBat = shuffleArray([...remBat].sort(sortFn), sr).slice(0, needBat);
+  1511→        const pickedAR = shuffleArray([...remAR].sort(sortFn), sr).slice(0, needAR);
+  1512→        const pickedBowl = shuffleArray([...remBowl].sort(sortFn), sr).slice(0, needBowl);
+  1513→
+  1514→        if (pickedWK.length < needWK || pickedBat.length < needBat ||
+  1515→            pickedAR.length < needAR || pickedBowl.length < needBowl) continue;
+  1516→
+  1517→        const remaining = [...pickedWK, ...pickedBat, ...pickedAR, ...pickedBowl];
+  1518→        const fullTeam = [...fixedPlayers, ...remaining];
+  1519→
+  1520→        const uniqueIds = new Set(fullTeam.map(p => p.pl_id));
+  1521→        if (uniqueIds.size !== fullTeam.length) continue;
+  1522→
+  1523→        const totalCredits = fullTeam.reduce((sum, p) => sum + p.credits, 0);
+  1524→        if (totalCredits > MAX_CREDITS) continue;
+  1525→
+  1526→        const leftCount = fullTeam.filter(p => p.team_name === leftTeamName).length;
+  1527→        const rightCount = fullTeam.filter(p => p.team_name === rightTeamName).length;
+  1528→        if (leftCount > MAX_FROM_ONE_TEAM || rightCount > MAX_FROM_ONE_TEAM) continue;
+  1529→        if (leftCount < 1 || rightCount < 1) continue;
+  1530→
+  1531→        // C/VC selection
+  1532→        const comboIndex = extraAttempts % cVCCombos.length;
+  1533→        let combo = cVCCombos[comboIndex];
+  1534→        const teamPlayerIds = new Set(fullTeam.map(p => p.pl_id));
+  1535→        if (!teamPlayerIds.has(combo.c.pl_id) || !teamPlayerIds.has(combo.vc.pl_id)) {
+  1536→          let foundValidCombo = false;
+  1537→          for (let ci = 0; ci < cVCCombos.length; ci++) {
+  1538→            const tryCombo = cVCCombos[(comboIndex + ci) % cVCCombos.length];
+  1539→            if (teamPlayerIds.has(tryCombo.c.pl_id) && teamPlayerIds.has(tryCombo.vc.pl_id)) {
+  1540→              combo = tryCombo;
+  1541→              foundValidCombo = true;
+  1542→              break;
+  1543→            }
+  1544→          }
+  1545→          if (!foundValidCombo) {
+  1546→            // Fallback: use category-specific C/VC scoring
+  1547→            const { captain: fbC, viceCaptain: fbVC } = selectCaptainViceCaptain(fullTeam, category, t + extraAttempts);
+  1548→            combo = { c: fbC, vc: fbVC };
+  1549→          }
+  1550→        }
+  1551→
+  1552→        const signature = makeTeamSignature(fullTeam, combo.c, combo.vc);
+  1553→        if (teamSignatures.has(signature)) continue;
+  1554→        teamSignatures.add(signature);
+  1555→
+  1556→        teams.push({
+  1557→          id: teams.length + 1,
+  1558→          captain: combo.c,
+  1559→          viceCaptain: combo.vc,
+  1560→          players: fullTeam,
+  1561→        });
+  1562→        break; // Successfully added a team, move on
+  1563→      }
+  1564→    }
+  1565→  }
+  1566→
+  1567→  // Build debug info
+  1568→  const strategyUsed = combination
+  1569→    ? `MANUAL(${combination.wk}-${combination.bat}-${combination.ar}-${combination.bowl})`
+  1570→    : isH2H ? 'H2H_CONSERVATIVE' : isSL ? 'SL_BALANCED' : 'MEGA_GL_DIFFERENTIAL';
+  1571→
+  1572→  const debug = makeExtraDebug(teams.length, category, effectiveComboMode, count, lineupMode, allPlayers.length, allPlayersRaw.length, seed, strategyUsed);
+  1573→
+  1574→  console.log(`[EXTRA TEAM GEN] Mode: EXTRA | Category: ${category} | Combination: ${effectiveComboMode} | Strategy: ${strategyUsed}`);
+  1575→  console.log(`[EXTRA TEAM GEN] Requested: ${count} | Generated: ${teams.length} | Lineup: ${lineupMode} | Eligible: ${allPlayers.length}/${allPlayersRaw.length} | Seed: ${seed} | Time: ${Date.now() - startTime}ms`);
+  1576→
+  1577→  return { teams, debug };
+  1578→}
+  1579→
+  1580→// ============ Auto Select for Extra Team Generation ============
+  1581→// Uses real player data (selection %, captain %, points, credits, role, team balance)
+  1582→// to intelligently pick 8 FIX, 5 C, and 5 VC
+  1583→
+  1584→export interface AutoSelectResult {
+  1585→  fixedPlayers: TGPlayer[];
+  1586→  captainOptions: TGPlayer[];
+  1587→  viceCaptainOptions: TGPlayer[];
+  1588→}
+  1589→
+  1590→// Player scoring for auto-selection: higher = better pick
+  1591→function playerScore(p: TGPlayer): number {
+  1592→  return (
+  1593→    p.selected_by * 0.35 +       // selection % - most important for GL
+  1594→    p.captain_percentage * 0.25 + // captain % - indicates trust
+  1595→    p.points * 0.2 +             // points - performance indicator
+  1596→    p.vice_captain_percentage * 0.1 + // VC %
+  1597→    (p.playing === 1 ? 10 : 0) + // confirmed playing bonus
+  1598→    (p.role === PLAYER_ROLES.ALL_ROUNDER ? 3 : 0) + // AR bonus (flexible)
+  1599→    (p.role === PLAYER_ROLES.WICKET_KEEPER ? 1 : 0) // WK slight bonus
+  1600→  );
+  1601→}
+  1602→
+  1603→export function autoSelectExtraPlayers(
+  1604→  leftPlayers: TGPlayer[],
+  1605→  rightPlayers: TGPlayer[],
+  1606→  avoidPlayerIds: Set<number> = new Set(),
+  1607→): AutoSelectResult {
+  1608→  const allPlayersRaw = [...leftPlayers, ...rightPlayers];
+  1609→  const leftTeamName = leftPlayers[0]?.team_name || 'A';
+  1610→  const rightTeamName = rightPlayers[0]?.team_name || 'B';
+  1611→
+  1612→  // Use lineup-aware eligibility filter
+  1613→  const eligible = getEligiblePlayers(allPlayersRaw, avoidPlayerIds);
+  1614→
+  1615→  const eligibleLeft = eligible.filter(p => p.team_name === leftTeamName);
+  1616→  const eligibleRight = eligible.filter(p => p.team_name === rightTeamName);
+  1617→
+  1618→  // Sort by score descending
+  1619→  const sortByScore = (a: TGPlayer, b: TGPlayer) => playerScore(b) - playerScore(a);
+  1620→  const sortedLeft = [...eligibleLeft].sort(sortByScore);
+  1621→  const sortedRight = [...eligibleRight].sort(sortByScore);
+  1622→
+  1623→  // === SELECT 8 FIX PLAYERS ===
+  1624→  // Strategy: balanced 4-5 from each team, role-diverse
+  1625→  const fixedPlayers: TGPlayer[] = [];
+  1626→  const fixedIds = new Set<number>();
+  1627→
+  1628→  const targetLeft = Math.min(4, sortedLeft.length);
+  1629→  const targetRight = Math.min(4, sortedRight.length);
+  1630→
+  1631→  // Pick diverse players ensuring role coverage
+  1632→  const pickDiverse = (pool: TGPlayer[], count: number, existing: TGPlayer[]): TGPlayer[] => {
+  1633→    const picked: TGPlayer[] = [];
+  1634→    const usedIds = new Set(existing.map(p => p.pl_id));
+  1635→    const existingRoles = {
+  1636→      wk: existing.filter(p => p.role === PLAYER_ROLES.WICKET_KEEPER).length,
+  1637→      bat: existing.filter(p => p.role === PLAYER_ROLES.BATSMAN).length,
+  1638→      ar: existing.filter(p => p.role === PLAYER_ROLES.ALL_ROUNDER).length,
+  1639→      bowl: existing.filter(p => p.role === PLAYER_ROLES.BOWLER).length,
+  1640→    };
+  1641→
+  1642→    // First pass: fill role gaps
+  1643→    const roleNeeds = [
+  1644→      { role: PLAYER_ROLES.WICKET_KEEPER, need: Math.max(0, 1 - existingRoles.wk), pool: pool.filter(p => p.role === PLAYER_ROLES.WICKET_KEEPER && !usedIds.has(p.pl_id)) },
+  1645→      { role: PLAYER_ROLES.ALL_ROUNDER, need: Math.max(0, 1 - existingRoles.ar), pool: pool.filter(p => p.role === PLAYER_ROLES.ALL_ROUNDER && !usedIds.has(p.pl_id)) },
+  1646→      { role: PLAYER_ROLES.BATSMAN, need: Math.max(0, 2 - existingRoles.bat), pool: pool.filter(p => p.role === PLAYER_ROLES.BATSMAN && !usedIds.has(p.pl_id)) },
+  1647→      { role: PLAYER_ROLES.BOWLER, need: Math.max(0, 2 - existingRoles.bowl), pool: pool.filter(p => p.role === PLAYER_ROLES.BOWLER && !usedIds.has(p.pl_id)) },
+  1648→    ];
+  1649→
+  1650→    for (const rn of roleNeeds) {
+  1651→      for (let i = 0; i < rn.need && picked.length < count; i++) {
+  1652→        const candidate = rn.pool.find(p => !picked.some(pp => pp.pl_id === p.pl_id));
+  1653→        if (candidate) picked.push(candidate);
+  1654→      }
+  1655→    }
+  1656→
+  1657→    // Second pass: fill remaining with top-scored players
+  1658→    const remaining = pool.filter(p => !usedIds.has(p.pl_id) && !picked.some(pp => pp.pl_id === p.pl_id));
+  1659→    for (const p of remaining) {
+  1660→      if (picked.length >= count) break;
+  1661→      picked.push(p);
+  1662→    }
+  1663→
+  1664→    return picked;
+  1665→  };
+  1666→
+  1667→  const leftPicks = pickDiverse(sortedLeft, targetLeft, []);
+  1668→  for (const p of leftPicks) { fixedPlayers.push(p); fixedIds.add(p.pl_id); }
+  1669→
+  1670→  const rightPicks = pickDiverse(sortedRight, targetRight, fixedPlayers);
+  1671→  for (const p of rightPicks) { fixedPlayers.push(p); fixedIds.add(p.pl_id); }
+  1672→
+  1673→  // Fill to 8 if needed
+  1674→  if (fixedPlayers.length < 8) {
+  1675→    const remaining = eligible.filter(p => !fixedIds.has(p.pl_id)).sort(sortByScore);
+  1676→    for (const p of remaining) {
+  1677→      if (fixedPlayers.length >= 8) break;
+  1678→      fixedPlayers.push(p); fixedIds.add(p.pl_id);
+  1679→    }
+  1680→  }
+  1681→
+  1682→  // Trim to 8 if over
+  1683→  while (fixedPlayers.length > 8) {
+  1684→    let minIdx = 0; let minScore = playerScore(fixedPlayers[0]);
+  1685→    for (let i = 1; i < fixedPlayers.length; i++) {
+  1686→      const s = playerScore(fixedPlayers[i]);
+  1687→      if (s < minScore) { minScore = s; minIdx = i; }
+  1688→    }
+  1689→    const removed = fixedPlayers.splice(minIdx, 1)[0];
+  1690→    fixedIds.delete(removed.pl_id);
+  1691→  }
+  1692→
+  1693→  // === SELECT 5 CAPTAIN OPTIONS ===
+  1694→  const cCandidates = eligible
+  1695→    .filter(p => !avoidPlayerIds.has(p.pl_id))
+  1696→    .sort((a, b) => {
+  1697→      const scoreA = a.captain_percentage * 0.4 + a.selected_by * 0.3 + a.points * 0.2 + (a.role === PLAYER_ROLES.ALL_ROUNDER ? 5 : 0);
+  1698→      const scoreB = b.captain_percentage * 0.4 + b.selected_by * 0.3 + b.points * 0.2 + (b.role === PLAYER_ROLES.ALL_ROUNDER ? 5 : 0);
+  1699→      return scoreB - scoreA;
+  1700→    })
+  1701→    .slice(0, 5);
+  1702→
+  1703→  // === SELECT 5 VICE CAPTAIN OPTIONS ===
+  1704→  const vcCandidates: TGPlayer[] = [];
+  1705→  const vcPool = eligible
+  1706→    .filter(p => !avoidPlayerIds.has(p.pl_id))
+  1707→    .sort((a, b) => {
+  1708→      const scoreA = a.vice_captain_percentage * 0.35 + a.selected_by * 0.3 + a.points * 0.2 + (a.role === PLAYER_ROLES.ALL_ROUNDER ? 4 : 0);
+  1709→      const scoreB = b.vice_captain_percentage * 0.35 + b.selected_by * 0.3 + b.points * 0.2 + (b.role === PLAYER_ROLES.ALL_ROUNDER ? 4 : 0);
+  1710→      return scoreB - scoreA;
+  1711→    });
+  1712→
+  1713→  for (const p of vcPool) {
+  1714→    if (vcCandidates.length >= 5) break;
+  1715→    vcCandidates.push(p);
+  1716→  }
+  1717→
+  1718→  return {
+  1719→    fixedPlayers: fixedPlayers.slice(0, 8),
+  1720→    captainOptions: cCandidates.slice(0, 5),
+  1721→    viceCaptainOptions: vcCandidates.slice(0, 5),
+  1722→  };
+  1723→}
+  1724→
+  1725→// Auto-replace a removed player in a list with the next best eligible player
+  1726→export function autoReplacePlayer(
+  1727→  removedPlayer: TGPlayer,
+  1728→  currentList: TGPlayer[],
+  1729→  allPlayers: TGPlayer[],
+  1730→  avoidPlayerIds: Set<number>,
+  1731→  scoringFn: (p: TGPlayer) => number = playerScore,
+  1732→): TGPlayer[] {
+  1733→  const currentIds = new Set(currentList.map(p => p.pl_id));
+  1734→  const eligible = allPlayers.filter(p =>
+  1735→    !currentIds.has(p.pl_id) && !avoidPlayerIds.has(p.pl_id) && p.pl_id !== removedPlayer.pl_id
+  1736→  );
+  1737→  const sorted = eligible.sort((a, b) => scoringFn(b) - scoringFn(a));
+  1738→  const replacement = sorted[0];
+  1739→  if (replacement) return [...currentList, replacement];
+  1740→  return currentList;
+  1741→}
+  1742→

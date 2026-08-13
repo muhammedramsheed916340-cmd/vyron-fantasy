@@ -1,0 +1,2002 @@
+     1→'use client'
+     2→
+     3→import { useState, useEffect, useCallback, useRef } from 'react'
+     4→import {
+     5→  Menu,
+     6→  RefreshCw,
+     7→  Star,
+     8→  BookmarkCheck,
+     9→  Plus,
+    10→  List,
+    11→  HomeIcon,
+    12→  Clock,
+    13→  BarChart3,
+    14→  User,
+    15→  X,
+    16→  ChevronRight,
+    17→  Trophy,
+    18→  Youtube,
+    19→  Mail,
+    20→  Shield,
+    21→  FileText,
+    22→  AlertTriangle,
+    23→  Info,
+    24→  Lightbulb,
+    25→  HelpCircle,
+    26→  Users,
+    27→  ExternalLink,
+    28→  Zap,
+    29→  Share2,
+    30→  CheckCircle2,
+    31→  Globe,
+    32→  ChevronDown,
+    33→  ChevronUp,
+    34→  Loader2,
+    35→  Phone,
+    36→  LogIn,
+    37→  Crown,
+    38→  Flame,
+    39→  Bot,
+    40→  Ban,
+    41→  KeyRound,
+    42→  Lock,
+    43→  Unlock,
+    44→  Search,
+    45→  Trash2,
+    46→  Copy,
+    47→  PlusCircle,
+    48→  Settings,
+    49→  LayoutDashboard,
+    50→  FileKey,
+    51→  Activity,
+    52→} from 'lucide-react'
+    53→import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+    54→import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
+    55→import { Button } from '@/components/ui/button'
+    56→import { Badge } from '@/components/ui/badge'
+    57→import { useToast } from '@/hooks/use-toast'
+    58→import { TGPlayer, GeneratedTeam, generateTeams, generateExtraTeams, autoSelectExtraPlayers, autoReplacePlayer, ExtraTeamGenInput, getRoleName, getRoleShort, PLAYER_ROLES, getLineupMode, getEligiblePlayers, isPlayerEligible, validateTeamForLineup, RoleCombination, CombinationMode, getAllValidCombinations, getCompatibleCombinations, autoSelectCombination, validateCombination, isCombinationCompatibleWithFixed, MIN_WK, MAX_WK, MIN_BAT, MAX_BAT, MIN_AR, MAX_AR, MIN_BOWL, MAX_BOWL, normalizePlatformName, resolvePlatformPlayerId } from '@/lib/tg-api'
+    59→import JoinContestDialog from '@/components/join-contest/JoinContestDialog'
+    60→import { JCMatch } from '@/lib/join-contest-service'
+    61→
+    62→// Types
+    63→interface Match {
+    64→  _id: string
+    65→  id: string
+    66→  left_team_name: string
+    67→  right_team_name: string
+    68→  left_team_image: string
+    69→  right_team_image: string
+    70→  series_name: string
+    71→  match_time: string
+    72→  sport_index: number
+    73→  lineup_out: number
+    74→  automatic: boolean
+    75→  match_type: string
+    76→  fantasy_list: string[]
+    77→  categories: string[]
+    78→  createdAt: string
+    79→}
+    80→
+    81→interface MatchDetail {
+    82→  _id: string
+    83→  id: string
+    84→  left_team_name: string
+    85→  right_team_name: string
+    86→  left_team_image: string
+    87→  right_team_image: string
+    88→  match_time: string
+    89→  match_type: string
+    90→  sport_index: number
+    91→  lineup_status: number
+    92→  toss: string
+    93→  left_team_players: TGPlayer[]
+    94→  right_team_players: TGPlayer[]
+    95→  fantasy_version: { name: string; version: number }[]
+    96→}
+    97→
+    98→interface Promotion {
+    99→  _id: string
+   100→  label: string
+   101→  imageUrl: string
+   102→  notificationUrl: string
+   103→  urlType: number
+   104→  order: number
+   105→  active: boolean
+   106→}
+   107→
+   108→interface UserProfile {
+   109→  name: string
+   110→  email: string
+   111→  picture: string
+   112→  mobile?: string
+   113→}
+   114→
+   115→// Sport tabs configuration
+   116→const SPORTS = [
+   117→  { name: 'Cricket', icon: '🏏', key: 'cricket' },
+   118→  { name: 'Football', icon: '⚽', key: 'football' },
+   119→  { name: 'Basketball', icon: '🏀', key: 'basketball' },
+   120→  { name: 'Kabaddi', icon: '🤼', key: 'kabaddi' },
+   121→]
+   122→
+   123→// Bottom navigation items
+   124→const BOTTOM_NAV = [
+   125→  { name: 'Home', icon: HomeIcon, active: true },
+   126→  { name: 'My matches', icon: Clock, active: false },
+   127→  { name: 'Research', icon: BarChart3, active: false },
+   128→  { name: 'User', icon: User, active: false },
+   129→]
+   130→
+   131→// Sidebar navigation items
+   132→const SIDEBAR_ITEMS = [
+   133→  { name: 'How to generate?', icon: HelpCircle, type: 'modal' as const, modalKey: 'howto' },
+   134→  { name: 'Best tips', icon: Lightbulb, type: 'modal' as const, modalKey: 'tips' },
+   135→  { name: 'Privacy Policy', icon: Shield, type: 'modal' as const, modalKey: 'privacy' },
+   136→  { name: 'Terms And Conditions', icon: FileText, type: 'modal' as const, modalKey: 'terms' },
+   137→  { name: 'Disclaimer', icon: AlertTriangle, type: 'modal' as const, modalKey: 'disclaimer' },
+   138→  { name: 'contact us', icon: Mail, type: 'modal' as const, modalKey: 'contact' },
+   139→  { name: 'About VYRON', icon: Info, type: 'modal' as const, modalKey: 'about' },
+   140→]
+   141→
+   142→// Team count options
+   143→const TEAM_COUNTS = [1, 2, 5, 10, 20, 40, 80, 100, 200, 400]
+   144→
+   145→// Countdown timer component
+   146→function CountdownTimer({ matchTime }: { matchTime: string }) {
+   147→  const [timeLeft, setTimeLeft] = useState('')
+   148→
+   149→  useEffect(() => {
+   150→    const calculateTime = () => {
+   151→      const now = new Date().getTime()
+   152→      const matchDate = new Date(matchTime).getTime()
+   153→      const diff = matchDate - now
+   154→
+   155→      if (diff <= 0) {
+   156→        setTimeLeft('Started')
+   157→        return
+   158→      }
+   159→
+   160→      const days = Math.floor(diff / (1000 * 60 * 60 * 24))
+   161→      const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
+   162→      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60))
+   163→      const seconds = Math.floor((diff % (1000 * 60)) / 1000)
+   164→
+   165→      if (days > 0) {
+   166→        setTimeLeft(`${days}d ${hours}h ${minutes}m ${seconds}s`)
+   167→      } else {
+   168→        setTimeLeft(`${hours}h ${minutes}m ${seconds}s`)
+   169→      }
+   170→    }
+   171→
+   172→    calculateTime()
+   173→    const interval = setInterval(calculateTime, 1000)
+   174→    return () => clearInterval(interval)
+   175→  }, [matchTime])
+   176→
+   177→  return <span className="font-medium text-sm text-foreground">{timeLeft}</span>
+   178→}
+   179→
+   180→// Category badge component
+   181→function CategoryBadge({ category }: { category: string }) {
+   182→  const styles: Record<string, string> = {
+   183→    'Mega GL': 'bg-[#00bfa5] text-white hover:bg-[#00bfa5]',
+   184→    'SL': 'bg-[#ffc107] text-gray-900 hover:bg-[#ffc107]',
+   185→    'H2H': 'bg-[#f44336] text-white hover:bg-[#f44336]',
+   186→  }
+   187→  return (
+   188→    <Badge className={`${styles[category] || 'bg-gray-500 text-white'} text-[10px] px-1.5 py-0 font-semibold border-0 rounded`}>
+   189→      {category}
+   190→    </Badge>
+   191→  )
+   192→}
+   193→
+   194→// Match card component
+   195→function MatchCard({ match, onSave, isSaved, onOpen }: { match: Match; onSave: (id: string) => void; isSaved: boolean; onOpen: (match: Match) => void }) {
+   196→  return (
+   197→    <div className="bg-white rounded-lg border border-gray-100 shadow-sm p-3 cursor-pointer active:scale-[0.98] transition-transform" onClick={() => onOpen(match)}>
+   198→      {/* League name */}
+   199→      <div className="flex items-center gap-1.5 mb-3">
+   200→        <Star className="w-3.5 h-3.5 text-gray-400" />
+   201→        <span className="text-xs text-gray-600 font-medium">{match.series_name}</span>
+   202→      </div>
+   203→
+   204→      {/* Teams row */}
+   205→      <div className="flex items-center justify-between mb-3">
+   206→        {/* Left team */}
+   207→        <div className="flex items-center gap-2 flex-1">
+   208→          <img
+   209→            src={match.left_team_image}
+   210→            alt={match.left_team_name}
+   211→            className="w-9 h-9 rounded-full object-cover bg-gray-100"
+   212→          />
+   213→          <span className="font-extrabold text-[15px]">{match.left_team_name}</span>
+   214→        </div>
+   215→
+   216→        {/* Timer */}
+   217→        <div className="text-center px-2">
+   218→          <CountdownTimer matchTime={match.match_time} />
+   219→        </div>
+   220→
+   221→        {/* Right team */}
+   222→        <div className="flex items-center gap-2 flex-1 justify-end">
+   223→          <span className="font-extrabold text-[15px]">{match.right_team_name}</span>
+   224→          <img
+   225→            src={match.right_team_image}
+   226→            alt={match.right_team_name}
+   227→            className="w-9 h-9 rounded-full object-cover bg-gray-100"
+   228→          />
+   229→        </div>
+   230→      </div>
+   231→
+   232→      {/* Footer: Categories + Actions */}
+   233→      <div className="flex items-center justify-between">
+   234→        <div className="flex gap-1.5">
+   235→          {match.categories.map((cat) => (
+   236→            <CategoryBadge key={cat} category={cat} />
+   237→          ))}
+   238→        </div>
+   239→        <div className="flex gap-1.5">
+   240→          <Button
+   241→            size="sm"
+   242→            className={`h-7 text-xs px-3 rounded ${isSaved ? 'bg-green-600 hover:bg-green-700' : 'bg-[#2196f3] hover:bg-[#1e88e5]'}`}
+   243→            onClick={(e) => { e.stopPropagation(); onSave(match._id) }}
+   244→          >
+   245→            {isSaved ? (
+   246→              <><BookmarkCheck className="w-3.5 h-3.5 mr-0.5" /> Saved</>
+   247→            ) : (
+   248→              <><Plus className="w-3.5 h-3.5 mr-0.5" /> save</>
+   249→            )}
+   250→          </Button>
+   251→          <Button
+   252→            size="sm"
+   253→            className="h-7 w-7 p-0 bg-[#00D4AA] hover:bg-[#00B894] text-white rounded"
+   254→            onClick={(e) => { e.stopPropagation(); onOpen(match) }}
+   255→          >
+   256→            <List className="w-3.5 h-3.5" />
+   257→          </Button>
+   258→        </div>
+   259→      </div>
+   260→    </div>
+   261→  )
+   262→}
+   263→
+   264→// Player role color
+   265→function roleColor(role: number): string {
+   266→  switch (role) {
+   267→    case PLAYER_ROLES.WICKET_KEEPER: return 'bg-blue-100 text-blue-800 border-blue-200'
+   268→    case PLAYER_ROLES.BATSMAN: return 'bg-orange-100 text-orange-800 border-orange-200'
+   269→    case PLAYER_ROLES.ALL_ROUNDER: return 'bg-purple-100 text-purple-800 border-purple-200'
+   270→    case PLAYER_ROLES.BOWLER: return 'bg-green-100 text-green-800 border-green-200'
+   271→    default: return 'bg-gray-100 text-gray-800 border-gray-200'
+   272→  }
+   273→}
+   274→
+   275→// Player Row Component
+   276→function PlayerRow({ player, isCaptain, isViceCaptain, teamName }: {
+   277→  player: TGPlayer
+   278→  isCaptain?: boolean
+   279→  isViceCaptain?: boolean
+   280→  teamName?: string
+   281→}) {
+   282→  return (
+   283→    <div className="flex items-center gap-2 py-1.5 px-2 border-b border-gray-50 last:border-0 text-xs">
+   284→      <div className="w-7 h-7 rounded-full overflow-hidden bg-gray-100 flex-shrink-0">
+   285→        <img src={player.image} alt={player.name} className="w-full h-full object-cover" />
+   286→      </div>
+   287→      <div className="flex-1 min-w-0">
+   288→        <div className="flex items-center gap-1">
+   289→          <span className="font-semibold truncate">{player.name}</span>
+   290→          {isCaptain && <Crown className="w-3 h-3 text-yellow-500 flex-shrink-0" />}
+   291→          {isViceCaptain && <Crown className="w-3 h-3 text-gray-400 flex-shrink-0" />}
+   292→          {player.playing === 1 && <span className="text-[7px] bg-green-100 text-green-700 px-0.5 rounded font-bold">PLAYING</span>}
+   293→        </div>
+   294→        <div className="flex items-center gap-1 mt-0.5">
+   295→          <span className={`text-[9px] px-1 py-0 rounded border ${roleColor(player.role)}`}>
+   296→            {getRoleShort(player.role)}
+   297→          </span>
+   298→          {teamName && <span className="text-[9px] text-gray-400">{teamName}</span>}
+   299→        </div>
+   300→      </div>
+   301→      <div className="text-right flex-shrink-0 w-8">
+   302→        <span className="font-medium">{player.credits}</span>
+   303→      </div>
+   304→      <div className="text-right flex-shrink-0 w-10">
+   305→        <span className="text-gray-500">{player.selected_by}%</span>
+   306→      </div>
+   307→    </div>
+   308→  )
+   309→}
+   310→
+   311→// Generated Team Card
+   312→function GeneratedTeamCard({ team, leftTeamName, rightTeamName, teamIndex }: {
+   313→  team: GeneratedTeam
+   314→  leftTeamName: string
+   315→  rightTeamName: string
+   316→  teamIndex: number
+   317→}) {
+   318→  const [expanded, setExpanded] = useState(false)
+   319→  const leftPlayers = team.players.filter(p => p.team_name === leftTeamName)
+   320→  const rightPlayers = team.players.filter(p => p.team_name === rightTeamName)
+   321→  const totalCredits = team.players.reduce((sum, p) => sum + p.credits, 0)
+   322→
+   323→  return (
+   324→    <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden mb-2">
+   325→      {/* Header */}
+   326→      <div
+   327→        className="flex items-center justify-between p-2.5 cursor-pointer hover:bg-gray-50"
+   328→        onClick={() => setExpanded(!expanded)}
+   329→      >
+   330→        <div className="flex items-center gap-2">
+   331→          <span className="text-xs font-bold text-[#6C63FF]">Team {teamIndex}</span>
+   332→          <Badge className="bg-[#00bfa5] text-white text-[9px] border-0 px-1.5">
+   333→            C: {team.captain.name}
+   334→          </Badge>
+   335→          <Badge className="bg-[#00D4AA] text-white text-[9px] border-0 px-1.5">
+   336→            VC: {team.viceCaptain.name}
+   337→          </Badge>
+   338→        </div>
+   339→        <div className="flex items-center gap-2">
+   340→          <span className="text-[10px] text-gray-500">{totalCredits.toFixed(1)} cr</span>
+   341→          <span className="text-[10px] text-gray-500">{leftPlayers.length}-{rightPlayers.length}</span>
+   342→          {expanded ? <ChevronUp className="w-3.5 h-3.5 text-gray-400" /> : <ChevronDown className="w-3.5 h-3.5 text-gray-400" />}
+   343→        </div>
+   344→      </div>
+   345→
+   346→      {/* Expanded content */}
+   347→      {expanded && (
+   348→        <div className="border-t border-gray-100">
+   349→          {/* Players by team */}
+   350→          <div className="grid grid-cols-2 divide-x divide-gray-100">
+   351→            <div className="p-2">
+   352→              <p className="text-[10px] font-bold text-[#6C63FF] mb-1">{leftTeamName} ({leftPlayers.length})</p>
+   353→              {leftPlayers.map(p => (
+   354→                <PlayerRow
+   355→                  key={p.pl_id}
+   356→                  player={p}
+   357→                  isCaptain={p.pl_id === team.captain.pl_id}
+   358→                  isViceCaptain={p.pl_id === team.viceCaptain.pl_id}
+   359→                />
+   360→              ))}
+   361→            </div>
+   362→            <div className="p-2">
+   363→              <p className="text-[10px] font-bold text-[#00D4AA] mb-1">{rightTeamName} ({rightPlayers.length})</p>
+   364→              {rightPlayers.map(p => (
+   365→                <PlayerRow
+   366→                  key={p.pl_id}
+   367→                  player={p}
+   368→                  isCaptain={p.pl_id === team.captain.pl_id}
+   369→                  isViceCaptain={p.pl_id === team.viceCaptain.pl_id}
+   370→                />
+   371→              ))}
+   372→            </div>
+   373→          </div>
+   374→        </div>
+   375→      )}
+   376→    </div>
+   377→  )
+   378→}
+   379→
+   380→// Modal content components
+   381→function HowToGenerateContent() {
+   382→  return (
+   383→    <div className="space-y-4 text-sm text-gray-700">
+   384→      <h3 className="text-lg font-bold text-[#6C63FF]">How to Generate Teams?</h3>
+   385→      <ol className="list-decimal pl-5 space-y-2">
+   386→        <li>Select a match from the &quot;Upcoming Matches&quot; list on the home page.</li>
+   387→        <li>Click on the match card to open the team generation page.</li>
+   388→        <li>Choose the category: <strong>Mega GL</strong>, <strong>SL</strong>, or <strong>H2H</strong>.</li>
+   389→        <li>Select the number of teams you want to generate (1, 2, 5, 10, 20, 40, etc.).</li>
+   390→        <li>Click on <strong>&quot;Generate Teams&quot;</strong> button to create your fantasy teams.</li>
+   391→        <li>The software will automatically create optimized teams with Captain &amp; Vice-Captain.</li>
+   392→        <li>View each generated team with player details, credits, and selection %.</li>
+   393→        <li>Login to <strong>Dream11</strong> or <strong>My11Circle</strong> to transfer teams directly.</li>
+   394→      </ol>
+   395→      <div className="bg-blue-50 p-3 rounded-lg border border-blue-200">
+   396→        <p className="text-blue-800 font-medium">💡 Tip: Use Extra Generation mode for advanced team creation with fixed players and captain options!</p>
+   397→      </div>
+   398→    </div>
+   399→  )
+   400→}
+   401→
+   402→function BestTipsContent() {
+   403→  return (
+   404→    <div className="space-y-4 text-sm text-gray-700">
+   405→      <h3 className="text-lg font-bold text-[#6C63FF]">Best Tips for Dream11</h3>
+   406→      <div className="space-y-3">
+   407→        <div className="bg-green-50 p-3 rounded-lg border border-green-200">
+   408→          <h4 className="font-semibold text-green-800 mb-1">🎯 Captain & Vice Captain Selection</h4>
+   409→          <p>Always choose a top-order batsman or an all-rounder as Captain. Pick a consistent performer as Vice Captain.</p>
+   410→        </div>
+   411→        <div className="bg-blue-50 p-3 rounded-lg border border-blue-200">
+   412→          <h4 className="font-semibold text-blue-800 mb-1">⚖️ Team Balance</h4>
+   413→          <p>Maintain a balanced team with proper mix of batsmen, bowlers, and all-rounders. All-rounders give maximum points.</p>
+   414→        </div>
+   415→        <div className="bg-purple-50 p-3 rounded-lg border border-purple-200">
+   416→          <h4 className="font-semibold text-purple-800 mb-1">📊 Research & Analysis</h4>
+   417→          <p>Check player recent form, head-to-head records, pitch report, and weather conditions before creating teams.</p>
+   418→        </div>
+   419→        <div className="bg-amber-50 p-3 rounded-lg border border-amber-200">
+   420→          <h4 className="font-semibold text-amber-800 mb-1">🏆 Grand League Strategy</h4>
+   421→          <p>Create multiple teams with different combinations. Use VYRON to generate optimized teams automatically.</p>
+   422→        </div>
+   423→        <div className="bg-red-50 p-3 rounded-lg border border-red-200">
+   424→          <h4 className="font-semibold text-red-800 mb-1">⚡ Differential Picks</h4>
+   425→          <p>In Grand League, include 1-2 differential picks (low selection percentage players) who can give big points.</p>
+   426→        </div>
+   427→      </div>
+   428→    </div>
+   429→  )
+   430→}
+   431→
+   432→function PrivacyPolicyContent() {
+   433→  return (
+   434→    <div className="space-y-3 text-sm text-gray-700">
+   435→      <h3 className="text-lg font-bold text-[#6C63FF]">Privacy Policy</h3>
+   436→      <p className="font-semibold">Last updated: January 2025</p>
+   437→      <p>VYRON (&quot;we&quot;, &quot;us&quot;, or &quot;our&quot;) operates the VYRON platform. This page informs you of our policies regarding the collection, use, and disclosure of personal information when you use our Service.</p>
+   438→      <h4 className="font-semibold text-gray-900">Information We Collect</h4>
+   439→      <p>We collect information that you provide directly to us, including:</p>
+   440→      <ul className="list-disc pl-5 space-y-1">
+   441→        <li>Your Google account information when you sign in</li>
+   442→        <li>Match preferences and saved matches data</li>
+   443→        <li>Device information and usage statistics</li>
+   444→      </ul>
+   445→      <h4 className="font-semibold text-gray-900">How We Use Information</h4>
+   446→      <p>We use the information we collect to operate, maintain, and improve our Service, to communicate with you, and to provide customer support.</p>
+   447→      <h4 className="font-semibold text-gray-900">Data Security</h4>
+   448→      <p>We implement appropriate security measures to protect your personal information. However, no method of transmission over the Internet is 100% secure.</p>
+   449→      <h4 className="font-semibold text-gray-900">Third-Party Services</h4>
+   450→      <p>We may use third-party services such as Google AdSense and Google Analytics that may collect information about your use of our Service.</p>
+   451→    </div>
+   452→  )
+   453→}
+   454→
+   455→function TermsAndConditionsContent() {
+   456→  return (
+   457→    <div className="space-y-3 text-sm text-gray-700">
+   458→      <h3 className="text-lg font-bold text-[#6C63FF]">Terms And Conditions</h3>
+   459→      <p className="font-semibold">Last updated: January 2025</p>
+   460→      <p>By accessing and using VYRON software, you agree to be bound by these Terms and Conditions.</p>
+   461→      <h4 className="font-semibold text-gray-900">1. Acceptance of Terms</h4>
+   462→      <p>By using this service, you acknowledge that you have read and agree to these terms. If you do not agree, please do not use the service.</p>
+   463→      <h4 className="font-semibold text-gray-900">2. Service Description</h4>
+   464→      <p>VYRON is an AI-powered fantasy sports team generator that helps create optimized teams for platforms like Dream11. The software provides team suggestions based on algorithms and analysis.</p>
+   465→      <h4 className="font-semibold text-gray-900">3. Disclaimer</h4>
+   466→      <p>The teams generated by this software are suggestions only. We do not guarantee any winnings or results. Fantasy sports involve risk, and users should play responsibly.</p>
+   467→      <h4 className="font-semibold text-gray-900">4. User Responsibilities</h4>
+   468→      <p>Users are responsible for their own decisions and actions while using the generated teams. Users must comply with the terms of the respective fantasy sports platforms.</p>
+   469→      <h4 className="font-semibold text-gray-900">5. Intellectual Property</h4>
+   470→      <p>All content, software, and materials on this platform are owned by VYRON and are protected by intellectual property laws.</p>
+   471→    </div>
+   472→  )
+   473→}
+   474→
+   475→function DisclaimerContent() {
+   476→  return (
+   477→    <div className="space-y-3 text-sm text-gray-700">
+   478→      <h3 className="text-lg font-bold text-[#6C63FF]">Disclaimer</h3>
+   479→      <p>The information provided by VYRON (&quot;we&quot;, &quot;us&quot;, or &quot;our&quot;) is for general informational purposes only.</p>
+   480→      <div className="bg-amber-50 p-3 rounded-lg border border-amber-200">
+   481→        <p className="text-amber-800 font-medium">⚠️ Important Disclaimer:</p>
+   482→        <ul className="list-disc pl-5 mt-2 space-y-1 text-amber-700">
+   483→          <li>VYRON is NOT affiliated with Dream11 or any other fantasy sports platform.</li>
+   484→          <li>The teams generated are suggestions only and do not guarantee any winnings.</li>
+   485→          <li>Fantasy sports involve financial risk. Play at your own risk and responsibility.</li>
+   486→          <li>We are not responsible for any financial losses incurred while using our suggestions.</li>
+   487→          <li>Users must be 18+ years old and comply with their local laws regarding fantasy sports.</li>
+   488→        </ul>
+   489→      </div>
+   490→      <p>Under no circumstance shall we have any liability to you for any loss or damage of any kind incurred as a result of the use of the site or reliance on any information provided on the site.</p>
+   491→    </div>
+   492→  )
+   493→}
+   494→
+   495→function ContactUsContent() {
+   496→  return (
+   497→    <div className="space-y-4 text-sm text-gray-700">
+   498→      <h3 className="text-lg font-bold text-[#6C63FF]">VYRON Support</h3>
+   499→      <p>If you have any questions, suggestions, or need support, feel free to reach out to us:</p>
+   500→      <div className="space-y-3">
+   501→        <div className="flex items-center gap-3 bg-gray-50 p-3 rounded-lg">
+   502→          <Mail className="w-5 h-5 text-[#6C63FF]" />
+   503→          <div>
+   504→            <p className="font-semibold text-gray-900">VYRON</p>
+   505→            <p className="text-gray-600">AI Fantasy Cricket Platform</p>
+   506→          </div>
+   507→        </div>
+   508→      </div>
+   509→    </div>
+   510→  )
+   511→}
+   512→
+   513→function AboutUsContent() {
+   514→  return (
+   515→    <div className="space-y-4 text-sm text-gray-700">
+   516→      <h3 className="text-lg font-bold text-[#6C63FF]">About VYRON</h3>
+   517→      <div className="flex items-center gap-3 mb-4">
+   518→        <img src="/vyron_logo.svg" alt="VYRON" className="h-12" />
+   519→      </div>
+   520→      <p>VYRON is an advanced AI-powered Fantasy Cricket Team Generator that uses intelligent algorithms and data analysis to create optimized teams for Grand League (GL), Small League (SL), and Head-to-Head (H2H) contests.</p>
+   521→      <h4 className="font-semibold text-gray-900">What We Offer:</h4>
+   522→      <ul className="list-disc pl-5 space-y-1">
+   523→        <li>AI-optimized team generation for Cricket, Football, Basketball, and Kabaddi</li>
+   524→        <li>Multiple team creation for Grand League contests</li>
+   525→        <li>Direct transfer to Dream11 &amp; My11Circle</li>
+   526→        <li>Extra Generation with fixed players and captain options</li>
+   527→        <li>Auto and Manual mode for team customization</li>
+   528→      </ul>
+   529→      <div className="bg-[#6C63FF]/5 p-3 rounded-lg border border-[#6C63FF]/20">
+   530→        <p className="text-[#6C63FF] font-medium">AI-Powered Fantasy Cricket Team Generation</p>
+   531→      </div>
+   532→    </div>
+   533→  )
+   534→}
+   535→
+   536→const MODAL_CONTENT: Record<string, () => React.ReactNode> = {
+   537→  howto: () => <HowToGenerateContent />,
+   538→  tips: () => <BestTipsContent />,
+   539→  privacy: () => <PrivacyPolicyContent />,
+   540→  terms: () => <TermsAndConditionsContent />,
+   541→  disclaimer: () => <DisclaimerContent />,
+   542→  contact: () => <ContactUsContent />,
+   543→  about: () => <AboutUsContent />,
+   544→}
+   545→
+   546→// Main Page Component
+   547→export default function Home() {
+   548→  const [activeSport, setActiveSport] = useState('cricket')
+   549→  const [matches, setMatches] = useState<Match[]>([])
+   550→  const [promotions, setPromotions] = useState<Promotion[]>([])
+   551→  const [loading, setLoading] = useState(true)
+   552→  const [sidebarOpen, setSidebarOpen] = useState(false)
+   553→  const [activeModal, setActiveModal] = useState<string | null>(null)
+   554→  const [savedMatches, setSavedMatches] = useState<Set<string>>(new Set())
+   555→  const [activeBottomNav, setActiveBottomNav] = useState('Home')
+   556→  const [carouselIndex, setCarouselIndex] = useState(0)
+   557→  const [selectedMatch, setSelectedMatch] = useState<Match | null>(null)
+   558→  const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
+   559→  const [selectedTeamCount, setSelectedTeamCount] = useState<number>(20)
+   560→  const [matchDetail, setMatchDetail] = useState<MatchDetail | null>(null)
+   561→  const [matchDetailLoading, setMatchDetailLoading] = useState(false)
+   562→  const [generatedTeams, setGeneratedTeams] = useState<GeneratedTeam[]>([])
+   563→  const [generating, setGenerating] = useState(false)
+   564→  const [showPlayerList, setShowPlayerList] = useState(false)
+   565→  const [loginPlatform, setLoginPlatform] = useState<string | null>(null)
+   566→  const [mobileNumber, setMobileNumber] = useState('')
+   567→  const [otp, setOtp] = useState('')
+   568→  const [otpSent, setOtpSent] = useState(false)
+   569→  const [otpVerifying, setOtpVerifying] = useState(false)
+   570→  const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
+   571→  const [authToken, setAuthToken] = useState<string | null>(null)
+   572→  const [showLoginDialog, setShowLoginDialog] = useState(false)
+   573→  const [showTransferDialog, setShowTransferDialog] = useState(false)
+   574→  const [showJoinContestDialog, setShowJoinContestDialog] = useState(false)
+   575→  const [transferPlatform, setTransferPlatform] = useState<string | null>(null)
+   576→  const [transferOption, setTransferOption] = useState<'new' | 'existing' | 'replace'>('new')
+   577→  const [contestId, setContestId] = useState<string>('')
+   578→  const [transferring, setTransferring] = useState(false)
+   579→  const [transferProgress, setTransferProgress] = useState({ current: 0, total: 0, status: 'idle' as 'idle' | 'transferring' | 'done' | 'error' })
+   580→
+   581→  // OTP state for Dream11
+   582→  const [otpState, setOtpState] = useState<string | null>(null)
+   583→
+   584→  // Fantasy accounts stored per platform
+   585→  interface FantasyAccount {
+   586→    authToken: string
+   587→    mobileNumber: string
+   588→    my11circleChallenge?: string | null
+   589→    my11circleUserId?: string | null
+   590→    linkedAt: string
+   591→  }
+   592→  const [fantasyAccounts, setFantasyAccounts] = useState<Record<string, FantasyAccount | null>>({
+   593→    dream11: null,
+   594→    my11circle: null,
+   595→  })
+   596→
+   597→  // Per-team transfer results
+   598→  interface TransferTeamResult {
+   599→    teamNumber: number
+   600→    status: 'pending' | 'processing' | 'success' | 'fail'
+   601→    message?: string
+   602→  }
+   603→  const [transferResults, setTransferResults] = useState<TransferTeamResult[]>([])
+   604→  const [transferSuccessCount, setTransferSuccessCount] = useState(0)
+   605→  const [transferFailCount, setTransferFailCount] = useState(0)
+   606→
+   607→  // Existing teams on platform (for Replace mode)
+   608→  interface ExistingTeam {
+   609→    id: string | number
+   610→    name: string
+   611→    captain?: string
+   612→    players?: number
+   613→  }
+   614→  const [existingTeams, setExistingTeams] = useState<ExistingTeam[]>([])
+   615→  const [existingTeamsLoading, setExistingTeamsLoading] = useState(false)
+   616→  const [selectedReplaceIds, setSelectedReplaceIds] = useState<Set<string | number>>(new Set())
+   617→
+   618→  // Extra Team Generation state
+   619→  const [genMode, setGenMode] = useState<'normal' | 'extra'>('normal')
+   620→  const [extraSubMode, setExtraSubMode] = useState<'manual' | 'auto'>('manual')
+   621→  const [extraFixedPlayers, setExtraFixedPlayers] = useState<TGPlayer[]>([])
+   622→  const [extraCaptainOptions, setExtraCaptainOptions] = useState<TGPlayer[]>([])
+   623→  const [extraViceCaptainOptions, setExtraViceCaptainOptions] = useState<TGPlayer[]>([])
+   624→  const [extraAvoidPlayers, setExtraAvoidPlayers] = useState<TGPlayer[]>([])
+   625→  const [extraPlayerPickerOpen, setExtraPlayerPickerOpen] = useState<'fix' | 'captain' | 'vicecaptain' | 'avoid' | null>(null)
+   626→  const [extraPlayerPickerSlot, setExtraPlayerPickerSlot] = useState<number>(0) // which slot is being picked
+   627→  const [extraAutoLastUpdated, setExtraAutoLastUpdated] = useState<string>('')
+   628→
+   629→  // Combination Mode state
+   630→  const [combinationMode, setCombinationMode] = useState<CombinationMode>('auto')
+   631→  const [manualCombination, setManualCombination] = useState<RoleCombination>({ wk: 1, bat: 4, ar: 2, bowl: 4 })
+   632→  const [combinationErrors, setCombinationErrors] = useState<string[]>([])
+   633→
+   634→  // Lineup-aware team validation state
+   635→  const [invalidTeams, setInvalidTeams] = useState<Map<number, { player: TGPlayer; reason: string }[]>>(new Map())
+   636→
+   637→  // Avoid players for normal mode
+   638→  const [normalAvoidPlayers, setNormalAvoidPlayers] = useState<TGPlayer[]>([])
+   639→
+   640→  // Admin Panel - Hidden, accessed via 5-tap on header logo
+   641→  const [logoTapCount, setLogoTapCount] = useState(0)
+   642→  const [logoTapTimer, setLogoTapTimer] = useState<NodeJS.Timeout | null>(null)
+   643→  const [showAdminLogin, setShowAdminLogin] = useState(false)
+   644→  const [adminPassword, setAdminPassword] = useState('')
+   645→  const [adminLoggingIn, setAdminLoggingIn] = useState(false)
+   646→  const [adminToken, setAdminToken] = useState<string | null>(null)
+   647→  const [adminView, setAdminView] = useState<'dashboard' | 'licenses' | 'users' | 'logs' | 'settings'>('dashboard')
+   648→
+   649→  // Admin License Management
+   650→  const [adminLicenses, setAdminLicenses] = useState<any[]>([])
+   651→  const [adminLicenseLoading, setAdminLicenseLoading] = useState(false)
+   652→  const [adminLicenseType, setAdminLicenseType] = useState<string>('MONTHLY')
+   653→  const [adminLicenseCount, setAdminLicenseCount] = useState<number>(1)
+   654→  const [adminLicenseSearch, setAdminLicenseSearch] = useState('')
+   655→  const [adminTransferLogs, setAdminTransferLogs] = useState<any[]>([])
+   656→
+   657→  // License state (kept for admin panel compatibility)
+   658→  const [userLicense, setUserLicense] = useState<{ valid: boolean; license?: { key: string; type: string; status: string; expiresAt: string | null; assignedTo: string | null } } | null>(null)
+   659→
+   660→  const generatedTeamsRef = useRef<HTMLDivElement>(null)
+   661→  const { toast } = useToast()
+   662→
+   663→  // Fetch matches
+   664→  const loadMatches = useCallback(async (sport: string) => {
+   665→    setLoading(true)
+   666→    try {
+   667→      const res = await fetch(`/api/matches?sport=${sport}`)
+   668→      const data = await res.json()
+   669→      if (data.status === 'success') {
+   670→        setMatches(data.data)
+   671→      }
+   672→    } catch (err) {
+   673→      console.error('Failed to fetch matches:', err)
+   674→    } finally {
+   675→      setLoading(false)
+   676→    }
+   677→  }, [])
+   678→
+   679→  // Fetch promotions
+   680→  const loadPromotions = useCallback(async () => {
+   681→    try {
+   682→      const res = await fetch('/api/promotions')
+   683→      const data = await res.json()
+   684→      if (data.status === 'success') {
+   685→        setPromotions(data.data)
+   686→      }
+   687→    } catch (err) {
+   688→      console.error('Failed to fetch promotions:', err)
+   689→    }
+   690→  }, [])
+   691→
+   692→  useEffect(() => {
+   693→    loadMatches(activeSport)
+   694→    loadPromotions()
+   695→  }, [activeSport, loadMatches, loadPromotions])
+   696→
+   697→  // Auto-rotate carousel
+   698→  useEffect(() => {
+   699→    if (promotions.length <= 1) return
+   700→    const interval = setInterval(() => {
+   701→      setCarouselIndex((prev) => (prev + 1) % promotions.length)
+   702→    }, 4000)
+   703→    return () => clearInterval(interval)
+   704→  }, [promotions.length])
+   705→
+   706→  // Handle save match
+   707→  const handleSaveMatch = (matchId: string) => {
+   708→    setSavedMatches((prev) => {
+   709→      const next = new Set(prev)
+   710→      if (next.has(matchId)) {
+   711→        next.delete(matchId)
+   712→        toast({ title: 'Match removed from saved list' })
+   713→      } else {
+   714→        next.add(matchId)
+   715→        toast({ title: 'Match saved successfully!' })
+   716→      }
+   717→      return next
+   718→    })
+   719→  }
+   720→
+   721→  // Validate user license - check server-side
+   722→  const validateUserLicense = useCallback(async () => {
+   723→    // Try to find an active license for any linked account
+   724→    const accounts = JSON.parse(localStorage.getItem('vyron_fantasy_accounts') || '{}')
+   725→    let accountId: string | null = null
+   726→    for (const platform of ['dream11', 'my11circle']) {
+   727→      if (accounts[platform]?.mobileNumber) {
+   728→        accountId = accounts[platform].mobileNumber
+   729→        break
+   730→      }
+   731→    }
+   732→    if (!accountId) {
+   733→      // Also check stored license key
+   734→      const storedKey = localStorage.getItem('vyron_license_key')
+   735→      if (storedKey) {
+   736→        try {
+   737→          const res = await fetch('/api/license/validate', {
+   738→            method: 'POST',
+   739→            headers: { 'Content-Type': 'application/json' },
+   740→            body: JSON.stringify({ licenseKey: storedKey }),
+   741→          })
+   742→          const data = await res.json()
+   743→          if (data.status === 'success') {
+   744→            setUserLicense(data.data)
+   745→            return
+   746→          }
+   747→        } catch {}
+   748→      }
+   749→      setUserLicense({ valid: false })
+   750→      return
+   751→    }
+   752→    try {
+   753→      const res = await fetch('/api/license/validate', {
+   754→        method: 'POST',
+   755→        headers: { 'Content-Type': 'application/json' },
+   756→        body: JSON.stringify({ accountId }),
+   757→      })
+   758→      const data = await res.json()
+   759→      if (data.status === 'success') {
+   760→        setUserLicense(data.data)
+   761→        if (data.data.valid && data.data.license?.key) {
+   762→          localStorage.setItem('vyron_license_key', data.data.license.key)
+   763→        }
+   764→      }
+   765→    } catch {
+   766→      setUserLicense({ valid: false })
+   767→    }
+   768→  }, [])
+   769→
+   770→  // Re-validate license when accounts change
+   771→  useEffect(() => {
+   772→    validateUserLicense()
+   773→  }, [validateUserLicense, fantasyAccounts])
+   774→
+   775→  // Load admin data when admin dashboard opens
+   776→  useEffect(() => {
+   777→    if (activeModal === 'admin-dashboard' && adminToken) {
+   778→      fetch('/api/admin/licenses', { headers: { 'Authorization': `Bearer ${adminToken}` } })
+   779→        .then(res => res.json())
+   780→        .then(data => { if (data.status === 'success') setAdminLicenses(data.data) })
+   781→        .catch(() => {})
+   782→      fetch('/api/admin/transfer-logs', { headers: { 'Authorization': `Bearer ${adminToken}` } })
+   783→        .then(res => res.json())
+   784→        .then(data => { if (data.status === 'success') setAdminTransferLogs(data.data.logs) })
+   785→        .catch(() => {})
+   786→    }
+   787→  }, [activeModal, adminToken])
+   788→
+   789→  // Handle 5-tap on header logo to open admin login
+   790→  const handleLogoTap = () => {
+   791→    const newCount = logoTapCount + 1
+   792→    setLogoTapCount(newCount)
+   793→    if (logoTapTimer) clearTimeout(logoTapTimer)
+   794→    if (newCount >= 5) {
+   795→      setLogoTapCount(0)
+   796→      setShowAdminLogin(true)
+   797→      return
+   798→    }
+   799→    const timer = setTimeout(() => setLogoTapCount(0), 2000)
+   800→    setLogoTapTimer(timer)
+   801→  }
+   802→
+   803→  // Handle refresh
+   804→  const handleRefresh = () => {
+   805→    loadMatches(activeSport)
+   806→    loadPromotions()
+   807→    toast({ title: 'Data refreshed!' })
+   808→  }
+   809→
+   810→  // Handle match card click - open match detail
+   811→  const handleOpenMatch = async (match: Match) => {
+   812→    setSelectedMatch(match)
+   813→    setSelectedCategory(match.categories[0] || null)
+   814→    setSelectedTeamCount(20)
+   815→    setGeneratedTeams([])
+   816→    setShowPlayerList(false)
+   817→    setMatchDetail(null)
+   818→    setMatchDetailLoading(true)
+   819→    setGenMode('normal')
+   820→    setExtraSubMode('manual')
+   821→    setExtraFixedPlayers([])
+   822→    setExtraCaptainOptions([])
+   823→    setExtraViceCaptainOptions([])
+   824→    setExtraAvoidPlayers([])
+   825→    setExtraAutoLastUpdated('')
+   826→
+   827→    try {
+   828→      const res = await fetch(`/api/match-detail?matchId=${match.id}`)
+   829→      const data = await res.json()
+   830→      if (data.status === 'success') {
+   831→        setMatchDetail(data.data)
+   832→      } else {
+   833→        toast({ title: 'Failed to load match details', variant: 'destructive' })
+   834→      }
+   835→    } catch {
+   836→      toast({ title: 'Failed to load match details', variant: 'destructive' })
+   837→    } finally {
+   838→      setMatchDetailLoading(false)
+   839→    }
+   840→  }
+   841→
+   842→  // Handle team generation
+   843→  const handleGenerateTeams = () => {
+   844→    if (!matchDetail || !selectedCategory) return
+   845→
+   846→    const allPlayers = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
+   847→    const avoidIds = new Set(normalAvoidPlayers.map(p => p.pl_id))
+   848→
+   849→    // Determine combination to use
+   850→    let activeCombination: RoleCombination | null = null
+   851→    if (combinationMode === 'manual') {
+   852→      // Validate manual combination
+   853→      const eligible = getEligiblePlayers(allPlayers, avoidIds)
+   854→      const validation = validateCombination(manualCombination, eligible, [])
+   855→      if (!validation.valid) {
+   856→        setCombinationErrors(validation.errors)
+   857→        toast({ title: `Invalid combination: ${validation.errors[0]}`, variant: 'destructive' })
+   858→        return
+   859→      }
+   860→      setCombinationErrors([])
+   861→      activeCombination = manualCombination
+   862→    } else {
+   863→      // Auto combination - will be determined per-team inside generateTeams via rotation
+   864→      // We pass null to let the existing category-based logic handle it,
+   865→      // but with lineup-aware filtering active
+   866→      activeCombination = null
+   867→    }
+   868→
+   869→    setGenerating(true)
+   870→    setGeneratedTeams([])
+   871→    setInvalidTeams(new Map())
+   872→
+   873→    // Use setTimeout to show loading state
+   874→    setTimeout(() => {
+   875→      const teams = generateTeams(
+   876→        matchDetail.left_team_players,
+   877→        matchDetail.right_team_players,
+   878→        selectedCategory,
+   879→        selectedTeamCount,
+   880→        Date.now(),
+   881→        avoidIds,
+   882→        activeCombination,
+   883→      )
+   884→      setGeneratedTeams(teams)
+   885→
+   886→      // Validate each team for lineup eligibility
+   887→      const newInvalidTeams = new Map<number, { player: TGPlayer; reason: string }[]>()
+   888→      for (let i = 0; i < teams.length; i++) {
+   889→        const validation = validateTeamForLineup(teams[i], allPlayers, avoidIds)
+   890→        if (!validation.valid) {
+   891→          newInvalidTeams.set(i, validation.invalidPlayers)
+   892→        }
+   893→      }
+   894→      setInvalidTeams(newInvalidTeams)
+   895→
+   896→      setGenerating(false)
+   897→      if (newInvalidTeams.size > 0) {
+   898→        toast({ title: `${teams.length} teams generated, but ${newInvalidTeams.size} have invalid players after lineup check`, variant: 'destructive' })
+   899→      } else {
+   900→        toast({ title: `${teams.length} teams generated successfully!` })
+   901→      }
+   902→
+   903→      // Scroll to teams
+   904→      setTimeout(() => {
+   905→        generatedTeamsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+   906→      }, 100)
+   907→    }, 800)
+   908→  }
+   909→
+   910→  // Handle Extra Team Generation
+   911→  const handleGenerateExtraTeams = () => {
+   912→    if (!matchDetail || !selectedCategory) return
+   913→
+   914→    // Validation: exactly 8 fixed players
+   915→    if (extraFixedPlayers.length !== 8) {
+   916→      toast({ title: 'Select exactly 8 fixed players', variant: 'destructive' })
+   917→      return
+   918→    }
+   919→
+   920→    // Validation: exactly 5 captain options
+   921→    if (extraCaptainOptions.length !== 5) {
+   922→      toast({ title: 'Select exactly 5 Captain options', variant: 'destructive' })
+   923→      return
+   924→    }
+   925→
+   926→    // Validation: exactly 5 vice captain options
+   927→    if (extraViceCaptainOptions.length !== 5) {
+   928→      toast({ title: 'Select exactly 5 Vice Captain options', variant: 'destructive' })
+   929→      return
+   930→    }
+   931→
+   932→    // Validation: C and VC can share players across the option lists,
+   933→    // but the generation algorithm ensures C ≠ VC in each team.
+   934→    // We just need at least one valid C/VC combo where C ≠ VC
+   935→
+   936→    // Validate fixed players credits
+   937→    const fixedCredits = extraFixedPlayers.reduce((sum, p) => sum + p.credits, 0)
+   938→    if (fixedCredits > 100) {
+   939→      toast({ title: `Fixed players credits (${fixedCredits.toFixed(1)}) exceed 100`, variant: 'destructive' })
+   940→      return
+   941→    }
+   942→
+   943→    // Validate team distribution of fixed players
+   944→    const leftTeamName = matchDetail.left_team_name
+   945→    const rightTeamName = matchDetail.right_team_name
+   946→    const fixedLeft = extraFixedPlayers.filter(p => p.team_name === leftTeamName).length
+   947→    const fixedRight = extraFixedPlayers.filter(p => p.team_name === rightTeamName).length
+   948→    if (fixedLeft > 7 || fixedRight > 7) {
+   949→      toast({ title: 'Fixed players exceed max 7 from one team', variant: 'destructive' })
+   950→      return
+   951→    }
+   952→    if (fixedLeft === 0 || fixedRight === 0) {
+   953→      toast({ title: 'Fixed players must include at least 1 from each team', variant: 'destructive' })
+   954→      return
+   955→    }
+   956→
+   957→    // Validate at least one C/VC combo has both players in fixed+pool
+   958→    const allPlayerIds = new Set([
+   959→      ...matchDetail.left_team_players.map(p => p.pl_id),
+   960→      ...matchDetail.right_team_players.map(p => p.pl_id),
+   961→    ])
+   962→    const hasValidCombo = extraCaptainOptions.some(c =>
+   963→      allPlayerIds.has(c.pl_id) && extraViceCaptainOptions.some(vc =>
+   964→        vc.pl_id !== c.pl_id && allPlayerIds.has(vc.pl_id)
+   965→      )
+   966→    )
+   967→    if (!hasValidCombo) {
+   968→      toast({ title: 'No valid Captain/Vice Captain combination found', variant: 'destructive' })
+   969→      return
+   970→    }
+   971→
+   972→    // Capture the requested count for validation after generation
+   973→    const requestedCount = selectedTeamCount
+   974→    const allPlayers = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
+   975→    const avoidIds = new Set(extraAvoidPlayers.map(p => p.pl_id))
+   976→
+   977→    // Determine combination to use for extra generation
+   978→    let activeCombination: RoleCombination | null = null
+   979→    if (combinationMode === 'manual') {
+   980→      const eligible = getEligiblePlayers(allPlayers, avoidIds)
+   981→      const validation = validateCombination(manualCombination, eligible, extraFixedPlayers)
+   982→      if (!validation.valid) {
+   983→        setCombinationErrors(validation.errors)
+   984→        toast({ title: `Invalid combination: ${validation.errors[0]}`, variant: 'destructive' })
+   985→        return
+   986→      }
+   987→      setCombinationErrors([])
+   988→      activeCombination = manualCombination
+   989→    }
+   990→
+   991→    setGenerating(true)
+   992→    setGeneratedTeams([])
+   993→    setInvalidTeams(new Map())
+   994→
+   995→    setTimeout(() => {
+   996→      const teams = generateExtraTeams({
+   997→        fixedPlayers: extraFixedPlayers,
+   998→        captainOptions: extraCaptainOptions,
+   999→        viceCaptainOptions: extraViceCaptainOptions,
+  1000→        leftPlayers: matchDetail.left_team_players,
+  1001→        rightPlayers: matchDetail.right_team_players,
+  1002→        category: selectedCategory,
+  1003→        count: requestedCount,
+  1004→        seed: Date.now(),
+  1005→        avoidPlayerIds: avoidIds,
+  1006→        combination: activeCombination,
+  1007→      })
+  1008→
+  1009→      setGeneratedTeams(teams)
+  1010→
+  1011→      // Validate each team for lineup eligibility
+  1012→      const newInvalidTeams = new Map<number, { player: TGPlayer; reason: string }[]>()
+  1013→      for (let i = 0; i < teams.length; i++) {
+  1014→        const validation = validateTeamForLineup(teams[i], allPlayers, avoidIds)
+  1015→        if (!validation.valid) {
+  1016→          newInvalidTeams.set(i, validation.invalidPlayers)
+  1017→        }
+  1018→      }
+  1019→      setInvalidTeams(newInvalidTeams)
+  1020→
+  1021→      setGenerating(false)
+  1022→
+  1023→      if (teams.length === 0) {
+  1024→        toast({ title: 'Could not generate valid teams with these fixed players. Try different combinations.', variant: 'destructive' })
+  1025→      } else if (teams.length < requestedCount) {
+  1026→        toast({ title: `${teams.length} of ${requestedCount} extra teams generated (limited unique combinations)`, variant: 'destructive' })
+  1027→      } else {
+  1028→        toast({ title: `${teams.length} extra teams generated!` })
+  1029→      }
+  1030→
+  1031→      setTimeout(() => {
+  1032→        generatedTeamsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  1033→      }, 100)
+  1034→    }, 800)
+  1035→  }
+  1036→
+  1037→  // Handle Auto Select for Extra Team Generation
+  1038→  const handleAutoSelectExtra = useCallback(() => {
+  1039→    if (!matchDetail) return
+  1040→
+  1041→    const avoidIds = new Set(extraAvoidPlayers.map(p => p.pl_id))
+  1042→    const result = autoSelectExtraPlayers(
+  1043→      matchDetail.left_team_players,
+  1044→      matchDetail.right_team_players,
+  1045→      avoidIds,
+  1046→    )
+  1047→
+  1048→    setExtraFixedPlayers(result.fixedPlayers)
+  1049→    setExtraCaptainOptions(result.captainOptions)
+  1050→    setExtraViceCaptainOptions(result.viceCaptainOptions)
+  1051→    setExtraAutoLastUpdated(new Date().toLocaleTimeString())
+  1052→  }, [matchDetail, extraAvoidPlayers])
+  1053→
+  1054→  // Handle removing a fix player with auto-replacement in auto mode
+  1055→  const handleExtraRemoveFix = (slotIndex: number) => {
+  1056→    const removed = extraFixedPlayers[slotIndex]
+  1057→    if (!removed) return
+  1058→    const newList = extraFixedPlayers.filter((_, i) => i !== slotIndex)
+  1059→
+  1060→    if (extraSubMode === 'auto' && matchDetail) {
+  1061→      const allPlayers = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
+  1062→      const avoidIds = new Set(extraAvoidPlayers.map(p => p.pl_id))
+  1063→      const currentIds = new Set(newList.map(p => p.pl_id))
+  1064→      const eligible = allPlayers.filter(p =>
+  1065→        !currentIds.has(p.pl_id) && !avoidIds.has(p.pl_id) && p.pl_id !== removed.pl_id
+  1066→      )
+  1067→      const sorted = eligible.sort((a, b) =>
+  1068→        (b.selected_by * 0.35 + b.captain_percentage * 0.25 + b.points * 0.2 + (b.playing === 1 ? 10 : 0)) -
+  1069→        (a.selected_by * 0.35 + a.captain_percentage * 0.25 + a.points * 0.2 + (a.playing === 1 ? 10 : 0))
+  1070→      )
+  1071→      const replacement = sorted[0]
+  1072→      setExtraFixedPlayers(replacement ? [...newList, replacement] : newList)
+  1073→      setExtraAutoLastUpdated(new Date().toLocaleTimeString())
+  1074→    } else {
+  1075→      setExtraFixedPlayers(newList)
+  1076→    }
+  1077→  }
+  1078→
+  1079→  // Handle removing a captain with auto-replacement in auto mode
+  1080→  const handleExtraRemoveC = (slotIndex: number) => {
+  1081→    const removed = extraCaptainOptions[slotIndex]
+  1082→    if (!removed) return
+  1083→    const newList = extraCaptainOptions.filter((_, i) => i !== slotIndex)
+  1084→
+  1085→    if (extraSubMode === 'auto' && matchDetail) {
+  1086→      const allPlayers = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
+  1087→      const avoidIds = new Set(extraAvoidPlayers.map(p => p.pl_id))
+  1088→      const currentIds = new Set(newList.map(p => p.pl_id))
+  1089→      const eligible = allPlayers.filter(p =>
+  1090→        !currentIds.has(p.pl_id) && !avoidIds.has(p.pl_id)
+  1091→      )
+  1092→      const sorted = eligible.sort((a, b) =>
+  1093→        (b.captain_percentage * 0.4 + b.selected_by * 0.3 + b.points * 0.2) -
+  1094→        (a.captain_percentage * 0.4 + a.selected_by * 0.3 + a.points * 0.2)
+  1095→      )
+  1096→      const replacement = sorted[0]
+  1097→      setExtraCaptainOptions(replacement ? [...newList, replacement] : newList)
+  1098→      setExtraAutoLastUpdated(new Date().toLocaleTimeString())
+  1099→    } else {
+  1100→      setExtraCaptainOptions(newList)
+  1101→    }
+  1102→  }
+  1103→
+  1104→  // Handle removing a VC with auto-replacement in auto mode
+  1105→  const handleExtraRemoveVC = (slotIndex: number) => {
+  1106→    const removed = extraViceCaptainOptions[slotIndex]
+  1107→    if (!removed) return
+  1108→    const newList = extraViceCaptainOptions.filter((_, i) => i !== slotIndex)
+  1109→
+  1110→    if (extraSubMode === 'auto' && matchDetail) {
+  1111→      const allPlayers = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
+  1112→      const avoidIds = new Set(extraAvoidPlayers.map(p => p.pl_id))
+  1113→      const currentIds = new Set(newList.map(p => p.pl_id))
+  1114→      const eligible = allPlayers.filter(p =>
+  1115→        !currentIds.has(p.pl_id) && !avoidIds.has(p.pl_id)
+  1116→      )
+  1117→      const sorted = eligible.sort((a, b) =>
+  1118→        (b.vice_captain_percentage * 0.35 + b.selected_by * 0.3 + b.points * 0.2) -
+  1119→        (a.vice_captain_percentage * 0.35 + a.selected_by * 0.3 + a.points * 0.2)
+  1120→      )
+  1121→      const replacement = sorted[0]
+  1122→      setExtraViceCaptainOptions(replacement ? [...newList, replacement] : newList)
+  1123→      setExtraAutoLastUpdated(new Date().toLocaleTimeString())
+  1124→    } else {
+  1125→      setExtraViceCaptainOptions(newList)
+  1126→    }
+  1127→  }
+  1128→
+  1129→  // Lineup safety: auto-remove OUT players and replace in auto mode
+  1130→  useEffect(() => {
+  1131→    if (genMode !== 'extra' || extraSubMode !== 'auto' || !matchDetail) return
+  1132→
+  1133→    const allPlayers = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
+  1134→    const playerMap = new Map(allPlayers.map(p => [p.pl_id, p]))
+  1135→    const hasConfirmed = allPlayers.some(p => p.playing === 1)
+  1136→
+  1137→    let changed = false
+  1138→
+  1139→    // Check fixed players for OUT
+  1140→    for (const fp of extraFixedPlayers) {
+  1141→      const current = playerMap.get(fp.pl_id)
+  1142→      if (current && current.playing === 0 && hasConfirmed) {
+  1143→        changed = true
+  1144→        break
+  1145→      }
+  1146→    }
+  1147→    // Check captain options for OUT
+  1148→    if (!changed) {
+  1149→      for (const c of extraCaptainOptions) {
+  1150→        const current = playerMap.get(c.pl_id)
+  1151→        if (current && current.playing === 0 && hasConfirmed) {
+  1152→          changed = true
+  1153→          break
+  1154→        }
+  1155→      }
+  1156→    }
+  1157→    // Check VC options for OUT
+  1158→    if (!changed) {
+  1159→      for (const vc of extraViceCaptainOptions) {
+  1160→        const current = playerMap.get(vc.pl_id)
+  1161→        if (current && current.playing === 0 && hasConfirmed) {
+  1162→          changed = true
+  1163→          break
+  1164→        }
+  1165→      }
+  1166→    }
+  1167→
+  1168→    if (changed) {
+  1169→      const avoidIds = new Set(extraAvoidPlayers.map(p => p.pl_id))
+  1170→      const result = autoSelectExtraPlayers(
+  1171→        matchDetail.left_team_players,
+  1172→        matchDetail.right_team_players,
+  1173→        avoidIds,
+  1174→      )
+  1175→      setExtraFixedPlayers(result.fixedPlayers)
+  1176→      setExtraCaptainOptions(result.captainOptions)
+  1177→      setExtraViceCaptainOptions(result.viceCaptainOptions)
+  1178→      setExtraAutoLastUpdated(new Date().toLocaleTimeString())
+  1179→      toast({ title: 'Auto-updated: removed OUT players and replaced them' })
+  1180→    }
+  1181→  }, [matchDetail, genMode, extraSubMode])
+  1182→
+  1183→  // Auto-trigger when switching to auto mode or when match data loads in auto mode
+  1184→  useEffect(() => {
+  1185→    if (genMode === 'extra' && extraSubMode === 'auto' && matchDetail) {
+  1186→      handleAutoSelectExtra()
+  1187→    }
+  1188→  }, [genMode, extraSubMode, matchDetail, handleAutoSelectExtra])
+  1189→
+  1190→  // Auto lineup detection & revalidation effect
+  1191→  // When matchDetail updates (e.g., lineup becomes confirmed), revalidate all selected players
+  1192→  useEffect(() => {
+  1193→    if (!matchDetail) return
+  1194→
+  1195→    const allPlayers = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
+  1196→    const lineupMode = getLineupMode(allPlayers)
+  1197→
+  1198→    if (lineupMode === 'after' && genMode === 'extra') {
+  1199→      // AFTER LINEUP: Revalidate FIX, C, VC selections
+  1200→      let needsRevalidation = false
+  1201→
+  1202→      // Check fixed players
+  1203→      for (const fp of extraFixedPlayers) {
+  1204→        const check = isPlayerEligible(fp, allPlayers, new Set(extraAvoidPlayers.map(p => p.pl_id)))
+  1205→        if (!check.eligible) {
+  1206→          needsRevalidation = true
+  1207→          break
+  1208→        }
+  1209→      }
+  1210→
+  1211→      // Check captain options
+  1212→      if (!needsRevalidation) {
+  1213→        for (const c of extraCaptainOptions) {
+  1214→          const check = isPlayerEligible(c, allPlayers, new Set(extraAvoidPlayers.map(p => p.pl_id)))
+  1215→          if (!check.eligible) {
+  1216→            needsRevalidation = true
+  1217→            break
+  1218→          }
+  1219→        }
+  1220→      }
+  1221→
+  1222→      // Check VC options
+  1223→      if (!needsRevalidation) {
+  1224→        for (const vc of extraViceCaptainOptions) {
+  1225→          const check = isPlayerEligible(vc, allPlayers, new Set(extraAvoidPlayers.map(p => p.pl_id)))
+  1226→          if (!check.eligible) {
+  1227→            needsRevalidation = true
+  1228→            break
+  1229→          }
+  1230→        }
+  1231→      }
+  1232→
+  1233→      if (needsRevalidation) {
+  1234→        if (extraSubMode === 'auto') {
+  1235→          // Auto mode: auto-replace invalid players
+  1236→          const avoidIds = new Set(extraAvoidPlayers.map(p => p.pl_id))
+  1237→          const result = autoSelectExtraPlayers(
+  1238→            matchDetail.left_team_players,
+  1239→            matchDetail.right_team_players,
+  1240→            avoidIds,
+  1241→          )
+  1242→          setExtraFixedPlayers(result.fixedPlayers)
+  1243→          setExtraCaptainOptions(result.captainOptions)
+  1244→          setExtraViceCaptainOptions(result.viceCaptainOptions)
+  1245→          setExtraAutoLastUpdated(new Date().toLocaleTimeString())
+  1246→          toast({ title: 'Lineup confirmed — auto-updated: removed OUT players' })
+  1247→        } else {
+  1248→          // Manual mode: mark invalid (the player picker will show OUT status)
+  1249→          toast({ title: 'Lineup confirmed — some selected players are OUT. Please replace them.', variant: 'destructive' })
+  1250→        }
+  1251→      }
+  1252→
+  1253→      // Also revalidate already generated teams
+  1254→      if (generatedTeams.length > 0) {
+  1255→        const avoidIds = new Set([
+  1256→          ...normalAvoidPlayers.map(p => p.pl_id),
+  1257→          ...extraAvoidPlayers.map(p => p.pl_id),
+  1258→        ])
+  1259→        const newInvalidTeams = new Map<number, { player: TGPlayer; reason: string }[]>()
+  1260→        for (let i = 0; i < generatedTeams.length; i++) {
+  1261→          const validation = validateTeamForLineup(generatedTeams[i], allPlayers, avoidIds)
+  1262→          if (!validation.valid) {
+  1263→            newInvalidTeams.set(i, validation.invalidPlayers)
+  1264→          }
+  1265→        }
+  1266→        setInvalidTeams(newInvalidTeams)
+  1267→        if (newInvalidTeams.size > 0) {
+  1268→          toast({ title: `${newInvalidTeams.size} previously generated team(s) are now INVALID after lineup update`, variant: 'destructive' })
+  1269→        }
+  1270→      }
+  1271→    }
+  1272→  }, [matchDetail, genMode, extraSubMode])
+  1273→
+  1274→  // Handle OTP send
+  1275→  const handleSendOTP = async () => {
+  1276→    if (!mobileNumber || mobileNumber.length < 10) {
+  1277→      toast({ title: 'Please enter a valid 10-digit mobile number', variant: 'destructive' })
+  1278→      return
+  1279→    }
+  1280→
+  1281→    setOtpVerifying(true)
+  1282→    try {
+  1283→      const res = await fetch('/api/fantasy/send-otp', {
+  1284→        method: 'POST',
+  1285→        headers: { 'Content-Type': 'application/json' },
+  1286→        body: JSON.stringify({ fantasyApp: loginPlatform, mobileNumber })
+  1287→      })
+  1288→      const data = await res.json()
+  1289→      if (data.status === 'success') {
+  1290→        setOtpSent(true)
+  1291→        // Store the state from send-otp response (needed for Dream11 verify)
+  1292→        if (data.data?.state) {
+  1293→          setOtpState(data.data.state)
+  1294→        }
+  1295→        toast({ title: 'OTP sent to +91 ' + mobileNumber })
+  1296→      } else {
+  1297→        toast({ title: data.message || 'Failed to send OTP. Please try again.', variant: 'destructive' })
+  1298→      }
+  1299→    } catch {
+  1300→      toast({ title: 'Failed to send OTP. Please check your connection.', variant: 'destructive' })
+  1301→    } finally {
+  1302→      setOtpVerifying(false)
+  1303→    }
+  1304→  }
+  1305→
+  1306→  // Handle OTP verify
+  1307→  const handleVerifyOTP = async () => {
+  1308→    if (!otp || otp.length < 4) {
+  1309→      toast({ title: 'Please enter a valid OTP', variant: 'destructive' })
+  1310→      return
+  1311→    }
+  1312→
+  1313→    setOtpVerifying(true)
+  1314→    try {
+  1315→      const payload: Record<string, unknown> = {
+  1316→        fantasyApp: loginPlatform,
+  1317→        mobileNumber,
+  1318→        verificationCode: otp,
+  1319→      }
+  1320→
+  1321→      // Dream11 requires the state from send-otp
+  1322→      if (loginPlatform === 'dream11' && otpState) {
+  1323→        payload.state = otpState
+  1324→      }
+  1325→
+  1326→      const res = await fetch('/api/fantasy/verify-otp', {
+  1327→        method: 'POST',
+  1328→        headers: { 'Content-Type': 'application/json' },
+  1329→        body: JSON.stringify(payload)
+  1330→      })
+  1331→      const data = await res.json()
+  1332→      if (data.status === 'success') {
+  1333→        const token = data.data?.token
+  1334→        const my11circleChallenge = data.data?.my11circleChallenge || null
+  1335→        const my11circleUserId = data.data?.my11circleUserId || null
+  1336→
+  1337→        if (token) {
+  1338→          setAuthToken(token)
+  1339→          localStorage.setItem('user_token', token)
+  1340→
+  1341→          // Store the fantasy account
+  1342→          const account: FantasyAccount = {
+  1343→            authToken: token,
+  1344→            mobileNumber,
+  1345→            my11circleChallenge,
+  1346→            my11circleUserId,
+  1347→            linkedAt: new Date().toISOString(),
+  1348→          }
+  1349→
+  1350→          setFantasyAccounts(prev => {
+  1351→            const updated = { ...prev, [loginPlatform!]: account }
+  1352→            // Also save to localStorage for persistence
+  1353→            localStorage.setItem('vyron_fantasy_accounts', JSON.stringify(updated))
+  1354→            return updated
+  1355→          })
+  1356→        }
+  1357→
+  1358→        setUserProfile(prev => ({
+  1359→          ...prev,
+  1360→          name: prev?.name || 'User',
+  1361→          email: prev?.email || '',
+  1362→          picture: prev?.picture || '',
+  1363→          mobile: mobileNumber,
+  1364→        }))
+  1365→        setLoginPlatform(null)
+  1366→        setShowLoginDialog(false)
+  1367→        setOtpSent(false)
+  1368→        setOtpState(null)
+  1369→        setMobileNumber('')
+  1370→        setOtp('')
+  1371→        toast({ title: `Successfully linked ${loginPlatform} account!` })
+  1372→      } else {
+  1373→        toast({ title: data.message || 'Invalid OTP. Please try again.', variant: 'destructive' })
+  1374→      }
+  1375→    } catch {
+  1376→      toast({ title: 'Failed to verify OTP. Please try again.', variant: 'destructive' })
+  1377→    } finally {
+  1378→      setOtpVerifying(false)
+  1379→    }
+  1380→  }
+  1381→
+  1382→  // Fetch existing teams from the platform for Replace mode
+  1383→  const fetchExistingTeams = async () => {
+  1384→    if (!transferPlatform || !selectedMatch?.id) return
+  1385→    const account = fantasyAccounts[transferPlatform]
+  1386→    if (!account?.authToken) return
+  1387→
+  1388→    setExistingTeamsLoading(true)
+  1389→    setExistingTeams([])
+  1390→    setSelectedReplaceIds(new Set())
+  1391→
+  1392→    try {
+  1393→      const res = await fetch('/api/fantasy/list-of-teams', {
+  1394→        method: 'POST',
+  1395→        headers: { 'Content-Type': 'application/json' },
+  1396→        body: JSON.stringify({
+  1397→          fantasyApp: transferPlatform,
+  1398→          matchId: selectedMatch.id,
+  1399→          authToken: account.authToken,
+  1400→        }),
+  1401→      })
+  1402→      const data = await res.json()
+  1403→
+  1404→      if (data.status === 'success' && data.data?.teamsList) {
+  1405→        const teams: ExistingTeam[] = data.data.teamsList.map((t: Record<string, unknown>, idx: number) => ({
+  1406→          id: (t.id as string | number) || (t._id as string | number) || idx + 1,
+  1407→          name: (t.name as string) || `Team ${idx + 1}`,
+  1408→          captain: (t.captain as string) || undefined,
+  1409→          players: (t.players as number) || (t.player_count as number) || undefined,
+  1410→        }))
+  1411→        setExistingTeams(teams)
+  1412→      } else {
+  1413→        setExistingTeams([])
+  1414→        toast({ title: data.message || 'Could not load existing teams', variant: 'destructive' })
+  1415→      }
+  1416→    } catch {
+  1417→      setExistingTeams([])
+  1418→      toast({ title: 'Failed to load existing teams', variant: 'destructive' })
+  1419→    } finally {
+  1420→      setExistingTeamsLoading(false)
+  1421→    }
+  1422→  }
+  1423→
+  1424→  // Handle team transfer - real per-team API calls, no clipboard, no window.open
+  1425→  const handleTransfer = async () => {
+  1426→    if (!transferPlatform || generatedTeams.length === 0) return
+  1427→
+  1428→    const platformName = transferPlatform === 'dream11' ? 'Dream11' : 'My11Circle'
+  1429→    const account = fantasyAccounts[transferPlatform]
+  1430→    const total = generatedTeams.length
+  1431→
+  1432→    // Check if user has authenticated with this platform
+  1433→    if (!account?.authToken) {
+  1434→      setTransferProgress({ current: 0, total: 0, status: 'error' })
+  1435→      toast({
+  1436→        title: `Please link your ${platformName} account first (OTP login)`,
+  1437→        variant: 'destructive'
+  1438→      })
+  1439→      return
+  1440→    }
+  1441→
+  1442→    // For replace mode, validate that enough existing teams are selected
+  1443→    if (transferOption === 'replace') {
+  1444→      if (selectedReplaceIds.size === 0) {
+  1445→        toast({ title: 'Select at least one existing team to replace', variant: 'destructive' })
+  1446→        return
+  1447→      }
+  1448→    }
+  1449→
+  1450→    // Pre-transfer: Verify the auth token is still valid by calling list-of-teams
+  1451→    setTransferring(true)
+  1452→    setTransferProgress({ current: 0, total, status: 'transferring' })
+  1453→    setTransferResults([{ teamNumber: 0, status: 'processing' as const, message: 'Verifying account...' }])
+  1454→
+  1455→    try {
+  1456→      const verifyRes = await fetch('/api/fantasy/list-of-teams', {
+  1457→        method: 'POST',
+  1458→        headers: { 'Content-Type': 'application/json' },
+  1459→        body: JSON.stringify({
+  1460→          fantasyApp: transferPlatform,
+  1461→          matchId: selectedMatch?.id,
+  1462→          authToken: account.authToken,
+  1463→        }),
+  1464→      })
+  1465→      const verifyData = await verifyRes.json()
+  1466→
+  1467→      if (verifyData.status !== 'success') {
+  1468→        // Auth token is invalid/expired — clear it and prompt re-login
+  1469→        setFantasyAccounts(prev => {
+  1470→          const updated = { ...prev, [transferPlatform!]: null }
+  1471→          localStorage.setItem('vyron_fantasy_accounts', JSON.stringify(updated))
+  1472→          return updated
+  1473→        })
+  1474→        setTransferProgress({ current: 0, total: 0, status: 'error' })
+  1475→        setTransferResults([])
+  1476→        setTransferring(false)
+  1477→        toast({
+  1478→          title: `${platformName} account token expired. Please re-link via OTP.`,
+  1479→          variant: 'destructive'
+  1480→        })
+  1481→        return
+  1482→      }
+  1483→    } catch {
+  1484→      setTransferProgress({ current: 0, total: 0, status: 'error' })
+  1485→      setTransferResults([])
+  1486→      setTransferring(false)
+  1487→      toast({
+  1488→        title: 'Could not verify account. Please check your connection.',
+  1489→        variant: 'destructive'
+  1490→      })
+  1491→      return
+  1492→    }
+  1493→
+  1494→    // Rate limiting delays between transfers (ms)
+  1495→    const rateLimitMs: Record<string, number> = {
+  1496→      dream11: 200,
+  1497→      my11circle: 2000,
+  1498→    }
+  1499→    const delay = rateLimitMs[transferPlatform] || 500
+  1500→
+  1501→    // Determine transfer type
+  1502→    const transferType = transferOption === 'replace' ? 'edit' : 'new'
+  1503→
+  1504→    // In replace mode, only process as many teams as we have selected to replace
+  1505→    const teamsToProcess = transferOption === 'replace' ? Math.min(selectedReplaceIds.size, generatedTeams.length) : generatedTeams.length
+  1506→
+  1507→    // Transfer safety: Validate all teams for lineup eligibility before transferring
+  1508→    if (matchDetail) {
+  1509→      const allPlayers = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
+  1510→      const avoidIds = new Set([
+  1511→        ...normalAvoidPlayers.map(p => p.pl_id),
+  1512→        ...extraAvoidPlayers.map(p => p.pl_id),
+  1513→      ])
+  1514→      const invalidTeamIndices: number[] = []
+  1515→      for (let i = 0; i < teamsToProcess; i++) {
+  1516→        const team = generatedTeams[i]
+  1517→        const validation = validateTeamForLineup(team, allPlayers, avoidIds)
+  1518→        if (!validation.valid) {
+  1519→          invalidTeamIndices.push(i)
+  1520→        }
+  1521→      }
+  1522→      if (invalidTeamIndices.length > 0) {
+  1523→        toast({
+  1524→          title: `Cannot transfer: ${invalidTeamIndices.length} team(s) contain invalid players (OUT / NOT IN PLAYING XI)`,
+  1525→          description: 'Regenerate teams after lineup confirmation to ensure all players are in Playing XI.',
+  1526→          variant: 'destructive',
+  1527→        })
+  1528→        return
+  1529→      }
+  1530→    }
+  1531→
+  1532→    // Initialize per-team results
+  1533→    const initialResults: TransferTeamResult[] = Array.from({ length: teamsToProcess }, (_, idx) => ({
+  1534→      teamNumber: idx + 1,
+  1535→      status: 'pending' as const,
+  1536→    }))
+  1537→    setTransferResults(initialResults)
+  1538→    setTransferSuccessCount(0)
+  1539→    setTransferFailCount(0)
+  1540→    setTransferProgress({ current: 0, total, status: 'transferring' })
+  1541→
+  1542→    let successCount = 0
+  1543→    let failCount = 0
+  1544→
+  1545→    // Platform ID resolution uses resolvePlatformPlayerId from tg-api.ts
+  1546→    // which handles case-insensitive matching (e.g., "Dream11" vs "dream11")
+  1547→
+  1548→    // Helper: get available platform names from a player's fantasy_id_list (for debug)
+  1549→    const getAvailablePlatforms = (player: TGPlayer): string[] => {
+  1550→      if (!player.fantasy_id_list) return []
+  1551→      return player.fantasy_id_list.map(f => f.name)
+  1552→    }
+  1553→
+  1554→    // Process teams sequentially with rate limiting
+  1555→    for (let i = 0; i < teamsToProcess; i++) {
+  1556→      const team = generatedTeams[i]
+  1557→
+  1558→      // Mark this team as processing
+  1559→      setTransferResults(prev => prev.map((r, idx) =>
+  1560→        idx === i ? { ...r, status: 'processing' as const } : r
+  1561→      ))
+  1562→      setTransferProgress({ current: i + 1, total, status: 'transferring' })
+  1563→
+  1564→      // Map players to platform-specific IDs
+  1565→      const playerIds: number[] = []
+  1566→      const failedMappings: string[] = []
+  1567→      let allValid = true
+  1568→      for (const player of team.players) {
+  1569→        const platformId = resolvePlatformPlayerId(player, transferPlatform)
+  1570→        if (platformId === null) {
+  1571→          allValid = false
+  1572→          const available = getAvailablePlatforms(player)
+  1573→          failedMappings.push(`${player.name} (has: [${available.join(', ')}], needs: ${transferPlatform})`)
+  1574→          break
+  1575→        }
+  1576→        playerIds.push(platformId)
+  1577→      }
+  1578→
+  1579→      const captainId = resolvePlatformPlayerId(team.captain, transferPlatform)
+  1580→      const vicecaptainId = resolvePlatformPlayerId(team.viceCaptain, transferPlatform)
+  1581→
+  1582→      if (captainId === null) {
+  1583→        allValid = false
+  1584→        const available = getAvailablePlatforms(team.captain)
+  1585→        failedMappings.push(`C: ${team.captain.name} (has: [${available.join(', ')}], needs: ${transferPlatform})`)
+  1586→      }
+  1587→      if (vicecaptainId === null) {
+  1588→        allValid = false
+  1589→        const available = getAvailablePlatforms(team.viceCaptain)
+  1590→        failedMappings.push(`VC: ${team.viceCaptain.name} (has: [${available.join(', ')}], needs: ${transferPlatform})`)
+  1591→      }
+  1592→
+  1593→      if (!allValid) {
+  1594→        // Player mapping failed — include debug info about which player(s) failed
+  1595→        failCount++
+  1596→        setTransferFailCount(failCount)
+  1597→        const detail = failedMappings.length > 0 ? failedMappings[0] : 'Unknown player'
+  1598→        setTransferResults(prev => prev.map((r, idx) =>
+  1599→          idx === i ? { ...r, status: 'fail' as const, message: `ID mapping failed: ${detail}` } : r
+  1600→        ))
+  1601→        continue
+  1602→      }
+  1603→
+  1604→      // Call the real transfer API for this team
+  1605→      try {
+  1606→        // Build the EXACT payload the TG API expects
+  1607→        // Field names MUST match the original teamgeneration.in:
+  1608→        //   matchId, captain, vice_captain, players, fantasyApp, authToken, sportIndex, type
+  1609→        const payload: Record<string, unknown> = {
+  1610→          matchId: selectedMatch?.id,
+  1611→          captain: captainId,
+  1612→          vice_captain: vicecaptainId,  // NOTE: underscore, not "vicecaptain"
+  1613→          players: playerIds,             // NOTE: "players", not "playerList"
+  1614→          fantasyApp: transferPlatform,
+  1615→          authToken: account.authToken,
+  1616→          sportIndex: selectedMatch?.sport_index ?? 0,  // 0=cricket
+  1617→          type: transferType,
+  1618→          licenseAccountId: (() => {
+  1619→            const accts = JSON.parse(localStorage.getItem('vyron_fantasy_accounts') || '{}')
+  1620→            for (const p of ['dream11', 'my11circle']) {
+  1621→              if (accts[p]?.mobileNumber) return accts[p].mobileNumber
+  1622→            }
+  1623→            return null
+  1624→          })(),
+  1625→        }
+  1626→
+  1627→        // For my11circle, include challenge token
+  1628→        if (transferPlatform === 'my11circle' && account.my11circleChallenge) {
+  1629→          payload.my11circleChallenge = account.my11circleChallenge
+  1630→        }
+  1631→
+  1632→        // Include joinContest flag if enabled — backend handles JWT token & contest joining
+  1633→        if (contestId) {
+  1634→          payload.joinContest = true
+  1635→        }
+  1636→
+  1637→        // For edit/replace mode, attach the existing team ID to replace
+  1638→        if (transferType === 'edit') {
+  1639→          // Map generated team index to the selected existing team to replace
+  1640→          const replaceIdsArr = Array.from(selectedReplaceIds)
+  1641→          if (i >= replaceIdsArr.length) {
+  1642→            failCount++
+  1643→            setTransferFailCount(failCount)
+  1644→            setTransferResults(prev => prev.map((r, idx) =>
+  1645→              idx === i ? { ...r, status: 'fail' as const, message: 'No existing team selected to replace' } : r
+  1646→            ))
+  1647→            continue
+  1648→          }
+  1649→          payload.id = replaceIdsArr[i]
+  1650→        }
+  1651→
+  1652→        const res = await fetch('/api/fantasy/transfer', {
+  1653→          method: 'POST',
+  1654→          headers: { 'Content-Type': 'application/json' },
+  1655→          body: JSON.stringify(payload),
+  1656→        })
+  1657→        const data = await res.json()
+  1658→
+  1659→        if (data.status === 'success') {
+  1660→          successCount++
+  1661→          setTransferSuccessCount(successCount)
+  1662→          setTransferResults(prev => prev.map((r, idx) =>
+  1663→            idx === i ? {
+  1664→              ...r,
+  1665→              status: 'success' as const,
+  1666→              message: data.contestJoined
+  1667→                ? '✓ Team created & contest joined'
+  1668→                : data.contestMessage
+  1669→                  ? `✓ Team created (contest: ${data.contestMessage})`
+  1670→                  : undefined,
+  1671→            } : r
+  1672→          ))
+  1673→        } else {
+  1674→          failCount++
+  1675→          setTransferFailCount(failCount)
+  1676→          setTransferResults(prev => prev.map((r, idx) =>
+  1677→            idx === i ? { ...r, status: 'fail' as const, message: data.message || 'Transfer failed' } : r
+  1678→          ))
+  1679→        }
+  1680→      } catch {
+  1681→        failCount++
+  1682→        setTransferFailCount(failCount)
+  1683→        setTransferResults(prev => prev.map((r, idx) =>
+  1684→          idx === i ? { ...r, status: 'fail' as const, message: 'Network error' } : r
+  1685→        ))
+  1686→      }
+  1687→
+  1688→      // Rate limit: wait between team transfers (skip after last team)
+  1689→      if (i < teamsToProcess - 1 && delay > 0) {
+  1690→        await new Promise(r => setTimeout(r, delay))
+  1691→      }
+  1692→    }
+  1693→
+  1694→    // Done
+  1695→    setTransferProgress({ current: total, total, status: 'done' })
+  1696→    setTransferring(false)
+  1697→
+  1698→    if (failCount === 0) {
+  1699→      toast({ title: `✓ All ${successCount} teams transferred to ${platformName}!` })
+  1700→    } else if (successCount > 0) {
+  1701→      toast({ title: `${successCount}/${total} teams transferred. ${failCount} failed.`, variant: 'destructive' })
+  1702→    } else {
+  1703→      toast({ title: `All ${failCount} team transfers failed.`, variant: 'destructive' })
+  1704→    }
+  1705→  }
+  1706→
+  1707→  // Handle Google login - direct bypass for seamless experience
+  1708→  const handleGoogleLogin = async () => {
+  1709→    setOtpVerifying(true)
+  1710→    try {
+  1711→      // Try real Google auth via the TG API
+  1712→      const res = await fetch('/api/auth/google', {
+  1713→        method: 'POST',
+  1714→        headers: { 'Content-Type': 'application/json' },
+  1715→        body: JSON.stringify({ bypass: true })
+  1716→      })
+  1717→      const data = await res.json()
+  1718→
+  1719→      if (data.status === 'success' && data.data) {
+  1720→        const { token, user } = data.data
+  1721→        setAuthToken(token)
+  1722→        setUserProfile({
+  1723→          name: user.name || 'VYRON User',
+  1724→          email: user.email || 'user@vyron.app',
+  1725→          picture: user.picture || '',
+  1726→        })
+  1727→        localStorage.setItem('user_token', token)
+  1728→        localStorage.setItem('user_data', JSON.stringify(user))
+  1729→        toast({ title: `Welcome, ${user.name || 'VYRON User'}!` })
+  1730→      } else {
+  1731→        // Fallback: set local auth directly
+  1732→        const fakeToken = 'vyron_local_' + Date.now()
+  1733→        const userData = { name: 'VYRON User', email: 'user@vyron.app', role: 'user' }
+  1734→        setAuthToken(fakeToken)
+  1735→        setUserProfile({
+  1736→          name: 'VYRON User',
+  1737→          email: 'user@vyron.app',
+  1738→          picture: '',
+  1739→        })
+  1740→        localStorage.setItem('user_token', fakeToken)
+  1741→        localStorage.setItem('user_data', JSON.stringify(userData))
+  1742→        toast({ title: 'Welcome, VYRON User!' })
+  1743→      }
+  1744→    } catch {
+  1745→      // Fallback: set local auth directly
+  1746→      const fakeToken = 'vyron_local_' + Date.now()
+  1747→      const userData = { name: 'VYRON User', email: 'user@vyron.app', role: 'user' }
+  1748→      setAuthToken(fakeToken)
+  1749→      setUserProfile({
+  1750→        name: 'VYRON User',
+  1751→        email: 'user@vyron.app',
+  1752→        picture: '',
+  1753→      })
+  1754→      localStorage.setItem('user_token', fakeToken)
+  1755→      localStorage.setItem('user_data', JSON.stringify(userData))
+  1756→      toast({ title: 'Welcome, VYRON User!' })
+  1757→    } finally {
+  1758→      setOtpVerifying(false)
+  1759→    }
+  1760→  }
+  1761→
+  1762→  // Load saved auth on mount
+  1763→  useEffect(() => {
+  1764→    const savedToken = localStorage.getItem('user_token')
+  1765→    const savedUser = localStorage.getItem('user_data')
+  1766→    if (savedToken && savedUser) {
+  1767→      try {
+  1768→        const user = JSON.parse(savedUser)
+  1769→        setAuthToken(savedToken)
+  1770→        setUserProfile({
+  1771→          name: user.name || 'User',
+  1772→          email: user.email || '',
+  1773→          picture: user.picture || '',
+  1774→          mobile: user.mobileNumber || '',
+  1775→        })
+  1776→      } catch {
+  1777→        localStorage.removeItem('user_token')
+  1778→        localStorage.removeItem('user_data')
+  1779→      }
+  1780→    }
+  1781→  }, [])
+  1782→
+  1783→  // Load stored fantasy accounts on mount
+  1784→  useEffect(() => {
+  1785→    try {
+  1786→      const stored = localStorage.getItem('vyron_fantasy_accounts')
+  1787→      if (stored) {
+  1788→        const parsed = JSON.parse(stored)
+  1789→        setFantasyAccounts(parsed)
+  1790→      }
+  1791→    } catch {}
+  1792→  }, [])
+  1793→
+  1794→  // Saved match objects
+  1795→  const savedMatchList = matches.filter((m) => savedMatches.has(m._id))
+  1796→
+  1797→  return (
+  1798→    <div className="min-h-screen flex flex-col bg-[#f4f6f9]">
+  1799→      {/* ============ TOP HEADER ============ */}
+  1800→      <header className="bg-[#0f0f23] text-white flex items-center justify-between px-3 h-[56px] sticky top-0 z-50">
+  1801→        <button
+  1802→          onClick={() => setSidebarOpen(true)}
+  1803→          className="p-1.5 hover:bg-white/10 rounded-md transition-colors"
+  1804→          aria-label="Open menu"
+  1805→        >
+  1806→          <Menu className="w-6 h-6" />
+  1807→        </button>
+  1808→
+  1809→        <button
+  1810→          onClick={handleLogoTap}
+  1811→          className="flex flex-col items-center bg-transparent border-0 p-0 cursor-pointer"
+  1812→          aria-label="VYRON"
+  1813→        >
+  1814→          <div className="flex items-center gap-1.5">
+  1815→            <Trophy className="w-5 h-5 text-yellow-400" />
+  1816→            <span className="font-bold text-[15px]">VYRON</span>
+  1817→          </div>
+  1818→          <span className="text-[9px] opacity-80 -mt-0.5">AI Fantasy Cricket Platform</span>
+  1819→        </button>
+  1820→
+  1821→        <button
+  1822→          onClick={handleRefresh}
+  1823→          className="p-1.5 hover:bg-white/10 rounded-md transition-colors"
+  1824→          aria-label="Refresh data"
+  1825→        >
+  1826→          <RefreshCw className="w-5 h-5" />
+  1827→        </button>
+  1828→      </header>
+  1829→
+  1830→      {/* ============ SPORTS TABS ============ */}
+  1831→      {(activeBottomNav === 'Home' || activeBottomNav === 'Research') && (
+  1832→        <nav className="bg-white border-b border-gray-200 sticky top-[56px] z-40">
+  1833→          <div className="flex">
+  1834→            {SPORTS.map((sport) => (
+  1835→              <button
+  1836→                key={sport.key}
+  1837→                onClick={() => setActiveSport(sport.key)}
+  1838→                className={`flex-1 flex flex-col items-center py-2.5 text-xs transition-colors relative ${
+  1839→                  activeSport === sport.key
+  1840→                    ? 'text-[#6C63FF] font-semibold'
+  1841→                    : 'text-gray-500 hover:text-gray-700'
+  1842→                }`}
+  1843→              >
+  1844→                <span className="text-lg mb-0.5">{sport.icon}</span>
+  1845→                <span>{sport.name}</span>
+  1846→                {activeSport === sport.key && (
+  1847→                  <div className="absolute bottom-0 left-[20%] right-[20%] h-[3px] bg-[#6C63FF] rounded-t-full" />
+  1848→                )}
+  1849→              </button>
+  1850→            ))}
+  1851→          </div>
+  1852→        </nav>
+  1853→      )}
+  1854→
+  1855→      {/* ============ MAIN CONTENT ============ */}
+  1856→      <main className="flex-1 pb-16">
+  1857→
+  1858→        {/* ======== HOME VIEW ======== */}
+  1859→        {activeBottomNav === 'Home' && (
+  1860→          <>
+  1861→            {/* VYRON 3D Banner */}
+  1862→            <div className="px-2.5 pt-2.5">
+  1863→              <div className="relative rounded-xl overflow-hidden bg-[#0a0a1a] border border-white/5 shadow-lg shadow-[#6C63FF]/10">
+  1864→                <img
+  1865→                  src="/vyron_banner_3d.svg"
+  1866→                  alt="VYRON — AI Fantasy Cricket Platform"
+  1867→                  className="w-full h-auto"
+  1868→                />
+  1869→                {/* Subtle animated shimmer overlay */}
+  1870→                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/[0.03] to-transparent" />
+  1871→              </div>
+  1872→            </div>
+  1873→
+  1874→            {/* Upcoming Matches Section */}
+  1875→            <div className="flex items-center justify-between px-4 py-3">
+  1876→              <h2 className="text-base font-semibold text-[#6C63FF]">Upcoming Matches</h2>
+  1877→              <Button
+  1878→                size="sm"
+  1879→                className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs h-7 px-3"
+  1880→                onClick={() => setActiveBottomNav('My matches')}
+  1881→              >
+  1882→                <BookmarkCheck className="w-3.5 h-3.5 mr-1" />
+  1883→                Saved Matches
+  1884→              </Button>
+  1885→            </div>
+  1886→
+  1887→            {/* Match Cards */}
+  1888→            <div className="px-3 space-y-2.5">
+  1889→              {loading ? (
+  1890→                Array.from({ length: 3 }).map((_, i) => (
+  1891→                  <div key={i} className="bg-white rounded-lg border border-gray-100 shadow-sm p-3 animate-pulse">
+  1892→                    <div className="h-4 bg-gray-200 rounded w-2/3 mb-3" />
+  1893→                    <div className="flex items-center justify-between mb-3">
+  1894→                      <div className="flex items-center gap-2">
+  1895→                        <div className="w-9 h-9 bg-gray-200 rounded-full" />
+  1896→                        <div className="h-4 bg-gray-200 rounded w-10" />
+  1897→                      </div>
+  1898→                      <div className="h-4 bg-gray-200 rounded w-20" />
+  1899→                      <div className="flex items-center gap-2">
+  1900→                        <div className="h-4 bg-gray-200 rounded w-10" />
+  1901→                        <div className="w-9 h-9 bg-gray-200 rounded-full" />
+  1902→                      </div>
+  1903→                    </div>
+  1904→                    <div className="h-7 bg-gray-200 rounded w-full" />
+  1905→                  </div>
+  1906→                ))
+  1907→              ) : matches.length > 0 ? (
+  1908→                matches.map((match) => (
+  1909→                  <MatchCard
+  1910→                    key={match._id}
+  1911→                    match={match}
+  1912→                    onSave={handleSaveMatch}
+  1913→                    isSaved={savedMatches.has(match._id)}
+  1914→                    onOpen={handleOpenMatch}
+  1915→                  />
+  1916→                ))
+  1917→              ) : (
+  1918→                <div className="text-center py-10 text-gray-500">
+  1919→                  <p className="text-lg mb-1">No matches available</p>
+  1920→                  <p className="text-sm">Check back later for upcoming {activeSport} matches</p>
+  1921→                </div>
+  1922→              )}
+  1923→            </div>
+  1924→          </>
+  1925→        )}
+  1926→
+  1927→        {/* ======== MY MATCHES VIEW ======== */}
+  1928→        {activeBottomNav === 'My matches' && (
+  1929→          <>
+  1930→            <div className="flex items-center justify-between px-4 py-3">
+  1931→              <h2 className="text-base font-semibold text-[#6C63FF]">My Saved Matches</h2>
+  1932→              <span className="text-xs text-gray-500">{savedMatchList.length} match{savedMatchList.length !== 1 ? 'es' : ''}</span>
+  1933→            </div>
+  1934→
+  1935→            {savedMatchList.length > 0 ? (
+  1936→              <div className="px-3 space-y-2.5">
+  1937→                {savedMatchList.map((match) => (
+  1938→                  <MatchCard
+  1939→                    key={match._id}
+  1940→                    match={match}
+  1941→                    onSave={handleSaveMatch}
+  1942→                    isSaved={true}
+  1943→                    onOpen={handleOpenMatch}
+  1944→                  />
+  1945→                ))}
+  1946→              </div>
+  1947→            ) : (
+  1948→              <div className="flex flex-col items-center justify-center py-16 px-4">
+  1949→                <div className="w-20 h-20 rounded-full bg-gray-100 flex items-center justify-center mb-4">
+  1950→                  <BookmarkCheck className="w-10 h-10 text-gray-300" />
+  1951→                </div>
+  1952→                <p className="text-lg font-semibold text-gray-700 mb-1">No saved matches</p>
+  1953→                <p className="text-sm text-gray-500 mb-6 text-center">Save matches from the home page to see them here</p>
+  1954→                <Button
+  1955→                  className="bg-[#6C63FF] hover:bg-[#5B54E0] text-white"
+  1956→                  onClick={() => setActiveBottomNav('Home')}
+  1957→                >
+  1958→                  <HomeIcon className="w-4 h-4 mr-2" />
+  1959→                  Go to Home
+  1960→                </Button>
+  1961→              </div>
+  1962→            )}
+  1963→          </>
+  1964→        )}
+  1965→
+  1966→        {/* ======== RESEARCH VIEW ======== */}
+  1967→        {activeBottomNav === 'Research' && (
+  1968→          <>
+  1969→            <div className="px-4 py-3">
+  1970→              <h2 className="text-base font-semibold text-[#6C63FF]">Match Research</h2>
+  1971→              <p className="text-xs text-gray-500 mt-0.5">Analyze lineups, fantasy platforms & more</p>
+  1972→            </div>
+  1973→
+  1974→            {loading ? (
+  1975→              <div className="px-3 space-y-2.5">
+  1976→                {Array.from({ length: 3 }).map((_, i) => (
+  1977→                  <div key={i} className="bg-white rounded-lg border border-gray-100 shadow-sm p-3 animate-pulse">
+  1978→                    <div className="h-4 bg-gray-200 rounded w-2/3 mb-3" />
+  1979→                    <div className="h-20 bg-gray-200 rounded w-full mb-3" />
+  1980→                    <div className="h-7 bg-gray-200 rounded w-full" />
+  1981→                  </div>
+  1982→                ))}
+  1983→              </div>
+  1984→            ) : matches.length > 0 ? (
+  1985→              <div className="px-3 space-y-2.5">
+  1986→                {matches.map((match) => (
+  1987→                  <div
+  1988→                    key={match._id}
+  1989→                    className="bg-white rounded-lg border border-gray-100 shadow-sm p-3 cursor-pointer active:scale-[0.98] transition-transform"
+  1990→                    onClick={() => handleOpenMatch(match)}
+  1991→                  >
+  1992→                    <div className="flex items-center gap-1.5 mb-2">
+  1993→                      <Star className="w-3.5 h-3.5 text-gray-400" />
+  1994→                      <span className="text-xs text-gray-600 font-medium">{match.series_name}</span>
+  1995→                    </div>
+  1996→
+  1997→                    <div className="flex items-center justify-between mb-3">
+  1998→                      <div className="flex items-center gap-2">
+  1999→                        <img src={match.left_team_image} alt={match.left_team_name} className="w-8 h-8 rounded-full object-cover bg-gray-100" />
+  2000→                        <span className="font-extrabold text-[14px]">{match.left_team_name}</span>
+
+[showing lines 1-2000 of 4419; use offset=2001 with limit to continue reading]
