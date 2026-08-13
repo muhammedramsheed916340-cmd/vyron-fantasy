@@ -89,23 +89,35 @@ export async function POST(request: NextRequest) {
       }
 
       // Auth-specific errors from the TG API
+      // CRITICAL: Only mark as EXPIRED for true auth failures.
+      // Rate-limit errors (429), server errors (5xx), and generic API errors
+      // must NOT be treated as session expiry — they cause false SESSION EXPIRED
+      // which blocks the user from proceeding.
       const msg = (data.message || '').toLowerCase();
-      if (
+      const isTrueAuthError =
         response.status === 401 ||
         response.status === 403 ||
-        msg.includes('token') ||
-        msg.includes('expire') ||
-        msg.includes('auth') ||
-        msg.includes('session') ||
+        msg.includes('token expired') ||
+        msg.includes('tokenexpired') ||
         msg.includes('unauthorized') ||
-        msg.includes('invalid') ||
         msg.includes('re-login') ||
-        msg.includes('re-login')
-      ) {
+        msg.includes('relogin') ||
+        (msg.includes('expire') && (msg.includes('token') || msg.includes('session')));
+
+      if (isTrueAuthError) {
         console.log('[VERIFY SESSION] Token EXPIRED — API message:', data.message);
         return NextResponse.json({
           status: 'expired',
           message: data.message || 'Session token is expired. Please re-authenticate.',
+        });
+      }
+
+      // Rate-limit — NOT an auth failure
+      if (response.status === 429 || msg.includes('rate limit') || msg.includes('too many')) {
+        console.log('[VERIFY SESSION] Rate limited — NOT treating as expired. API message:', data.message);
+        return NextResponse.json({
+          status: 'error',
+          message: 'Rate limited by platform. Cannot verify session right now.',
         });
       }
 

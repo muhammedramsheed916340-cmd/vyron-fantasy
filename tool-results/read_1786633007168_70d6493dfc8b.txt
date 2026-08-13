@@ -1,0 +1,1661 @@
+     1→     1→'use client';
+     2→     2→
+     3→     3→import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+     4→     4→import {
+     5→     5→  Trophy, X, CheckCircle2, Loader2, ChevronRight, ChevronLeft,
+     6→     6→  AlertCircle, Users, DollarSign, Filter, RefreshCw, KeyRound,
+     7→     7→} from 'lucide-react';
+     8→     8→import {
+     9→     9→  JCMatch, JCContest, JCTeam, JCJoinItem, JCProgress,
+    10→    10→  JCContestFetchResult,
+    11→    11→  parseContest, formatCurrency, getContestTypeColor,
+    12→    12→  getExistingPlatformTeams, getPlatformContests, normalizeContests,
+    13→    13→  buildJoinItems, getJoinKey,
+    14→    14→  verifySession, initiateSessionRefresh, completeSessionRefresh,
+    15→    15→} from '@/lib/join-contest-service';
+    16→    16→
+    17→    17→// ============ Step Enum ============
+    18→    18→type Step = 'matches' | 'teams' | 'contests' | 'joining' | 'result';
+    19→    19→
+    20→    20→// ============ Contest Error State ============
+    21→    21→interface ContestErrorState {
+    22→    22→  matchId: string;
+    23→    23→  error: string;
+    24→    24→  errorType: 'auth' | 'network' | 'parse' | 'invalid_match' | 'api_fail';
+    25→    25→}
+    26→    26→
+    27→    27→// ============ Props ============
+    28→    28→interface JoinContestDialogProps {
+    29→    29→  open: boolean;
+    30→    30→  onClose: () => void;
+    31→    31→  matches: JCMatch[];
+    32→    32→  fantasyAccounts: Record<string, { authToken: string; mobileNumber: string; my11circleChallenge?: string | null } | null>;
+    33→    33→  /** Callback to update the parent's fantasy account state after a successful token refresh */
+    34→    34→  onAccountUpdate?: (platform: string, account: { authToken: string; mobileNumber: string; my11circleChallenge?: string | null; my11circleUserId?: string | null; linkedAt: string }) => void;
+    35→    35→}
+    36→    36→
+    37→    37→// ============ Main Dialog ============
+    38→    38→export default function JoinContestDialog({
+    39→    39→  open, onClose, matches, fantasyAccounts, onAccountUpdate,
+    40→    40→}: JoinContestDialogProps) {
+    41→    41→  // Step state
+    42→    42→  const [step, setStep] = useState<Step>('matches');
+    43→    43→  const [platform, setPlatform] = useState<string>('dream11');
+    44→    44→
+    45→    45→  // Match selection
+    46→    46→  const [selectedMatchIds, setSelectedMatchIds] = useState<Set<string | number>>(new Set());
+    47→    47→
+    48→    48→  // Team selection — EXISTING PLATFORM TEAMS
+    49→    49→  const [platformTeams, setPlatformTeams] = useState<JCTeam[]>([]);
+    50→    50→  const [selectedTeamIds, setSelectedTeamIds] = useState<Set<string | number>>(new Set());
+    51→    51→  const [mixedTeamMode, setMixedTeamMode] = useState(false);
+    52→    52→  const [loadingTeams, setLoadingTeams] = useState(false);
+    53→    53→  const [teamsError, setTeamsError] = useState<string | null>(null);
+    54→    54→  const [teamsTokenExpired, setTeamsTokenExpired] = useState(false);
+    55→    55→
+    56→    56→  // Contest selection — with proper error states
+    57→    57→  const [contestsMap, setContestsMap] = useState<Map<string, JCContest[]>>(new Map());
+    58→    58→  const [selectedContestIds, setSelectedContestIds] = useState<Set<string>>(new Set());
+    59→    59→  const [loadingContests, setLoadingContests] = useState(false);
+    60→    60→  const [contestErrors, setContestErrors] = useState<ContestErrorState[]>([]);
+    61→    61→  const [contestTokenExpired, setContestTokenExpired] = useState(false);
+    62→    62→
+    63→    63→  // Join progress
+    64→    64→  const [joinItems, setJoinItems] = useState<JCJoinItem[]>([]);
+    65→    65→  const [progress, setProgress] = useState<JCProgress>({ current: 0, total: 0, status: 'idle' });
+    66→    66→
+    67→    67→  // Result
+    68→    68→  const [resultItems, setResultItems] = useState<JCJoinItem[]>([]);
+    69→    69→
+    70→    70→  // Session refresh state
+    71→    71→  const [sessionRefreshState, setSessionRefreshState] = useState<{
+    72→    72→    active: boolean;
+    73→    73→    step: 'verifying' | 'sending_otp' | 'entering_otp' | 'verifying_otp' | 'success' | 'failed';
+    74→    74→    otpState?: string | null;
+    75→    75→    challenge?: string | null;
+    76→    76→    reasonCode?: string | null;
+    77→    77→    message?: string;
+    78→    78→  }>({ active: false, step: 'verifying', message: '' });
+    79→    79→  const [refreshOtp, setRefreshOtp] = useState('');
+    80→    80→
+    81→    81→  // ============ OTP REQUEST GUARD ============
+    82→    82→  // Hard guard: prevents duplicate OTP requests within the same login attempt.
+    83→    83→  // A Join Contest button click must NEVER create multiple OTP requests.
+    84→    84→  const otpRequestInProgressRef = useRef(false);
+    85→    85→  const lastOtpTimestampRef = useRef(0);
+    86→    86→  const OTP_COOLDOWN_MS = 10000; // 10 seconds minimum between OTP requests
+    87→    87→
+    88→    88→  // ============ REQUEST GUARDS (prevent duplicate/parallel/auto requests) ============
+    89→    89→  const loadTeamsInProgressRef = useRef(false);  // Prevents parallel team-fetch requests
+    90→    90→  const loadContestsInProgressRef = useRef(false); // Prevents parallel contest-fetch requests
+    91→    91→  const joinInProgressRef = useRef(false);  // Prevents double-click on Join button
+    92→    92→  const nextClickInProgressRef = useRef(false); // Prevents double-click on Next buttons
+    93→    93→
+    94→    94→  // ============ ABORT CONTROLLER (request cancellation on close/back) ============
+    95→    95→  const abortControllerRef = useRef<AbortController | null>(null);
+    96→    96→
+    97→    97→  // ============ RATE LIMIT STATE ============
+    98→    98→  const [teamsRateLimited, setTeamsRateLimited] = useState(false);
+    99→    99→  const [contestsRateLimited, setContestsRateLimited] = useState(false);
+   100→   100→
+   101→   101→  // ============ SESSION PRE-CHECK STATE ============
+   102→   102→  const [sessionChecked, setSessionChecked] = useState(false);
+   103→   103→  const [sessionValid, setSessionValid] = useState(false);
+   104→   104→
+   105→   105→  // ============ JOIN RETRY STATE ============
+   106→   106→  const MAX_JOIN_RETRIES = 3;
+   107→   107→  const JOIN_RETRY_DELAY_MS = 500;
+   108→   108→
+   109→   109→  // Use the LATEST token — after a successful refresh, use the new token
+   110→   110→  const effectiveAccount = useMemo(() => {
+   111→   111→    return fantasyAccounts[platform];
+   112→   112→  }, [fantasyAccounts, platform]);
+   113→   113→
+   114→   114→  // Available platforms from linked accounts
+   115→   115→  const availablePlatforms = useMemo(() => {
+   116→   116→    const platforms: string[] = [];
+   117→   117→    if (fantasyAccounts.dream11?.authToken) platforms.push('dream11');
+   118→   118→    if (fantasyAccounts.my11circle?.authToken) platforms.push('my11circle');
+   119→   119→    return platforms;
+   120→   120→  }, [fantasyAccounts]);
+   121→   121→
+   122→   122→  const account = effectiveAccount;
+   123→   123→
+   124→   124→  // Reset on close — with request cancellation and guard cleanup
+   125→   125→  const handleClose = () => {
+   126→   126→    // === CANCEL ALL PENDING REQUESTS ===
+   127→   127→    if (abortControllerRef.current) {
+   128→   128→      console.log('[JOIN] Aborting all pending requests on close');
+   129→   129→      abortControllerRef.current.abort();
+   130→   130→      abortControllerRef.current = null;
+   131→   131→    }
+   132→   132→    // === CLEAR ALL REQUEST GUARDS ===
+   133→   133→    loadTeamsInProgressRef.current = false;
+   134→   134→    loadContestsInProgressRef.current = false;
+   135→   135→    joinInProgressRef.current = false;
+   136→   136→    nextClickInProgressRef.current = false;
+   137→   137→    otpRequestInProgressRef.current = false;
+   138→   138→
+   139→   139→    setStep('matches');
+   140→   140→    setSelectedMatchIds(new Set());
+   141→   141→    setPlatformTeams([]);
+   142→   142→    setSelectedTeamIds(new Set());
+   143→   143→    setMixedTeamMode(false);
+   144→   144→    setLoadingTeams(false);
+   145→   145→    setTeamsError(null);
+   146→   146→    setTeamsTokenExpired(false);
+   147→   147→    setTeamsRateLimited(false);
+   148→   148→    setContestsMap(new Map());
+   149→   149→    setSelectedContestIds(new Set());
+   150→   150→    setLoadingContests(false);
+   151→   151→    setContestErrors([]);
+   152→   152→    setContestTokenExpired(false);
+   153→   153→    setContestsRateLimited(false);
+   154→   154→    setJoinItems([]);
+   155→   155→    setProgress({ current: 0, total: 0, status: 'idle' });
+   156→   156→    setResultItems([]);
+   157→   157→    setSessionRefreshState({ active: false, step: 'verifying', message: '' });
+   158→   158→    setRefreshOtp('');
+   159→   159→    setSessionChecked(false);
+   160→   160→    setSessionValid(false);
+   161→   161→    onClose();
+   162→   162→  };
+   163→   163→
+   164→   164→  // ============ Session Pre-Check ============
+   165→   165→
+   166→   166→  /**
+   167→   167→   * Verify the stored session token is still valid BEFORE starting any operation.
+   168→   168→   * This is the SINGLE authenticated-account check required by the spec:
+   169→   169→   *   getStoredFantasyAccount(platform) → validate stored token/session
+   170→   170→   *     → if valid: use existing account, NEVER open OTP login
+   171→   171→   *     → if invalid/expired: show "Session expired — Login required", allow manual OTP
+   172→   172→   */
+   173→   173→  const checkSessionValidity = useCallback(async (plat?: string): Promise<boolean> => {
+   174→   174→    const p = plat || platform;
+   175→   175→    const acc = fantasyAccounts[p];
+   176→   176→
+   177→   177→    console.log('[JOIN] === SESSION PRE-CHECK ===');
+   178→   178→    console.log('[JOIN] Platform:', p);
+   179→   179→    console.log('[JOIN] Account:', acc?.mobileNumber ? acc.mobileNumber.slice(0, 4) + '****' : 'NONE');
+   180→   180→    console.log('[JOIN] Existing session:', !!acc?.authToken);
+   181→   181→    console.log('[JOIN] Token present:', !!acc?.authToken);
+   182→   182→    console.log('[JOIN] Token valid: CHECKING...');
+   183→   183→
+   184→   184→    if (!acc?.authToken) {
+   185→   185→      console.log('[JOIN] Token present: NO');
+   186→   186→      console.log('[JOIN] OTP required: YES (no token stored)');
+   187→   187→      console.log('[JOIN] OTP request started: NO (user must initiate)');
+   188→   188→      setSessionChecked(true);
+   189→   189→      setSessionValid(false);
+   190→   190→      return false;
+   191→   191→    }
+   192→   192→
+   193→   193→    // Verify the token with the backend
+   194→   194→    const result = await verifySession(p, acc.authToken);
+   195→   195→
+   196→   196→    console.log('[JOIN] Token valid:', result.status === 'valid');
+   197→   197→    console.log('[JOIN] OTP required:', result.status === 'expired' ? 'YES' : 'NO');
+   198→   198→
+   199→   199→    if (result.status === 'valid') {
+   200→   200→      setSessionChecked(true);
+   201→   201→      setSessionValid(true);
+   202→   202→      console.log('[JOIN] === SESSION PRE-CHECK COMPLETE: VALID — proceeding with existing token ===');
+   203→   203→      return true;
+   204→   204→    }
+   205→   205→
+   206→   206→    if (result.status === 'expired') {
+   207→   207→      // Token is genuinely expired — show session expired UI but DO NOT auto-trigger OTP
+   208→   208→      setSessionChecked(true);
+   209→   209→      setSessionValid(false);
+   210→   210→      setTeamsTokenExpired(true);
+   211→   211→      setContestTokenExpired(true);
+   212→   212→      console.log('[JOIN] === SESSION PRE-CHECK COMPLETE: EXPIRED — user must manually refresh ===');
+   213→   213→      return false;
+   214→   214→    }
+   215→   215→
+   216→   216→    // 'error' — network/unknown issue. Don't assume expired. Let the operation try with the existing token.
+   217→   217→    // The token MIGHT still be valid — the verify endpoint could be down.
+   218→   218→    console.log('[JOIN] === SESSION PRE-CHECK COMPLETE: UNCERTAIN — proceeding with existing token (verify endpoint error) ===');
+   219→   219→    setSessionChecked(true);
+   220→   220→    setSessionValid(true); // Optimistic — let the operation try
+   221→   221→    return true;
+   222→   222→  }, [platform, fantasyAccounts]);
+   223→   223→
+   224→   224→  // ============ Session Refresh Handlers ============
+   225→   225→
+   226→   226→  /**
+   227→   227→   * Handle session expiry by initiating a token refresh flow.
+   228→   228→   * CRITICAL SAFETY: This is USER-INITIATED only.
+   229→   229→   *   - Has OTP request guard to prevent duplicate requests.
+   230→   230→   *   - Has cooldown to prevent rapid-fire OTP requests.
+   231→   231→   *   - NEVER called automatically — only when user clicks "Refresh Session".
+   232→   232→   *
+   233→   233→   * The wizard state (selected match, teams, contests) is PRESERVED.
+   234→   234→   */
+   235→   235→  const handleSessionExpired = useCallback(async () => {
+   236→   236→    // === OTP REQUEST GUARD ===
+   237→   237→    if (otpRequestInProgressRef.current) {
+   238→   238→      console.warn('[JOIN] OTP request BLOCKED — another OTP request is already in progress');
+   239→   239→      return;
+   240→   240→    }
+   241→   241→
+   242→   242→    const now = Date.now();
+   243→   243→    if (now - lastOtpTimestampRef.current < OTP_COOLDOWN_MS) {
+   244→   244→      console.warn('[JOIN] OTP request BLOCKED — cooldown period active. Last OTP:', Math.round((now - lastOtpTimestampRef.current) / 1000), 'seconds ago');
+   245→   245→      return;
+   246→   246→    }
+   247→   247→
+   248→   248→    const acc = effectiveAccount;
+   249→   249→    if (!acc?.mobileNumber) {
+   250→   250→      console.error('[JOIN] Cannot refresh session — no mobile number stored for account');
+   251→   251→      setSessionRefreshState({
+   252→   252→        active: true,
+   253→   253→        step: 'failed',
+   254→   254→        message: 'No mobile number stored for this account. Please reconnect manually.',
+   255→   255→      });
+   256→   256→      return;
+   257→   257→    }
+   258→   258→
+   259→   259→    console.log('[JOIN] Session expired — USER initiated refresh for', platform, acc.mobileNumber.slice(0, 4) + '****');
+   260→   260→    console.log('[JOIN] OTP request started: YES');
+   261→   261→
+   262→   262→    // Mark OTP as in progress
+   263→   263→    otpRequestInProgressRef.current = true;
+   264→   264→    lastOtpTimestampRef.current = Date.now();
+   265→   265→
+   266→   266→    // Step 1: Send OTP
+   267→   267→    setSessionRefreshState({ active: true, step: 'sending_otp', message: `Sending OTP to ${acc.mobileNumber}...` });
+   268→   268→
+   269→   269→    try {
+   270→   270→      const refreshResult = await initiateSessionRefresh(platform, acc.mobileNumber);
+   271→   271→
+   272→   272→      if (!refreshResult.success) {
+   273→   273→        console.error('[JOIN] Session refresh OTP send failed:', refreshResult.message);
+   274→   274→        setSessionRefreshState({
+   275→   275→          active: true,
+   276→   276→          step: 'failed',
+   277→   277→          message: refreshResult.message || 'Failed to send OTP. Please try again.',
+   278→   278→        });
+   279→   279→        otpRequestInProgressRef.current = false;
+   280→   280→        return;
+   281→   281→      }
+   282→   282→
+   283→   283→      // Step 2: Wait for user to enter OTP
+   284→   284→      console.log('[JOIN] OTP sent — waiting for user to enter OTP');
+   285→   285→      setSessionRefreshState({
+   286→   286→        active: true,
+   287→   287→        step: 'entering_otp',
+   288→   288→        otpState: refreshResult.state,
+   289→   289→        challenge: refreshResult.challenge,
+   290→   290→        reasonCode: refreshResult.reasonCode,
+   291→   291→        message: `OTP sent to ${acc.mobileNumber}. Enter the OTP to refresh your session.`,
+   292→   292→      });
+   293→   293→    } catch (err) {
+   294→   294→      console.error('[JOIN] Session refresh error:', err);
+   295→   295→      setSessionRefreshState({
+   296→   296→        active: true,
+   297→   297→        step: 'failed',
+   298→   298→        message: 'Unexpected error during session refresh.',
+   299→   299→      });
+   300→   300→    } finally {
+   301→   301→      // Clear the in-progress flag after sending phase (the verify phase is separate)
+   302→   302→      // We keep it set during entering_otp to prevent double-send
+   303→   303→      // It will be cleared after verify completes or user cancels
+   304→   304→    }
+   305→   305→  }, [platform, effectiveAccount, OTP_COOLDOWN_MS]);
+   306→   306→
+   307→   307→  /**
+   308→   308→   * Complete the session refresh by verifying the OTP entered by the user.
+   309→   309→   * On success, update the token in the parent state and retry the failed operation.
+   310→   310→   */
+   311→   311→  const handleCompleteRefresh = useCallback(async () => {
+   312→   312→    if (!refreshOtp || refreshOtp.length < 4) return;
+   313→   313→
+   314→   314→    const acc = effectiveAccount;
+   315→   315→    if (!acc?.mobileNumber) return;
+   316→   316→
+   317→   317→    console.log('[JOIN] Verifying refresh OTP...');
+   318→   318→    setSessionRefreshState(prev => ({ ...prev, step: 'verifying_otp', message: 'Verifying OTP...' }));
+   319→   319→
+   320→   320→    const result = await completeSessionRefresh(
+   321→   321→      platform,
+   322→   322→      acc.mobileNumber,
+   323→   323→      refreshOtp,
+   324→   324→      sessionRefreshState.otpState,
+   325→   325→      sessionRefreshState.challenge,
+   326→   326→      sessionRefreshState.reasonCode,
+   327→   327→    );
+   328→   328→
+   329→   329→    if (!result.success || !result.token) {
+   330→   330→      console.error('[JOIN] Session refresh OTP verification failed:', result.message);
+   331→   331→      setSessionRefreshState(prev => ({
+   332→   332→        ...prev,
+   333→   333→        step: 'failed',
+   334→   334→        message: result.message || 'OTP verification failed. Please try again.',
+   335→   335→      }));
+   336→   336→      otpRequestInProgressRef.current = false; // Allow retry
+   337→   337→      return;
+   338→   338→    }
+   339→   339→
+   340→   340→    console.log('[JOIN] Session refresh SUCCESS — new token obtained, length:', result.token.length);
+   341→   341→    otpRequestInProgressRef.current = false; // Clear guard
+   342→   342→
+   343→   343→    // Update the parent's fantasy account state with the new token
+   344→   344→    if (onAccountUpdate) {
+   345→   345→      onAccountUpdate(platform, {
+   346→   346→        authToken: result.token,
+   347→   347→        mobileNumber: acc.mobileNumber,
+   348→   348→        my11circleChallenge: result.my11circleChallenge || acc.my11circleChallenge,
+   349→   349→        my11circleUserId: result.my11circleUserId || null,
+   350→   350→        linkedAt: new Date().toISOString(),
+   351→   351→      });
+   352→   352→    }
+   353→   353→
+   354→   354→    // Mark refresh as successful
+   355→   355→    setSessionRefreshState({
+   356→   356→      active: true,
+   357→   357→      step: 'success',
+   358→   358→      message: 'Session refreshed successfully!',
+   359→   359→    });
+   360→   360→
+   361→   361→    // Clear token expired flags and session check state
+   362→   362→    setTeamsTokenExpired(false);
+   363→   363→    setContestTokenExpired(false);
+   364→   364→    setTeamsError(null);
+   365→   365→    setContestErrors([]);
+   366→   366→    setSessionChecked(true);
+   367→   367→    setSessionValid(true);
+   368→   368→
+   369→   369→    // After a brief delay, auto-retry the failed operation
+   370→   370→    setTimeout(() => {
+   371→   371→      setSessionRefreshState({ active: false, step: 'verifying', message: '' });
+   372→   372→      setRefreshOtp('');
+   373→   373→      otpRequestInProgressRef.current = false;
+   374→   374→
+   375→   375→      // Retry based on current step — preserve all selections
+   376→   376→      if (step === 'teams') {
+   377→   377→        loadPlatformTeams();
+   378→   378→      } else if (step === 'contests') {
+   379→   379→        loadContests();
+   380→   380→      }
+   381→   381→    }, 1500);
+   382→   382→  }, [refreshOtp, platform, effectiveAccount, sessionRefreshState, onAccountUpdate, step]);
+   383→   383→
+   384→   384→  // ============ Match Selection ============
+   385→   385→  const toggleMatch = (id: string | number) => {
+   386→   386→    setSelectedMatchIds(prev => {
+   387→   387→      const next = new Set(prev);
+   388→   388→      next.has(id) ? next.delete(id) : next.add(id);
+   389→   389→      return next;
+   390→   390→    });
+   391→   391→  };
+   392→   392→
+   393→   393→  const selectAllMatches = () => {
+   394→   394→    setSelectedMatchIds(new Set(matches.map(m => m.id)));
+   395→   395→  };
+   396→   396→
+   397→   397→  // ============ Load Existing Platform Teams ============
+   398→   398→  // Fetches teams ONCE. Prevents duplicate/parallel/auto requests.
+   399→   399→  // Detects rate-limit responses and stops retrying.
+   400→   400→  // NEVER auto-triggers OTP — only sets expired flag.
+   401→   401→  const loadPlatformTeams = useCallback(async (selectedPlatform?: string) => {
+   402→   402→    // === REQUEST GUARD: Prevent duplicate/parallel team-fetch ===
+   403→   403→    if (loadTeamsInProgressRef.current) {
+   404→   404→      console.warn('[JOIN] Team fetch BLOCKED — another team fetch is already in progress');
+   405→   405→      return;
+   406→   406→    }
+   407→   407→
+   408→   408→    const plat = selectedPlatform || platform;
+   409→   409→    const acc = fantasyAccounts[plat];
+   410→   410→    if (!acc?.authToken) {
+   411→   411→      setTeamsError('No connected account found. Connect your platform account to load existing teams.');
+   412→   412→      setPlatformTeams([]);
+   413→   413→      return;
+   414→   414→    }
+   415→   415→
+   416→   416→    console.log('[JOIN] === TEAM FETCH START ===');
+   417→   417→    console.log('[JOIN] Platform:', plat);
+   418→   418→    console.log('[JOIN] Account:', acc.mobileNumber?.slice(0, 4) + '****');
+   419→   419→    console.log('[JOIN] Match IDs:', [...selectedMatchIds]);
+   420→   420→    console.log('[JOIN] Token length:', acc.authToken.length);
+   421→   421→
+   422→   422→    // Create new AbortController for this request batch
+   423→   423→    if (abortControllerRef.current) abortControllerRef.current.abort();
+   424→   424→    abortControllerRef.current = new AbortController();
+   425→   425→
+   426→   426→    loadTeamsInProgressRef.current = true;
+   427→   427→    setLoadingTeams(true);
+   428→   428→    setTeamsError(null);
+   429→   429→    setTeamsTokenExpired(false);
+   430→   430→    setTeamsRateLimited(false);
+   431→   431→    // Preserve team selections on retry (only clear on first load)
+   432→   432→    if (platformTeams.length === 0) {
+   433→   433→      setSelectedTeamIds(new Set());
+   434→   434→    }
+   435→   435→
+   436→   436→    const allTeams: JCTeam[] = [];
+   437→   437→    let firstError: string | null = null;
+   438→   438→    let anyTokenExpired = false;
+   439→   439→    let anyRateLimited = false;
+   440→   440→
+   441→   441→    try {
+   442→   442→      for (const matchId of selectedMatchIds) {
+   443→   443→        // Check if aborted
+   444→   444→        if (abortControllerRef.current?.signal.aborted) {
+   445→   445→          console.log('[JOIN] Team fetch aborted');
+   446→   446→          return;
+   447→   447→        }
+   448→   448→
+   449→   449→        const result = await getExistingPlatformTeams(plat, matchId, acc.authToken);
+   450→   450→
+   451→   451→        console.log('[JOIN] Team fetch result — Match:', matchId, 'Teams:', result.teams.length, 'Error:', result.error || 'none', 'TokenExpired:', result.tokenExpired);
+   452→   452→
+   453→   453→        if (result.teams.length > 0) {
+   454→   454→          allTeams.push(...result.teams);
+   455→   455→        }
+   456→   456→        if (result.tokenExpired) {
+   457→   457→          anyTokenExpired = true;
+   458→   458→          firstError = result.error || 'Session expired';
+   459→   459→        } else if (result.error && !firstError) {
+   460→   460→          firstError = result.error;
+   461→   461→          // Detect rate-limit responses
+   462→   462→          if (result.error.toLowerCase().includes('rate limit') ||
+   463→   463→              result.error.toLowerCase().includes('429') ||
+   464→   464→              result.error.toLowerCase().includes('too many')) {
+   465→   465→            anyRateLimited = true;
+   466→   466→            firstError = result.error;
+   467→   467→          }
+   468→   468→        }
+   469→   469→      }
+   470→   470→
+   471→   471→      // Check if aborted before setting state
+   472→   472→      if (abortControllerRef.current?.signal.aborted) return;
+   473→   473→
+   474→   474→      setPlatformTeams(allTeams);
+   475→   475→      setTeamsError(allTeams.length === 0 ? firstError : null);
+   476→   476→      setTeamsTokenExpired(anyTokenExpired);
+   477→   477→      setTeamsRateLimited(anyRateLimited && !anyTokenExpired);
+   478→   478→
+   479→   479→      console.log('[JOIN] === TEAM FETCH END ===');
+   480→   480→      console.log('[JOIN] Total teams loaded:', allTeams.length);
+   481→   481→      console.log('[JOIN] Selected team IDs:', [...selectedTeamIds]);
+   482→   482→      console.log('[JOIN] Rate limited:', anyRateLimited);
+   483→   483→      console.log('[JOIN] Token expired:', anyTokenExpired);
+   484→   484→
+   485→   485→      // *** CRITICAL FIX: NEVER auto-trigger OTP on token expiry ***
+   486→   486→      if (anyTokenExpired) {
+   487→   487→        console.log('[JOIN] Token expired — showing session expired UI (NOT auto-triggering OTP)');
+   488→   488→      }
+   489→   489→      if (anyRateLimited) {
+   490→   490→        console.log('[JOIN] Rate limited — NOT retrying. User must click Retry manually.');
+   491→   491→      }
+   492→   492→    } catch (err) {
+   493→   493→      if (abortControllerRef.current?.signal.aborted) return;
+   494→   494→      console.error('[JOIN] Team fetch error:', err);
+   495→   495→      setTeamsError('Failed to load teams. Please try again.');
+   496→   496→      setPlatformTeams([]);
+   497→   497→    } finally {
+   498→   498→      loadTeamsInProgressRef.current = false;
+   499→   499→      setLoadingTeams(false);
+   500→   500→    }
+   501→   501→  }, [selectedMatchIds, platform, fantasyAccounts, platformTeams.length, selectedTeamIds]);
+   502→   502→
+   503→   503→  // ============ Team Selection ============
+   504→   504→  const toggleTeam = (id: string | number) => {
+   505→   505→    setSelectedTeamIds(prev => {
+   506→   506→      const next = new Set(prev);
+   507→   507→      next.has(id) ? next.delete(id) : next.add(id);
+   508→   508→      return next;
+   509→   509→    });
+   510→   510→  };
+   511→   511→
+   512→   512→  const selectAllTeams = () => {
+   513→   513→    setSelectedTeamIds(new Set(platformTeams.map(t => t.id)));
+   514→   514→  };
+   515→   515→
+   516→   516→  const deselectAllTeams = () => {
+   517→   517→    setSelectedTeamIds(new Set());
+   518→   518→  };
+   519→   519→
+   520→   520→  // ============ Contest Loading — with proper error differentiation ============
+   521→   521→  // Prevents duplicate/parallel requests. Detects rate-limit. Never auto-OTP.
+   522→   522→  const loadContests = useCallback(async () => {
+   523→   523→    // === REQUEST GUARD: Prevent duplicate/parallel contest-fetch ===
+   524→   524→    if (loadContestsInProgressRef.current) {
+   525→   525→      console.warn('[JOIN] Contest fetch BLOCKED — another contest fetch is already in progress');
+   526→   526→      return;
+   527→   527→    }
+   528→   528→
+   529→   529→    if (!account?.authToken) return;
+   530→   530→
+   531→   531→    console.log('[JOIN] === CONTEST FETCH START ===');
+   532→   532→    console.log('[JOIN] Platform:', platform);
+   533→   533→    console.log('[JOIN] Account:', account.mobileNumber?.slice(0, 4) + '****');
+   534→   534→    console.log('[JOIN] Match IDs:', [...selectedMatchIds]);
+   535→   535→
+   536→   536→    // Create new AbortController for this request batch
+   537→   537→    if (abortControllerRef.current) abortControllerRef.current.abort();
+   538→   538→    abortControllerRef.current = new AbortController();
+   539→   539→
+   540→   540→    loadContestsInProgressRef.current = true;
+   541→   541→    setLoadingContests(true);
+   542→   542→    setContestErrors([]);
+   543→   543→    setContestTokenExpired(false);
+   544→   544→    setContestsRateLimited(false);
+   545→   545→    // Preserve contest selections on retry (only clear on first load)
+   546→   546→    if (contestsMap.size === 0) {
+   547→   547→      setSelectedContestIds(new Set());
+   548→   548→    }
+   549→   549→
+   550→   550→    const newMap = new Map<string, JCContest[]>();
+   551→   551→    const errors: ContestErrorState[] = [];
+   552→   552→    let anyTokenExpired = false;
+   553→   553→
+   554→   554→    for (const matchId of selectedMatchIds) {
+   555→   555→      const match = matches.find(m => m.id === matchId);
+   556→   556→
+   557→   557→      // Use the match ID as the platform match ID.
+   558→   558→      // The TG API returns numeric match IDs (e.g., 113672) that are compatible
+   559→   559→      // with Dream11/My11Circle platform APIs.
+   560→   560→      // CRITICAL: This must be a numeric ID, NOT a display name like "MO vs SUL".
+   561→   561→      const platformMatchId = matchId;
+   562→   562→      const numericMatchId = typeof matchId === 'string' ? parseInt(matchId, 10) : matchId;
+   563→   563→
+   564→   564→      console.log('[JOIN] Selected match:', match?.left_team_name, 'vs', match?.right_team_name);
+   565→   565→      console.log('[JOIN] Platform:', platform);
+   566→   566→      console.log('[JOIN] Platform Match ID:', platformMatchId, '(numeric:', numericMatchId, ')');
+   567→   567→      console.log('[JOIN] Account ID:', account.mobileNumber || 'unknown');
+   568→   568→      console.log('[JOIN] Sport Index:', match?.sport_index ?? 0);
+   569→   569→
+   570→   570→      // Validate: matchId must be numeric
+   571→   571→      if (isNaN(numericMatchId) || numericMatchId <= 0) {
+   572→   572→        console.error('[JOIN] INVALID matchId:', matchId, '— not a valid numeric ID. This should be a platform match ID like 113672, not a display name.');
+   573→   573→        errors.push({
+   574→   574→          matchId: String(matchId),
+   575→   575→          error: `Invalid match ID "${matchId}". Must be a numeric platform match ID.`,
+   576→   576→          errorType: 'invalid_match',
+   577→   577→        });
+   578→   578→        newMap.set(String(matchId), []);
+   579→   579→        continue;
+   580→   580→      }
+   581→   581→
+   582→   582→      const result: JCContestFetchResult = await getPlatformContests(
+   583→   583→        platform,
+   584→   584→        platformMatchId,
+   585→   585→        account.authToken,
+   586→   586→        match?.sport_index ?? 0,
+   587→   587→        account.my11circleChallenge || undefined,
+   588→   588→      );
+   589→   589→
+   590→   590→      console.log('[JOIN] Contest count:', result.contests.length);
+   591→   591→      console.log('[JOIN] Error type:', result.errorType);
+   592→   592→
+   593→   593→      if (result.errorType === 'auth') {
+   594→   594→        anyTokenExpired = true;
+   595→   595→        errors.push({
+   596→   596→          matchId: String(matchId),
+   597→   597→          error: result.error || 'Session expired',
+   598→   598→          errorType: 'auth',
+   599→   599→        });
+   600→   600→        // Still set empty array for this match
+   601→   601→        newMap.set(String(matchId), []);
+   602→   602→      } else if (result.errorType && result.errorType !== 'none') {
+   603→   603→        errors.push({
+   604→   604→          matchId: String(matchId),
+   605→   605→          error: result.error || 'Failed to load contests',
+   606→   606→          errorType: result.errorType,
+   607→   607→        });
+   608→   608→        newMap.set(String(matchId), []);
+   609→   609→      } else {
+   610→   610→        // Success (possibly 0 contests — that's a valid state)
+   611→   611→        newMap.set(String(matchId), result.contests);
+   612→   612→      }
+   613→   613→
+   614→   614→      // Validate: contest.matchId should match our matchId
+   615→   615→      for (const contest of result.contests) {
+   616→   616→        if (contest.matchId && contest.matchId !== platformMatchId) {
+   617→   617→          console.warn('[JOIN] Contest matchId mismatch:', contest.matchId, '!==', platformMatchId, 'for contest:', contest.id);
+   618→   618→        }
+   619→   619→      }
+   620→   620→
+   621→   621→      console.log('[JOIN] Normalized contests for match', platformMatchId, ':', result.contests.length);
+   622→   622→    }
+   623→   623→
+   624→   624→    // Detect rate-limit in errors
+   625→   625→    const anyRateLimited = errors.some(e =>
+   626→   626→      e.error.toLowerCase().includes('rate limit') ||
+   627→   627→      e.error.toLowerCase().includes('429') ||
+   628→   628→      e.error.toLowerCase().includes('too many')
+   629→   629→    );
+   630→   630→
+   631→   631→    // Check if aborted before setting state
+   632→   632→    if (abortControllerRef.current?.signal.aborted) {
+   633→   633→      loadContestsInProgressRef.current = false;
+   634→   634→      return;
+   635→   635→    }
+   636→   636→
+   637→   637→    setContestsMap(newMap);
+   638→   638→    setContestErrors(errors);
+   639→   639→    setContestTokenExpired(anyTokenExpired);
+   640→   640→    setContestsRateLimited(anyRateLimited && !anyTokenExpired);
+   641→   641→    setLoadingContests(false);
+   642→   642→
+   643→   643→    console.log('[JOIN] === CONTEST FETCH END ===');
+   644→   644→    console.log('[JOIN] Total contests loaded:', totalContestCount);
+   645→   645→    console.log('[JOIN] Selected contest IDs:', [...selectedContestIds]);
+   646→   646→    console.log('[JOIN] Rate limited:', anyRateLimited);
+   647→   647→    console.log('[JOIN] Token expired:', anyTokenExpired);
+   648→   648→    console.log('[JOIN] Errors:', errors.length);
+   649→   649→
+   650→   650→    // *** CRITICAL FIX: NEVER auto-trigger OTP on token expiry ***
+   651→   651→    if (anyTokenExpired) {
+   652→   652→      console.log('[JOIN] Token expired — showing session expired UI (NOT auto-triggering OTP)');
+   653→   653→    }
+   654→   654→    if (anyRateLimited) {
+   655→   655→      console.log('[JOIN] Rate limited — NOT retrying. User must click Retry manually.');
+   656→   656→    }
+   657→   657→
+   658→   658→    loadContestsInProgressRef.current = false;
+   659→   659→  }, [selectedMatchIds, platform, account, matches, contestsMap.size, selectedContestIds]);
+   660→   660→
+   661→   661→  const toggleContest = (id: string) => {
+   662→   662→    setSelectedContestIds(prev => {
+   663→   663→      const next = new Set(prev);
+   664→   664→      next.has(id) ? next.delete(id) : next.add(id);
+   665→   665→      return next;
+   666→   666→    });
+   667→   667→  };
+   668→   668→
+   669→   669→  const selectAllContests = () => {
+   670→   670→    const allIds: string[] = [];
+   671→   671→    for (const contests of contestsMap.values()) {
+   672→   672→      for (const c of contests) {
+   673→   673→        if (c.joinAvailable) allIds.push(c.id);
+   674→   674→      }
+   675→   675→    }
+   676→   676→    setSelectedContestIds(new Set(allIds));
+   677→   677→  };
+   678→   678→
+   679→   679→  const deselectAllContests = () => {
+   680→   680→    setSelectedContestIds(new Set());
+   681→   681→  };
+   682→   682→
+   683→   683→  // Total contest count across all matches
+   684→   684→  const totalContestCount = useMemo(() => {
+   685→   685→    let count = 0;
+   686→   686→    for (const contests of contestsMap.values()) {
+   687→   687→      count += contests.length;
+   688→   688→    }
+   689→   689→    return count;
+   690→   690→  }, [contestsMap]);
+   691→   691→
+   692→   692→  // Total joinable contest count
+   693→   693→  const totalJoinableCount = useMemo(() => {
+   694→   694→    let count = 0;
+   695→   695→    for (const contests of contestsMap.values()) {
+   696→   696→      count += contests.filter(c => c.joinAvailable).length;
+   697→   697→    }
+   698→   698→    return count;
+   699→   699→  }, [contestsMap]);
+   700→   700→
+   701→   701→  // ============ Join Execution — with retry using SAME token (NEVER restarts OTP) ============
+   702→   702→  // Prevents double-clicks — joinInProgressRef guard ensures exactly ONE execution per user action.
+   703→   703→  const executeJoin = useCallback(async () => {
+   704→   704→    // === PREVENT DOUBLE-CLICK ON JOIN ===
+   705→   705→    if (joinInProgressRef.current) {
+   706→   706→      console.warn('[JOIN] Join BLOCKED — another join is already in progress');
+   707→   707→      return;
+   708→   708→    }
+   709→   709→
+   710→   710→    const selectedMatches = matches.filter(m => selectedMatchIds.has(m.id));
+   711→   711→    const selectedContestsForJoin = new Map<string, JCContest[]>();
+   712→   712→    for (const [matchId, contests] of contestsMap.entries()) {
+   713→   713→      selectedContestsForJoin.set(matchId, contests.filter(c => selectedContestIds.has(c.id)));
+   714→   714→    }
+   715→   715→
+   716→   716→    const items = buildJoinItems(selectedMatches, selectedContestsForJoin, selectedTeamIds, platformTeams, platform);
+   717→   717→
+   718→   718→    if (items.length === 0) {
+   719→   719→      setStep('result');
+   720→   720→      return;
+   721→   721→    }
+   722→   722→
+   723→   723→    // === PRE-CHECK: Verify session before joining ===
+   724→   724→    console.log('[JOIN] === JOIN CONTEST PRE-CHECK ===');
+   725→   725→    console.log('[JOIN] Platform:', platform);
+   726→   726→    console.log('[JOIN] Account:', account?.mobileNumber ? account.mobileNumber.slice(0, 4) + '****' : 'NONE');
+   727→   727→    console.log('[JOIN] Existing session:', !!account?.authToken);
+   728→   728→    console.log('[JOIN] Token present:', !!account?.authToken);
+   729→   729→
+   730→   730→    if (!account?.authToken) {
+   731→   731→      console.log('[JOIN] No auth token — cannot join. OTP required: YES');
+   732→   732→      setTeamsTokenExpired(true);
+   733→   733→      setStep('contests');
+   734→   734→      return;
+   735→   735→    }
+   736→   736→
+   737→   737→    // Mark join as in progress — prevents double-click
+   738→   738→    joinInProgressRef.current = true;
+   739→   739→
+   740→   740→    console.log('[JOIN] Token valid: assumed valid (will verify on first join attempt)');
+   741→   741→    console.log('[JOIN] Join request: starting...');
+   742→   742→    console.log('[JOIN] Total join items:', items.length);
+   743→   743→    console.log('[JOIN] Selected team IDs:', [...selectedTeamIds]);
+   744→   744→    console.log('[JOIN] Selected contest IDs:', [...selectedContestIds]);
+   745→   745→
+   746→   746→    setJoinItems(items);
+   747→   747→    setProgress({ current: 0, total: items.length, status: 'joining' });
+   748→   748→    setStep('joining');
+   749→   749→
+   750→   750→    const updatedItems = [...items];
+   751→   751→    let anyAuthFailure = false; // Track if ANY join fails due to auth — but do NOT auto-OTP
+   752→   752→
+   753→   753→    for (let i = 0; i < items.length; i++) {
+   754→   754→      const item = items[i];
+   755→   755→      setProgress(prev => ({ ...prev, current: i + 1 }));
+   756→   756→      setJoinItems(prev => prev.map((it, idx) =>
+   757→   757→        idx === i ? { ...it, status: 'processing' } : it
+   758→   758→      ));
+   759→   759→
+   760→   760→      // === RETRY LOGIC: Retry with SAME token, NEVER restart OTP ===
+   761→   761→      let joinSuccess = false;
+   762→   762→      let joinStatus: 'success' | 'already_joined' | 'fail' = 'fail';
+   763→   763→      let joinMessage = '';
+   764→   764→
+   765→   765→      for (let retry = 0; retry < MAX_JOIN_RETRIES; retry++) {
+   766→   766→        try {
+   767→   767→          const match = matches.find(m => String(m.id) === String(item.matchId));
+   768→   768→          // Ensure matchId is numeric for the join API
+   769→   769→          const numericMatchId = typeof item.matchId === 'string' ? parseInt(item.matchId, 10) : item.matchId;
+   770→   770→
+   771→   771→          if (retry > 0) {
+   772→   772→            console.log('[JOIN] Retry:', retry, 'for', item.contestName, '/ Team:', item.teamName);
+   773→   773→            await new Promise(r => setTimeout(r, JOIN_RETRY_DELAY_MS));
+   774→   774→          }
+   775→   775→
+   776→   776→          const res = await fetch('/api/fantasy/join-contest', {
+   777→   777→            method: 'POST',
+   778→   778→            headers: { 'Content-Type': 'application/json' },
+   779→   779→            body: JSON.stringify({
+   780→   780→              fantasyApp: item.platform || platform,
+   781→   781→              matchId: numericMatchId,      // Numeric platform match ID
+   782→   782→              authToken: account?.authToken, // Platform session token from verify-otp (SAME token on retry)
+   783→   783→              teamId: item.teamId,           // REAL platform team ID (from list-of-teams)
+   784→   784→              contestId: item.contestId,     // REAL platform contest ID
+   785→   785→              sportIndex: match?.sport_index ?? 0,
+   786→   786→              challenge: account?.my11circleChallenge || undefined,
+   787→   787→            }),
+   788→   788→          });
+   789→   789→          const data = await res.json();
+   790→   790→
+   791→   791→          // === TOKEN INVALIDATION: Only on TRUE auth errors ===
+   792→   792→          // 401/403 or tokenExpired from the API → genuine auth failure
+   793→   793→          // Generic 4xx/5xx, network errors, rate limits → DO NOT invalidate token
+   794→   794→          if (data.tokenExpired || res.status === 401 || res.status === 403) {
+   795→   795→            console.log('[JOIN] Auth failure detected on join — marking token expired (NOT auto-OTP)');
+   796→   796→            anyAuthFailure = true;
+   797→   797→            joinStatus = 'fail';
+   798→   798→            joinMessage = 'Session expired. Please refresh your session and try again.';
+   799→   799→            break; // No point retrying with expired token
+   800→   800→          }
+   801→   801→
+   802→   802→          joinStatus = data.status === 'success' ? 'success'
+   803→   803→            : data.status === 'already_joined' ? 'already_joined' : 'fail';
+   804→   804→          joinMessage = data.message || '';
+   805→   805→
+   806→   806→          // Success or already_joined — no need to retry
+   807→   807→          if (joinStatus === 'success' || joinStatus === 'already_joined') {
+   808→   808→            joinSuccess = true;
+   809→   809→            break;
+   810→   810→          }
+   811→   811→
+   812→   812→          // 'fail' — retry if we have retries left
+   813→   813→          console.log('[JOIN] Join failed (attempt', retry + 1, '):', joinMessage);
+   814→   814→        } catch (err) {
+   815→   815→          joinMessage = 'Network error';
+   816→   816→          console.log('[JOIN] Network error (attempt', retry + 1, ')');
+   817→   817→          // Network error — retry with same token
+   818→   818→        }
+   819→   819→      }
+   820→   820→
+   821→   821→      console.log('[JOIN] Final result:', joinStatus, joinMessage);
+   822→   822→
+   823→   823→      updatedItems[i] = { ...updatedItems[i], status: joinStatus, message: joinMessage };
+   824→   824→      setJoinItems([...updatedItems]);
+   825→   825→
+   826→   826→      // Rate limit between joins
+   827→   827→      await new Promise(r => setTimeout(r, 300));
+   828→   828→    }
+   829→   829→
+   830→   830→    // If any auth failure was detected, show session expired on the contest step
+   831→   831→    // but DO NOT auto-trigger OTP — user must manually refresh
+   832→   832→    if (anyAuthFailure) {
+   833→   833→      setContestTokenExpired(true);
+   834→   834→      console.log('[JOIN] Auth failure during join — session expired flag set (user must manually refresh)');
+   835→   835→    }
+   836→   836→
+   837→   837→    setResultItems([...updatedItems]);
+   838→   838→    setProgress(prev => ({ ...prev, status: 'done' }));
+   839→   839→    joinInProgressRef.current = false; // Clear guard — join complete
+   840→   840→    console.log('[JOIN] === JOIN COMPLETE ===');
+   841→   841→    console.log('[JOIN] Success:', updatedItems.filter(i => i.status === 'success').length);
+   842→   842→    console.log('[JOIN] Already joined:', updatedItems.filter(i => i.status === 'already_joined').length);
+   843→   843→    console.log('[JOIN] Failed:', updatedItems.filter(i => i.status === 'fail').length);
+   844→   844→    setStep('result');
+   845→   845→  }, [matches, selectedMatchIds, contestsMap, selectedContestIds, selectedTeamIds, platformTeams, platform, account, MAX_JOIN_RETRIES, JOIN_RETRY_DELAY_MS]);
+   846→   846→
+   847→   847→  // ============ Result Stats ============
+   848→   848→  const resultStats = useMemo(() => {
+   849→   849→    const items = resultItems.length > 0 ? resultItems : joinItems;
+   850→   850→    return {
+   851→   851→      total: items.length,
+   852→   852→      success: items.filter(i => i.status === 'success').length,
+   853→   853→      alreadyJoined: items.filter(i => i.status === 'already_joined').length,
+   854→   854→      fail: items.filter(i => i.status === 'fail').length,
+   855→   855→    };
+   856→   856→  }, [resultItems, joinItems]);
+   857→   857→
+   858→   858→  if (!open) return null;
+   859→   859→
+   860→   860→  // ============ RENDER ============
+   861→   861→  return (
+   862→   862→    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={handleClose}>
+   863→   863→      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+   864→   864→        {/* Header */}
+   865→   865→        <div className="flex items-center justify-between px-6 py-4 border-b bg-gradient-to-r from-green-600 to-emerald-600 text-white">
+   866→   866→          <div className="flex items-center gap-3">
+   867→   867→            <Trophy className="w-6 h-6" />
+   868→   868→            <h2 className="text-lg font-bold">Join Contest</h2>
+   869→   869→          </div>
+   870→   870→          <button onClick={handleClose} className="p-1 hover:bg-white/20 rounded-lg transition-all">
+   871→   871→            <X className="w-5 h-5" />
+   872→   872→          </button>
+   873→   873→        </div>
+   874→   874→
+   875→   875→        {/* Step Indicator */}
+   876→   876→        <div className="flex items-center gap-1 px-6 py-3 bg-gray-50 border-b">
+   877→   877→          {(['matches', 'teams', 'contests', 'joining', 'result'] as Step[]).map((s, i) => {
+   878→   878→            const labels = ['Match', 'Teams', 'Contests', 'Join', 'Result'];
+   879→   879→            const stepOrder = ['matches', 'teams', 'contests', 'joining', 'result'];
+   880→   880→            const isActive = step === s;
+   881→   881→            const isDone = stepOrder.indexOf(step) > i;
+   882→   882→            return (
+   883→   883→              <React.Fragment key={s}>
+   884→   884→                {i > 0 && <ChevronRight className="w-3 h-3 text-gray-300" />}
+   885→   885→                <div className={`flex items-center gap-1.5 text-xs font-semibold px-2 py-1 rounded-lg transition-all ${
+   886→   886→                  isActive ? 'bg-green-100 text-green-700' : isDone ? 'text-green-500' : 'text-gray-400'
+   887→   887→                }`}>
+   888→   888→                  <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] ${
+   889→   889→                    isActive ? 'bg-green-600 text-white' : isDone ? 'bg-green-200 text-green-600' : 'bg-gray-200 text-gray-500'
+   890→   890→                  }`}>
+   891→   891→                    {isDone ? '✓' : i + 1}
+   892→   892→                  </div>
+   893→   893→                  {labels[i]}
+   894→   894→                </div>
+   895→   895→              </React.Fragment>
+   896→   896→            );
+   897→   897→          })}
+   898→   898→        </div>
+   899→   899→
+   900→   900→        {/* Content */}
+   901→   901→        <div className="flex-1 overflow-y-auto p-6">
+   902→   902→
+   903→   903→          {/* ===== STEP: MATCHES ===== */}
+   904→   904→          {step === 'matches' && (
+   905→   905→            <div className="space-y-4">
+   906→   906→              {/* Session Expired Banner (shown when pre-check fails on this step) */}
+   907→   907→              {sessionChecked && !sessionValid && !sessionRefreshState.active && (
+   908→   908→                <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+   909→   909→                  <div className="flex items-center gap-2">
+   910→   910→                    <AlertCircle className="w-5 h-5 text-red-500 shrink-0" />
+   911→   911→                    <div>
+   912→   912→                      <p className="text-sm font-semibold text-red-700">SESSION EXPIRED</p>
+   913→   913→                      <p className="text-xs text-red-600 mt-0.5">Your {platform === 'dream11' ? 'Dream11' : 'My11Circle'} session has expired. Refresh your session to continue.</p>
+   914→   914→                    </div>
+   915→   915→                  </div>
+   916→   916→                  {account?.mobileNumber ? (
+   917→   917→                    <button onClick={handleSessionExpired} className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-700 bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200">
+   918→   918→                      <KeyRound className="w-3 h-3" /> Refresh Session
+   919→   919→                    </button>
+   920→   920→                  ) : (
+   921→   921→                    <p className="text-xs text-red-500 mt-2">No mobile number stored. Please reconnect your account.</p>
+   922→   922→                  )}
+   923→   923→                </div>
+   924→   924→              )}
+   925→   925→              {/* Platform Selection */}
+   926→   926→              <div className="space-y-2">
+   927→   927→                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Platform</p>
+   928→   928→                <div className="flex gap-2">
+   929→   929→                  {availablePlatforms.map(p => (
+   930→   930→                    <button key={p} onClick={() => setPlatform(p)}
+   931→   931→                      className={`flex-1 rounded-xl border-2 p-3 text-center font-semibold text-sm transition-all ${
+   932→   932→                        platform === p ? 'border-green-500 bg-green-50 text-green-700' : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300'
+   933→   933→                      }`}>
+   934→   934→                      {p === 'dream11' ? 'Dream11' : 'My11Circle'}
+   935→   935→                    </button>
+   936→   936→                  ))}
+   937→   937→                </div>
+   938→   938→                {availablePlatforms.length === 0 && (
+   939→   939→                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-700">
+   940→   940→                    ⚠️ No connected account found. Link your platform account first via Transfer.
+   941→   941→                  </div>
+   942→   942→                )}
+   943→   943→              </div>
+   944→   944→
+   945→   945→              {/* Match List */}
+   946→   946→              <div className="space-y-2">
+   947→   947→                <div className="flex items-center justify-between">
+   948→   948→                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Select Matches</p>
+   949→   949→                  <button onClick={selectAllMatches} className="text-xs font-semibold text-green-600 hover:text-green-700">
+   950→   950→                    Select All
+   951→   951→                  </button>
+   952→   952→                </div>
+   953→   953→                {matches.length === 0 ? (
+   954→   954→                  <p className="text-sm text-gray-400 text-center py-8">No upcoming matches</p>
+   955→   955→                ) : (
+   956→   956→                  <div className="space-y-2 max-h-80 overflow-y-auto">
+   957→   957→                    {matches.map(match => {
+   958→   958→                      const selected = selectedMatchIds.has(match.id);
+   959→   959→                      return (
+   960→   960→                        <button key={match.id} onClick={() => toggleMatch(match.id)}
+   961→   961→                          className={`w-full text-left rounded-xl border-2 p-3 transition-all ${
+   962→   962→                            selected ? 'border-green-500 bg-green-50' : 'border-gray-200 bg-white hover:border-gray-300'
+   963→   963→                          }`}>
+   964→   964→                          <div className="flex items-center gap-3">
+   965→   965→                            <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
+   966→   966→                              selected ? 'border-green-500 bg-green-500' : 'border-gray-300'
+   967→   967→                            }`}>
+   968→   968→                              {selected && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
+   969→   969→                            </div>
+   970→   970→                            <div className="flex-1">
+   971→   971→                              <p className="font-semibold text-sm text-gray-900">
+   972→   972→                                {match.left_team_name} vs {match.right_team_name}
+   973→   973→                              </p>
+   974→   974→                              <div className="flex items-center gap-2 text-xs text-gray-500 mt-0.5">
+   975→   975→                                <span>{match.match_time}</span>
+   976→   976→                                {match.lineup_out === 1 && <span className="text-green-600 font-medium">Lineup Out</span>}
+   977→   977→                              </div>
+   978→   978→                            </div>
+   979→   979→                          </div>
+   980→   980→                        </button>
+   981→   981→                      );
+   982→   982→                    })}
+   983→   983→                  </div>
+   984→   984→                )}
+   985→   985→              </div>
+   986→   986→            </div>
+   987→   987→          )}
+   988→   988→
+   989→   989→          {/* ===== STEP: TEAMS — EXISTING PLATFORM TEAMS ===== */}
+   990→   990→          {step === 'teams' && (
+   991→   991→            <div className="space-y-4">
+   992→   992→              {/* Loading State */}
+   993→   993→              {loadingTeams && (
+   994→   994→                <div className="flex flex-col items-center justify-center py-12">
+   995→   995→                  <Loader2 className="w-8 h-8 animate-spin text-green-500" />
+   996→   996→                  <p className="text-sm text-gray-500 mt-3">Loading existing teams from {platform === 'dream11' ? 'Dream11' : 'My11Circle'}...</p>
+   997→   997→                </div>
+   998→   998→              )}
+   999→   999→
+  1000→  1000→              {/* Error State */}
+  1001→  1001→              {!loadingTeams && teamsError && !sessionRefreshState.active && (
+  1002→  1002→                <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+  1003→  1003→                  <div className="flex items-center gap-2">
+  1004→  1004→                    <AlertCircle className="w-5 h-5 text-red-500 shrink-0" />
+  1005→  1005→                    <div>
+  1006→  1006→                      <p className="text-sm font-semibold text-red-700">
+  1007→  1007→                        {teamsTokenExpired ? 'SESSION EXPIRED' : teamsRateLimited ? 'RATE LIMITED' : 'Error Loading Teams'}
+  1008→  1008→                      </p>
+  1009→  1009→                      <p className="text-xs text-red-600 mt-0.5">{teamsError}</p>
+  1010→  1010→                    </div>
+  1011→  1011→                  </div>
+  1012→  1012→                  {teamsTokenExpired && account?.mobileNumber && (
+  1013→  1013→                    <button onClick={handleSessionExpired} className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-700 bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200">
+  1014→  1014→                      <KeyRound className="w-3 h-3" /> Refresh Session
+  1015→  1015→                    </button>
+  1016→  1016→                  )}
+  1017→  1017→                  {teamsTokenExpired && !account?.mobileNumber && (
+  1018→  1018→                    <p className="text-xs text-red-500 mt-2">No mobile number stored. Please reconnect your account.</p>
+  1019→  1019→                  )}
+  1020→  1020→                  {!teamsRateLimited && (
+  1021→  1021→                    <button onClick={() => loadPlatformTeams()} className="mt-2 flex items-center gap-1 text-xs font-semibold text-red-600 hover:text-red-700">
+  1022→  1022→                      <RefreshCw className="w-3 h-3" /> Retry
+  1023→  1023→                    </button>
+  1024→  1024→                  )}
+  1025→  1025→                  {teamsRateLimited && (
+  1026→  1026→                    <p className="text-xs text-amber-600 mt-2">Platform is rate limiting requests. Please wait a moment before retrying.</p>
+  1027→  1027→                  )}
+  1028→  1028→                </div>
+  1029→  1029→              )}
+  1030→  1030→
+  1031→  1031→              {/* No Account */}
+  1032→  1032→              {!loadingTeams && !teamsError && !account?.authToken && (
+  1033→  1033→                <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-center">
+  1034→  1034→                  <p className="text-sm font-semibold text-amber-700">No connected account found</p>
+  1035→  1035→                  <p className="text-xs text-amber-600 mt-1">Connect your {platform === 'dream11' ? 'Dream11' : 'My11Circle'} account to load existing teams.</p>
+  1036→  1036→                </div>
+  1037→  1037→              )}
+  1038→  1038→
+  1039→  1039→              {/* Teams List */}
+  1040→  1040→              {!loadingTeams && account?.authToken && (
+  1041→  1041→                <div className="space-y-2">
+  1042→  1042→                  <div className="flex items-center justify-between">
+  1043→  1043→                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+  1044→  1044→                      Existing Teams ({platformTeams.length} available)
+  1045→  1045→                    </p>
+  1046→  1046→                    <div className="flex gap-2">
+  1047→  1047→                      <button onClick={selectAllTeams} disabled={platformTeams.length === 0}
+  1048→  1048→                        className="text-xs font-semibold text-green-600 hover:text-green-700 disabled:opacity-40">
+  1049→  1049→                        Select All
+  1050→  1050→                      </button>
+  1051→  1051→                      <button onClick={deselectAllTeams} disabled={selectedTeamIds.size === 0}
+  1052→  1052→                        className="text-xs font-semibold text-gray-500 hover:text-gray-700 disabled:opacity-40">
+  1053→  1053→                        Deselect
+  1054→  1054→                      </button>
+  1055→  1055→                    </div>
+  1056→  1056→                  </div>
+  1057→  1057→
+  1058→  1058→                  {/* Mixed Team Toggle */}
+  1059→  1059→                  <button onClick={() => setMixedTeamMode(!mixedTeamMode)}
+  1060→  1060→                    className={`w-full rounded-xl border-2 p-3 transition-all ${
+  1061→  1061→                      mixedTeamMode ? 'border-purple-500 bg-purple-50' : 'border-gray-200 bg-white hover:border-gray-300'
+  1062→  1062→                    }`}>
+  1063→  1063→                    <div className="flex items-center gap-3">
+  1064→  1064→                      <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${
+  1065→  1065→                        mixedTeamMode ? 'bg-purple-500 text-white' : 'bg-gray-100 text-gray-500'
+  1066→  1066→                      }`}>
+  1067→  1067→                        <Filter className="w-5 h-5" />
+  1068→  1068→                      </div>
+  1069→  1069→                      <div className="flex-1">
+  1070→  1070→                        <p className={`font-semibold text-sm ${mixedTeamMode ? 'text-purple-700' : 'text-gray-900'}`}>Mixed Team Mode</p>
+  1071→  1071→                        <p className="text-xs text-gray-500">
+  1072→  1072→                          {mixedTeamMode ? 'Combining teams from compatible platform accounts' : 'Enable to mix teams from compatible accounts'}
+  1073→  1073→                        </p>
+  1074→  1074→                      </div>
+  1075→  1075→                      <div className={`w-10 h-6 rounded-full relative transition-all ${mixedTeamMode ? 'bg-purple-500' : 'bg-gray-300'}`}>
+  1076→  1076→                        <div className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${mixedTeamMode ? 'left-[18px]' : 'left-0.5'}`} />
+  1077→  1077→                      </div>
+  1078→  1078→                    </div>
+  1079→  1079→                  </button>
+  1080→  1080→
+  1081→  1081→                  {/* No Teams */}
+  1082→  1082→                  {platformTeams.length === 0 && !teamsError && (
+  1083→  1083→                    <div className="bg-gray-50 border border-gray-200 rounded-xl p-6 text-center">
+  1084→  1084→                      <p className="text-sm text-gray-500">No existing teams found on this platform account.</p>
+  1085→  1085→                      <p className="text-xs text-gray-400 mt-1">Create teams on {platform === 'dream11' ? 'Dream11' : 'My11Circle'} first, then join contests.</p>
+  1086→  1086→                    </div>
+  1087→  1087→                  )}
+  1088→  1088→
+  1089→  1089→                  {/* Team Cards */}
+  1090→  1090→                  {platformTeams.length > 0 && (
+  1091→  1091→                    <div className="space-y-2 max-h-72 overflow-y-auto">
+  1092→  1092→                      {platformTeams.map(team => {
+  1093→  1093→                        const selected = selectedTeamIds.has(team.id);
+  1094→  1094→                        return (
+  1095→  1095→                          <button key={team.id} onClick={() => toggleTeam(team.id)}
+  1096→  1096→                            className={`w-full text-left rounded-xl border-2 p-3 transition-all ${
+  1097→  1097→                              selected ? 'border-green-500 bg-green-50' : 'border-gray-200 bg-white hover:border-gray-300'
+  1098→  1098→                            }`}>
+  1099→  1099→                            <div className="flex items-center gap-3">
+  1100→  1100→                              <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
+  1101→  1101→                                selected ? 'border-green-500 bg-green-500' : 'border-gray-300'
+  1102→  1102→                              }`}>
+  1103→  1103→                                {selected && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
+  1104→  1104→                              </div>
+  1105→  1105→                              <div className="flex-1">
+  1106→  1106→                                <p className="font-semibold text-sm text-gray-900">{team.name}</p>
+  1107→  1107→                                <div className="flex items-center gap-2 text-xs text-gray-500 mt-0.5">
+  1108→  1108→                                  <span>{team.playerCount || 11} Players</span>
+  1109→  1109→                                  {team.captain?.name && <span>C: {team.captain.name}</span>}
+  1110→  1110→                                  {team.viceCaptain?.name && <span>VC: {team.viceCaptain.name}</span>}
+  1111→  1111→                                </div>
+  1112→  1112→                              </div>
+  1113→  1113→                              <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">
+  1114→  1114→                                ID: {team.platformTeamId}
+  1115→  1115→                              </span>
+  1116→  1116→                            </div>
+  1117→  1117→                          </button>
+  1118→  1118→                        );
+  1119→  1119→                      })}
+  1120→  1120→                    </div>
+  1121→  1121→                  )}
+  1122→  1122→
+  1123→  1123→                  {/* Selection Count */}
+  1124→  1124→                  {selectedTeamIds.size > 0 && (
+  1125→  1125→                    <p className="text-sm text-green-600 font-medium">
+  1126→  1126→                      Selected: {selectedTeamIds.size} / {platformTeams.length}
+  1127→  1127→                    </p>
+  1128→  1128→                  )}
+  1129→  1129→                </div>
+  1130→  1130→              )}
+  1131→  1131→            </div>
+  1132→  1132→          )}
+  1133→  1133→
+  1134→  1134→          {/* ===== STEP: CONTESTS — with proper error/loading states ===== */}
+  1135→  1135→          {step === 'contests' && (
+  1136→  1136→            <div className="space-y-4">
+  1137→  1137→              {/* LOADING STATE */}
+  1138→  1138→              {loadingContests && (
+  1139→  1139→                <div className="flex flex-col items-center justify-center py-12">
+  1140→  1140→                  <Loader2 className="w-8 h-8 animate-spin text-green-500" />
+  1141→  1141→                  <p className="text-sm text-gray-500 mt-3">LOADING CONTESTS...</p>
+  1142→  1142→                  <p className="text-xs text-gray-400 mt-1">Fetching contests from {platform === 'dream11' ? 'Dream11' : 'My11Circle'}</p>
+  1143→  1143→                </div>
+  1144→  1144→              )}
+  1145→  1145→
+  1146→  1146→              {/* SESSION EXPIRED */}
+  1147→  1147→              {!loadingContests && contestTokenExpired && !sessionRefreshState.active && (
+  1148→  1148→                <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+  1149→  1149→                  <div className="flex items-center gap-2">
+  1150→  1150→                    <AlertCircle className="w-5 h-5 text-red-500 shrink-0" />
+  1151→  1151→                    <div>
+  1152→  1152→                      <p className="text-sm font-semibold text-red-700">SESSION EXPIRED</p>
+  1153→  1153→                      <p className="text-xs text-red-600 mt-0.5">Your {platform === 'dream11' ? 'Dream11' : 'My11Circle'} session has expired.</p>
+  1154→  1154→                    </div>
+  1155→  1155→                  </div>
+  1156→  1156→                  {account?.mobileNumber ? (
+  1157→  1157→                    <button onClick={handleSessionExpired} className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-700 bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200">
+  1158→  1158→                      <KeyRound className="w-3 h-3" /> Refresh Session
+  1159→  1159→                    </button>
+  1160→  1160→                  ) : (
+  1161→  1161→                    <p className="text-xs text-red-500 mt-2">No mobile number stored. Please reconnect your account.</p>
+  1162→  1162→                  )}
+  1163→  1163→                  <button onClick={loadContests} className="mt-2 flex items-center gap-1 text-xs font-semibold text-red-600 hover:text-red-700">
+  1164→  1164→                    <RefreshCw className="w-3 h-3" /> Retry
+  1165→  1165→                  </button>
+  1166→  1166→                </div>
+  1167→  1167→              )}
+  1168→  1168→
+  1169→  1169→              {/* INVALID MATCH ID */}
+  1170→  1170→              {!loadingContests && !contestTokenExpired && contestErrors.some(e => e.errorType === 'invalid_match') && (
+  1171→  1171→                <div className="bg-orange-50 border border-orange-200 rounded-xl p-4">
+  1172→  1172→                  <div className="flex items-center gap-2">
+  1173→  1173→                    <AlertCircle className="w-5 h-5 text-orange-500 shrink-0" />
+  1174→  1174→                    <div>
+  1175→  1175→                      <p className="text-sm font-semibold text-orange-700">INVALID MATCH</p>
+  1176→  1176→                      <p className="text-xs text-orange-600 mt-0.5">The match ID is not a valid numeric platform match ID.</p>
+  1177→  1177→                    </div>
+  1178→  1178→                  </div>
+  1179→  1179→                  {contestErrors.filter(e => e.errorType === 'invalid_match').map((err, i) => (
+  1180→  1180→                    <p key={i} className="text-xs text-orange-500 mt-1 ml-7">{err.error}</p>
+  1181→  1181→                  ))}
+  1182→  1182→                  <p className="text-xs text-orange-500 mt-2">Match IDs must be numeric (e.g., 113672), not display names like "MO vs SUL".</p>
+  1183→  1183→                </div>
+  1184→  1184→              )}
+  1185→  1185→
+  1186→  1186→              {/* API/NETWORK ERRORS — HTTP 404 is NEVER silently converted to "0 contests" */}
+  1187→  1187→              {!loadingContests && !contestTokenExpired && contestErrors.length > 0 && totalContestCount === 0 && (
+  1188→  1188→                <div className="space-y-3">
+  1189→  1189→                  {contestErrors.map((err, i) => {
+  1190→  1190→                    const match = matches.find(m => String(m.id) === err.matchId);
+  1191→  1191→                    const isInvalidMatch = err.errorType === 'invalid_match';
+  1192→  1192→                    if (isInvalidMatch) return null; // Shown in dedicated section above
+  1193→  1193→                    return (
+  1194→  1194→                      <div key={i} className="bg-red-50 border border-red-200 rounded-xl p-4">
+  1195→  1195→                        <div className="flex items-center gap-2">
+  1196→  1196→                          <AlertCircle className="w-5 h-5 text-red-500 shrink-0" />
+  1197→  1197→                          <div>
+  1198→  1198→                            <p className="text-sm font-semibold text-red-700">
+  1199→  1199→                              {err.error.includes('404') ? 'HTTP 404 — CONTEST API NOT FOUND' : 'UNABLE TO LOAD CONTESTS'}
+  1200→  1200→                            </p>
+  1201→  1201→                            <p className="text-xs text-red-600 mt-0.5">
+  1202→  1202→                              {match ? `${match.left_team_name} vs ${match.right_team_name}` : `Match ${err.matchId}`}
+  1203→  1203→                            </p>
+  1204→  1204→                            <p className="text-xs text-red-500 mt-0.5">{err.error}</p>
+  1205→  1205→                          </div>
+  1206→  1206→                        </div>
+  1207→  1207→                        <button onClick={loadContests} className="mt-2 flex items-center gap-1 text-xs font-semibold text-red-600 hover:text-red-700">
+  1208→  1208→                          <RefreshCw className="w-3 h-3" /> Retry
+  1209→  1209→                        </button>
+  1210→  1210→                      </div>
+  1211→  1211→                    );
+  1212→  1212→                  })}
+  1213→  1213→                </div>
+  1214→  1214→              )}
+  1215→  1215→
+  1216→  1216→              {/* CONTESTS LIST (when not loading and we have data or genuine zero) */}
+  1217→  1217→              {!loadingContests && !contestTokenExpired && (totalContestCount > 0 || contestErrors.length === 0) && (
+  1218→  1218→                <div className="space-y-4">
+  1219→  1219→                  {/* Select All / Deselect header */}
+  1220→  1220→                  {totalContestCount > 0 && (
+  1221→  1221→                    <div className="flex items-center justify-between">
+  1222→  1222→                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+  1223→  1223→                        CONTESTS ({totalContestCount})
+  1224→  1224→                      </p>
+  1225→  1225→                      <div className="flex gap-2">
+  1226→  1226→                        <button onClick={selectAllContests} disabled={totalJoinableCount === 0}
+  1227→  1227→                          className="text-xs font-semibold text-green-600 hover:text-green-700 disabled:opacity-40">
+  1228→  1228→                          Select All
+  1229→  1229→                        </button>
+  1230→  1230→                        <button onClick={deselectAllContests} disabled={selectedContestIds.size === 0}
+  1231→  1231→                          className="text-xs font-semibold text-gray-500 hover:text-gray-700 disabled:opacity-40">
+  1232→  1232→                          Deselect
+  1233→  1233→                        </button>
+  1234→  1234→                      </div>
+  1235→  1235→                    </div>
+  1236→  1236→                  )}
+  1237→  1237→
+  1238→  1238→                  {/* Per-match contest groups */}
+  1239→  1239→                  {Array.from(contestsMap.entries()).map(([matchId, contests]) => {
+  1240→  1240→                    const match = matches.find(m => String(m.id) === matchId);
+  1241→  1241→                    const matchError = contestErrors.find(e => e.matchId === matchId);
+  1242→  1242→                    return (
+  1243→  1243→                      <div key={matchId} className="space-y-2">
+  1244→  1244→                        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+  1245→  1245→                          {match?.left_team_name || '?'} vs {match?.right_team_name || '?'}
+  1246→  1246→                          <span className="ml-2 text-gray-400">({contests.length} contests)</span>
+  1247→  1247→                        </p>
+  1248→  1248→
+  1249→  1249→                        {/* Error for this specific match (partial failure) — HTTP 404 shows diagnostic info */}
+  1250→  1250→                        {matchError && contests.length === 0 && (
+  1251→  1251→                          <div className="bg-red-50 border border-red-200 rounded-xl p-3">
+  1252→  1252→                            <div className="flex items-center gap-2">
+  1253→  1253→                              <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
+  1254→  1254→                              <div>
+  1255→  1255→                                <p className="text-xs font-semibold text-red-700">
+  1256→  1256→                                  {matchError.error.includes('404') ? 'HTTP 404 — CONTEST API NOT FOUND' : 'UNABLE TO LOAD CONTESTS'}
+  1257→  1257→                                </p>
+  1258→  1258→                                <p className="text-[11px] text-red-600 mt-0.5">{matchError.error}</p>
+  1259→  1259→                              </div>
+  1260→  1260→                            </div>
+  1261→  1261→                            <button onClick={loadContests} className="mt-1.5 flex items-center gap-1 text-[11px] font-semibold text-red-600 hover:text-red-700">
+  1262→  1262→                              <RefreshCw className="w-3 h-3" /> Retry
+  1263→  1263→                            </button>
+  1264→  1264→                          </div>
+  1265→  1265→                        )}
+  1266→  1266→
+  1267→  1267→                        {/* Genuine zero contests */}
+  1268→  1268→                        {!matchError && contests.length === 0 && (
+  1269→  1269→                          <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 text-center">
+  1270→  1270→                            <p className="text-sm text-gray-500">NO CONTESTS AVAILABLE FOR THIS MATCH</p>
+  1271→  1271→                            <p className="text-xs text-gray-400 mt-1">This match may not have any joinable contests on {platform === 'dream11' ? 'Dream11' : 'My11Circle'}.</p>
+  1272→  1272→                          </div>
+  1273→  1273→                        )}
+  1274→  1274→
+  1275→  1275→                        {/* Contest Cards */}
+  1276→  1276→                        {contests.length > 0 && (
+  1277→  1277→                          <div className="space-y-2">
+  1278→  1278→                            {contests.map(contest => {
+  1279→  1279→                              const selected = selectedContestIds.has(contest.id);
+  1280→  1280→                              return (
+  1281→  1281→                                <button key={contest.id} onClick={() => toggleContest(contest.id)}
+  1282→  1282→                                  className={`w-full text-left rounded-xl border-2 p-3 transition-all ${
+  1283→  1283→                                    selected ? 'border-green-500 bg-green-50' : 'border-gray-200 bg-white hover:border-gray-300'
+  1284→  1284→                                  } ${!contest.joinAvailable ? 'opacity-50' : ''}`}>
+  1285→  1285→                                  <div className="flex items-center gap-3">
+  1286→  1286→                                    <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
+  1287→  1287→                                      selected ? 'border-green-500 bg-green-500' : 'border-gray-300'
+  1288→  1288→                                    }`}>
+  1289→  1289→                                      {selected && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
+  1290→  1290→                                    </div>
+  1291→  1291→                                    <div className="flex-1 min-w-0">
+  1292→  1292→                                      <div className="flex items-center gap-2">
+  1293→  1293→                                        <p className="font-semibold text-sm text-gray-900 truncate">{contest.name}</p>
+  1294→  1294→                                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded shrink-0 ${getContestTypeColor(contest.type)}`}>
+  1295→  1295→                                          {contest.type}
+  1296→  1296→                                        </span>
+  1297→  1297→                                      </div>
+  1298→  1298→                                      <div className="flex items-center gap-3 text-xs text-gray-500 mt-1">
+  1299→  1299→                                        <span className="flex items-center gap-0.5"><DollarSign className="w-3 h-3" />{formatCurrency(contest.entryFee)}</span>
+  1300→  1300→                                        <span>Prize: {formatCurrency(contest.prizePool)}</span>
+  1301→  1301→                                        <span className="flex items-center gap-0.5"><Users className="w-3 h-3" />{contest.filledSpots}/{contest.totalSpots}</span>
+  1302→  1302→                                      </div>
+  1303→  1303→                                      <div className="flex items-center gap-2 mt-0.5">
+  1304→  1304→                                        {contest.remainingSpots > 0 && (
+  1305→  1305→                                          <p className="text-[10px] text-green-600">{contest.remainingSpots} spots remaining</p>
+  1306→  1306→                                        )}
+  1307→  1307→                                        {!contest.joinAvailable && (
+  1308→  1308→                                          <p className="text-[10px] text-red-500">Full</p>
+  1309→  1309→                                        )}
+  1310→  1310→                                        {contest.joinAvailable && (
+  1311→  1311→                                          <p className="text-[10px] text-green-600 font-medium">JOIN AVAILABLE</p>
+  1312→  1312→                                        )}
+  1313→  1313→                                      </div>
+  1314→  1314→                                    </div>
+  1315→  1315→                                    <span className="text-[9px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded shrink-0" title="Platform Contest ID">
+  1316→  1316→                                      {contest.contestId}
+  1317→  1317→                                    </span>
+  1318→  1318→                                  </div>
+  1319→  1319→                                </button>
+  1320→  1320→                              );
+  1321→  1321→                            })}
+  1322→  1322→                          </div>
+  1323→  1323→                        )}
+  1324→  1324→                      </div>
+  1325→  1325→                    );
+  1326→  1326→                  })}
+  1327→  1327→
+  1328→  1328→                  {/* Selected contest count */}
+  1329→  1329→                  {selectedContestIds.size > 0 && (
+  1330→  1330→                    <p className="text-sm text-green-600 font-medium">
+  1331→  1331→                      Selected: {selectedContestIds.size} contest{selectedContestIds.size !== 1 ? 's' : ''}
+  1332→  1332→                    </p>
+  1333→  1333→                  )}
+  1334→  1334→
+  1335→  1335→                  {/* Zero contests overall (genuine) */}
+  1336→  1336→                  {totalContestCount === 0 && contestErrors.length === 0 && (
+  1337→  1337→                    <div className="bg-gray-50 border border-gray-200 rounded-xl p-6 text-center">
+  1338→  1338→                      <p className="text-sm text-gray-500">NO CONTESTS AVAILABLE</p>
+  1339→  1339→                      <p className="text-xs text-gray-400 mt-1">None of the selected matches have joinable contests on {platform === 'dream11' ? 'Dream11' : 'My11Circle'} right now.</p>
+  1340→  1340→                    </div>
+  1341→  1341→                  )}
+  1342→  1342→                </div>
+  1343→  1343→              )}
+  1344→  1344→            </div>
+  1345→  1345→          )}
+  1346→  1346→
+  1347→  1347→          {/* ===== STEP: JOINING ===== */}
+  1348→  1348→          {step === 'joining' && (
+  1349→  1349→            <div className="space-y-4">
+  1350→  1350→              <div className="bg-green-50 border border-green-200 rounded-xl p-4">
+  1351→  1351→                <div className="flex items-center justify-between mb-2">
+  1352→  1352→                  <span className="text-sm font-semibold text-green-700">Joining contests...</span>
+  1353→  1353→                  <span className="text-sm font-bold text-green-700">{progress.current}/{progress.total}</span>
+  1354→  1354→                </div>
+  1355→  1355→                <div className="w-full bg-green-200 rounded-full h-3 overflow-hidden">
+  1356→  1356→                  <div className="bg-green-600 h-3 rounded-full transition-all duration-300"
+  1357→  1357→                    style={{ width: `${(progress.current / Math.max(progress.total, 1)) * 100}%` }} />
+  1358→  1358→                </div>
+  1359→  1359→                <div className="flex justify-between mt-2 text-xs">
+  1360→  1360→                  <span className="text-green-600 font-medium">✓ {resultStats.success} joined</span>
+  1361→  1361→                  <span className="text-amber-600 font-medium">⊙ {resultStats.alreadyJoined} already</span>
+  1362→  1362→                  <span className="text-red-500 font-medium">✗ {resultStats.fail} failed</span>
+  1363→  1363→                </div>
+  1364→  1364→              </div>
+  1365→  1365→              <div className="max-h-56 overflow-y-auto space-y-1.5">
+  1366→  1366→                {joinItems.map((item, i) => (
+  1367→  1367→                  <div key={i} className="flex items-center gap-2 text-xs py-1 px-2 rounded-lg bg-gray-50">
+  1368→  1368→                    {item.status === 'pending' && <div className="w-3.5 h-3.5 rounded-full bg-gray-200 shrink-0" />}
+  1369→  1369→                    {item.status === 'processing' && <Loader2 className="w-3.5 h-3.5 animate-spin text-green-500 shrink-0" />}
+  1370→  1370→                    {item.status === 'success' && <CheckCircle2 className="w-3.5 h-3.5 text-green-500 shrink-0" />}
+  1371→  1371→                    {item.status === 'already_joined' && <AlertCircle className="w-3.5 h-3.5 text-amber-500 shrink-0" />}
+  1372→  1372→                    {item.status === 'fail' && <X className="w-3.5 h-3.5 text-red-500 shrink-0" />}
+  1373→  1373→                    <span className="text-gray-600 truncate">{item.matchName}</span>
+  1374→  1374→                    <span className="text-gray-400">→</span>
+  1375→  1375→                    <span className="text-gray-700 font-medium truncate">{item.contestName}</span>
+  1376→  1376→                    <span className="text-gray-400">→</span>
+  1377→  1377→                    <span className="truncate">{item.teamName}</span>
+  1378→  1378→                    {item.message && item.status !== 'success' && (
+  1379→  1379→                      <span className="text-gray-400 truncate ml-auto">{item.message}</span>
+  1380→  1380→                    )}
+  1381→  1381→                  </div>
+  1382→  1382→                ))}
+  1383→  1383→              </div>
+  1384→  1384→            </div>
+  1385→  1385→          )}
+  1386→  1386→
+  1387→  1387→          {/* ===== STEP: RESULT ===== */}
+  1388→  1388→          {step === 'result' && (
+  1389→  1389→            <div className="space-y-4">
+  1390→  1390→              <div className="text-center py-4">
+  1391→  1391→                <div className="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-3">
+  1392→  1392→                  <Trophy className="w-8 h-8 text-green-600" />
+  1393→  1393→                </div>
+  1394→  1394→                <h3 className="text-xl font-bold text-gray-900">JOIN COMPLETE</h3>
+  1395→  1395→              </div>
+  1396→  1396→              <div className="grid grid-cols-4 gap-2">
+  1397→  1397→                <div className="bg-gray-50 rounded-xl p-3 text-center">
+  1398→  1398→                  <p className="text-lg font-bold text-gray-900">{resultStats.total}</p>
+  1399→  1399→                  <p className="text-[10px] text-gray-500 uppercase">Total</p>
+  1400→  1400→                </div>
+  1401→  1401→                <div className="bg-green-50 rounded-xl p-3 text-center">
+  1402→  1402→                  <p className="text-lg font-bold text-green-600">{resultStats.success}</p>
+  1403→  1403→                  <p className="text-[10px] text-green-600 uppercase">Joined</p>
+  1404→  1404→                </div>
+  1405→  1405→                <div className="bg-amber-50 rounded-xl p-3 text-center">
+  1406→  1406→                  <p className="text-lg font-bold text-amber-600">{resultStats.alreadyJoined}</p>
+  1407→  1407→                  <p className="text-[10px] text-amber-600 uppercase">Already</p>
+  1408→  1408→                </div>
+  1409→  1409→                <div className="bg-red-50 rounded-xl p-3 text-center">
+  1410→  1410→                  <p className="text-lg font-bold text-red-500">{resultStats.fail}</p>
+  1411→  1411→                  <p className="text-[10px] text-red-500 uppercase">Failed</p>
+  1412→  1412→                </div>
+  1413→  1413→              </div>
+  1414→  1414→              <div className="max-h-48 overflow-y-auto space-y-2">
+  1415→  1415→                {(() => {
+  1416→  1416→                  const byMatch = new Map<string, JCJoinItem[]>();
+  1417→  1417→                  for (const item of (resultItems.length > 0 ? resultItems : joinItems)) {
+  1418→  1418→                    const key = String(item.matchId);
+  1419→  1419→                    if (!byMatch.has(key)) byMatch.set(key, []);
+  1420→  1420→                    byMatch.get(key)!.push(item);
+  1421→  1421→                  }
+  1422→  1422→                  return Array.from(byMatch.entries()).map(([matchId, items]) => (
+  1423→  1423→                    <div key={matchId} className="bg-gray-50 rounded-xl p-3">
+  1424→  1424→                      <p className="text-xs font-semibold text-gray-700 mb-1">{items[0].matchName}</p>
+  1425→  1425→                      {items.map((item, i) => (
+  1426→  1426→                        <div key={i} className="flex items-center gap-1.5 text-[11px] py-0.5">
+  1427→  1427→                          {item.status === 'success' && <CheckCircle2 className="w-3 h-3 text-green-500" />}
+  1428→  1428→                          {item.status === 'already_joined' && <AlertCircle className="w-3 h-3 text-amber-500" />}
+  1429→  1429→                          {item.status === 'fail' && <X className="w-3 h-3 text-red-500" />}
+  1430→  1430→                          <span className="text-gray-600">{item.contestName}</span>
+  1431→  1431→                          <span className="text-gray-400">— {item.teamName}</span>
+  1432→  1432→                          {item.message && <span className="text-gray-400 ml-auto">{item.message}</span>}
+  1433→  1433→                        </div>
+  1434→  1434→                      ))}
+  1435→  1435→                    </div>
+  1436→  1436→                  ));
+  1437→  1437→                })()}
+  1438→  1438→              </div>
+  1439→  1439→            </div>
+  1440→  1440→          )}
+  1441→  1441→        </div>
+  1442→  1442→
+  1443→  1443→        {/* Session Refresh Overlay */}
+  1444→  1444→        {sessionRefreshState.active && (
+  1445→  1445→          <div className="absolute inset-0 z-20 bg-white/95 flex items-center justify-center">
+  1446→  1446→            <div className="max-w-sm w-full mx-4 space-y-4">
+  1447→  1447→              {/* Verifying / Sending OTP */}
+  1448→  1448→              {(sessionRefreshState.step === 'verifying' || sessionRefreshState.step === 'sending_otp' || sessionRefreshState.step === 'verifying_otp') && (
+  1449→  1449→                <div className="text-center space-y-3">
+  1450→  1450→                  <div className="w-14 h-14 rounded-full bg-blue-50 flex items-center justify-center mx-auto">
+  1451→  1451→                    <Loader2 className="w-7 h-7 animate-spin text-blue-500" />
+  1452→  1452→                  </div>
+  1453→  1453→                  <h3 className="text-lg font-bold text-gray-900">
+  1454→  1454→                    {sessionRefreshState.step === 'verifying' ? 'Verifying Session...' :
+  1455→  1455→                     sessionRefreshState.step === 'sending_otp' ? 'Sending OTP...' :
+  1456→  1456→                     'Verifying OTP...'}
+  1457→  1457→                  </h3>
+  1458→  1458→                  <p className="text-sm text-gray-500">{sessionRefreshState.message}</p>
+  1459→  1459→                </div>
+  1460→  1460→              )}
+  1461→  1461→
+  1462→  1462→              {/* Enter OTP */}
+  1463→  1463→              {sessionRefreshState.step === 'entering_otp' && (
+  1464→  1464→                <div className="space-y-3">
+  1465→  1465→                  <div className="text-center">
+  1466→  1466→                    <div className="w-14 h-14 rounded-full bg-blue-50 flex items-center justify-center mx-auto">
+  1467→  1467→                      <KeyRound className="w-7 h-7 text-blue-500" />
+  1468→  1468→                    </div>
+  1469→  1469→                    <h3 className="text-lg font-bold text-gray-900 mt-3">Refresh Session</h3>
+  1470→  1470→                    <p className="text-sm text-gray-500 mt-1">{sessionRefreshState.message}</p>
+  1471→  1471→                  </div>
+  1472→  1472→                  <div className="space-y-2">
+  1473→  1473→                    <input
+  1474→  1474→                      type="text"
+  1475→  1475→                      value={refreshOtp}
+  1476→  1476→                      onChange={(e) => setRefreshOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+  1477→  1477→                      placeholder="Enter OTP"
+  1478→  1478→                      className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl text-center text-lg font-bold tracking-[0.5em] focus:border-blue-500 focus:outline-none"
+  1479→  1479→                      autoFocus
+  1480→  1480→                      onKeyDown={(e) => { if (e.key === 'Enter' && refreshOtp.length >= 4) handleCompleteRefresh(); }}
+  1481→  1481→                    />
+  1482→  1482→                    <button
+  1483→  1483→                      onClick={handleCompleteRefresh}
+  1484→  1484→                      disabled={refreshOtp.length < 4}
+  1485→  1485→                      className="w-full py-3 rounded-xl bg-blue-600 text-white font-semibold text-sm hover:bg-blue-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+  1486→  1486→                    >
+  1487→  1487→                      Verify OTP
+  1488→  1488→                    </button>
+  1489→  1489→                  </div>
+  1490→  1490→                  <button
+  1491→  1491→                    onClick={() => {
+  1492→  1492→                      setSessionRefreshState({ active: false, step: 'verifying', message: '' });
+  1493→  1493→                      setRefreshOtp('');
+  1494→  1494→                      otpRequestInProgressRef.current = false; // Clear guard on cancel
+  1495→  1495→                    }}
+  1496→  1496→                    className="w-full text-center text-sm text-gray-500 hover:text-gray-700"
+  1497→  1497→                  >
+  1498→  1498→                    Cancel
+  1499→  1499→                  </button>
+  1500→  1500→                </div>
+  1501→  1501→              )}
+  1502→  1502→
+  1503→  1503→              {/* Success */}
+  1504→  1504→              {sessionRefreshState.step === 'success' && (
+  1505→  1505→                <div className="text-center space-y-3">
+  1506→  1506→                  <div className="w-14 h-14 rounded-full bg-green-50 flex items-center justify-center mx-auto">
+  1507→  1507→                    <CheckCircle2 className="w-7 h-7 text-green-500" />
+  1508→  1508→                  </div>
+  1509→  1509→                  <h3 className="text-lg font-bold text-green-700">Session Refreshed!</h3>
+  1510→  1510→                  <p className="text-sm text-gray-500">Retrying with new session...</p>
+  1511→  1511→                </div>
+  1512→  1512→              )}
+  1513→  1513→
+  1514→  1514→              {/* Failed */}
+  1515→  1515→              {sessionRefreshState.step === 'failed' && (
+  1516→  1516→                <div className="space-y-3">
+  1517→  1517→                  <div className="text-center">
+  1518→  1518→                    <div className="w-14 h-14 rounded-full bg-red-50 flex items-center justify-center mx-auto">
+  1519→  1519→                      <AlertCircle className="w-7 h-7 text-red-500" />
+  1520→  1520→                    </div>
+  1521→  1521→                    <h3 className="text-lg font-bold text-red-700 mt-3">Session Refresh Failed</h3>
+  1522→  1522→                    <p className="text-sm text-gray-500 mt-1">{sessionRefreshState.message}</p>
+  1523→  1523→                  </div>
+  1524→  1524→                  <div className="space-y-2">
+  1525→  1525→                    <button
+  1526→  1526→                      onClick={handleSessionExpired}
+  1527→  1527→                      className="w-full py-3 rounded-xl bg-blue-600 text-white font-semibold text-sm hover:bg-blue-700 transition-all"
+  1528→  1528→                    >
+  1529→  1529→                      Try Again
+  1530→  1530→                    </button>
+  1531→  1531→                    <button
+  1532→  1532→                      onClick={() => {
+  1533→  1533→                        setSessionRefreshState({ active: false, step: 'verifying', message: '' });
+  1534→  1534→                        setRefreshOtp('');
+  1535→  1535→                        otpRequestInProgressRef.current = false; // Clear guard on cancel
+  1536→  1536→                      }}
+  1537→  1537→                      className="w-full py-3 rounded-xl border-2 border-gray-200 text-gray-700 font-semibold text-sm hover:border-gray-300 transition-all"
+  1538→  1538→                    >
+  1539→  1539→                      Cancel
+  1540→  1540→                    </button>
+  1541→  1541→                  </div>
+  1542→  1542→                </div>
+  1543→  1543→              )}
+  1544→  1544→            </div>
+  1545→  1545→          </div>
+  1546→  1546→        )}
+  1547→  1547→
+  1548→  1548→        {/* Footer Buttons */}
+  1549→  1549→        <div className="px-6 py-4 border-t bg-gray-50 flex items-center justify-between">
+  1550→  1550→          <div>
+  1551→  1551→            {step !== 'matches' && step !== 'joining' && step !== 'result' && (
+  1552→  1552→              <button onClick={() => {
+  1553→  1553→                // Cancel pending requests when going back
+  1554→  1554→                if (abortControllerRef.current) {
+  1555→  1555→                  console.log('[JOIN] Aborting requests on Back navigation');
+  1556→  1556→                  abortControllerRef.current.abort();
+  1557→  1557→                  abortControllerRef.current = null;
+  1558→  1558→                }
+  1559→  1559→                loadTeamsInProgressRef.current = false;
+  1560→  1560→                loadContestsInProgressRef.current = false;
+  1561→  1561→
+  1562→  1562→                const prev: Record<Step, Step | null> = {
+  1563→  1563→                  matches: null, teams: 'matches', contests: 'teams',
+  1564→  1564→                  joining: null, result: null,
+  1565→  1565→                };
+  1566→  1566→                const p = prev[step];
+  1567→  1567→                if (p) setStep(p);
+  1568→  1568→              }} className="flex items-center gap-1 text-sm text-gray-600 hover:text-gray-800 font-medium">
+  1569→  1569→                <ChevronLeft className="w-4 h-4" /> Back
+  1570→  1570→              </button>
+  1571→  1571→            )}
+  1572→  1572→          </div>
+  1573→  1573→          <div className="flex items-center gap-2">
+  1574→  1574→            {step === 'matches' && (
+  1575→  1575→              <button onClick={async () => {
+  1576→  1576→                // Prevent double-click on Next
+  1577→  1577→                if (nextClickInProgressRef.current) return;
+  1578→  1578→                if (selectedMatchIds.size > 0 && availablePlatforms.length > 0) {
+  1579→  1579→                  nextClickInProgressRef.current = true;
+  1580→  1580→                  try {
+  1581→  1581→                    // Pre-check session validity before moving to teams step
+  1582→  1582→                    const isValid = await checkSessionValidity(platform);
+  1583→  1583→                    if (isValid) {
+  1584→  1584→                      setStep('teams');
+  1585→  1585→                      loadPlatformTeams();
+  1586→  1586→                    }
+  1587→  1587→                  } finally {
+  1588→  1588→                    nextClickInProgressRef.current = false;
+  1589→  1589→                  }
+  1590→  1590→                }
+  1591→  1591→              }} disabled={selectedMatchIds.size === 0 || availablePlatforms.length === 0}
+  1592→  1592→                className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
+  1593→  1593→                Next <ChevronRight className="w-4 h-4" />
+  1594→  1594→              </button>
+  1595→  1595→            )}
+  1596→  1596→            {step === 'teams' && (
+  1597→  1597→              <button onClick={async () => {
+  1598→  1598→                // Prevent double-click on Next — also require teams loaded and selection valid
+  1599→  1599→                if (nextClickInProgressRef.current) return;
+  1600→  1600→                if (selectedTeamIds.size > 0 && !loadingTeams) {
+  1601→  1601→                  nextClickInProgressRef.current = true;
+  1602→  1602→                  try {
+  1603→  1603→                    // Validate: selected teams must belong to selected match
+  1604→  1604→                    const validTeamIds = platformTeams
+  1605→  1605→                      .filter(t => selectedMatchIds.has(String(t.matchId)) || selectedMatchIds.has(t.matchId as number))
+  1606→  1606→                      .map(t => t.id);
+  1607→  1607→                    const hasInvalidSelection = [...selectedTeamIds].some(id => !validTeamIds.includes(id));
+  1608→  1608→                    if (hasInvalidSelection) {
+  1609→  1609→                      console.warn('[JOIN] Some selected teams do not belong to the selected match — removing invalid selections');
+  1610→  1610→                      setSelectedTeamIds(new Set([...selectedTeamIds].filter(id => validTeamIds.includes(id))));
+  1611→  1611→                    }
+  1612→  1612→
+  1613→  1613→                    // Pre-check session validity before moving to contests step
+  1614→  1614→                    const isValid = await checkSessionValidity(platform);
+  1615→  1615→                    if (isValid) {
+  1616→  1616→                      setStep('contests');
+  1617→  1617→                      loadContests();
+  1618→  1618→                    }
+  1619→  1619→                  } finally {
+  1620→  1620→                    nextClickInProgressRef.current = false;
+  1621→  1621→                  }
+  1622→  1622→                }
+  1623→  1623→              }} disabled={selectedTeamIds.size === 0 || loadingTeams || teamsTokenExpired}
+  1624→  1624→                className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
+  1625→  1625→                {loadingTeams ? <><Loader2 className="w-4 h-4 animate-spin" /> Loading...</> : <>Next <ChevronRight className="w-4 h-4" /></>}
+  1626→  1626→              </button>
+  1627→  1627→            )}
+  1628→  1628→            {step === 'contests' && (
+  1629→  1629→              <button onClick={async () => {
+  1630→  1630→                // Prevent double-click — join executes exactly once per user action
+  1631→  1631→                if (nextClickInProgressRef.current || joinInProgressRef.current) return;
+  1632→  1632→                if (selectedContestIds.size > 0 && !loadingContests) {
+  1633→  1633→                  nextClickInProgressRef.current = true;
+  1634→  1634→                  try {
+  1635→  1635→                    // Pre-check session validity before joining
+  1636→  1636→                    const isValid = await checkSessionValidity(platform);
+  1637→  1637→                    if (isValid) {
+  1638→  1638→                      executeJoin();
+  1639→  1639→                    }
+  1640→  1640→                  } finally {
+  1641→  1641→                    nextClickInProgressRef.current = false;
+  1642→  1642→                  }
+  1643→  1643→                }
+  1644→  1644→              }} disabled={selectedContestIds.size === 0 || loadingContests || contestTokenExpired || joinInProgressRef.current}
+  1645→  1645→                className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
+  1646→  1646→                {joinInProgressRef.current ? <><Loader2 className="w-4 h-4 animate-spin" /> Joining...</> : <><Trophy className="w-4 h-4" /> JOIN ALL SELECTED ({selectedContestIds.size > 0 && selectedTeamIds.size > 0 ? selectedContestIds.size * selectedTeamIds.size : selectedContestIds.size})</>}
+  1647→  1647→              </button>
+  1648→  1648→            )}
+  1649→  1649→            {step === 'result' && (
+  1650→  1650→              <button onClick={handleClose}
+  1651→  1651→                className="px-6 py-2.5 rounded-xl bg-green-600 text-white font-semibold text-sm hover:bg-green-700 transition-all">
+  1652→  1652→                Done
+  1653→  1653→              </button>
+  1654→  1654→            )}
+  1655→  1655→          </div>
+  1656→  1656→        </div>
+  1657→  1657→      </div>
+  1658→  1658→    </div>
+  1659→  1659→  );
+  1660→  1660→}
+  1661→  1661→

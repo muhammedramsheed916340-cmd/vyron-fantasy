@@ -48,23 +48,34 @@ export async function POST(request: NextRequest) {
       }
 
       // Determine if this is an auth/token error vs a different kind of error
+      // CRITICAL: Only mark as auth error for TRUE auth failures.
+      // Rate-limit errors (429), server errors (5xx), and generic errors
+      // must NOT be treated as token expired — they cause false SESSION EXPIRED.
       const msg = (data.message || '').toLowerCase();
-      const isAuthError = (
+      const isTrueAuthError = (
         response.status === 401 ||
         response.status === 403 ||
-        msg.includes('token') ||
-        msg.includes('expire') ||
-        msg.includes('auth') ||
-        msg.includes('session') ||
+        msg.includes('token expired') ||
+        msg.includes('tokenexpired') ||
         msg.includes('unauthorized') ||
         msg.includes('re-login') ||
-        msg.includes('invalid')
+        msg.includes('relogin') ||
+        (msg.includes('expire') && (msg.includes('token') || msg.includes('session')))
       );
+
+      // Rate-limit — NOT an auth error
+      if (response.status === 429 || msg.includes('rate limit') || msg.includes('too many')) {
+        return NextResponse.json({
+          status: 'fail',
+          message: data.message || 'Rate limited by platform. Please wait and try again.',
+          tokenExpired: false,
+        });
+      }
 
       return NextResponse.json({
         status: 'fail',
-        message: data.message || (isAuthError ? 'Session expired. Please re-authenticate.' : 'Failed to load teams.'),
-        tokenExpired: isAuthError,
+        message: data.message || (isTrueAuthError ? 'Session expired. Please re-authenticate.' : 'Failed to load teams.'),
+        tokenExpired: isTrueAuthError,
       });
     } catch (fetchError) {
       console.error('TG API list-of-teams unreachable:', fetchError instanceof Error ? fetchError.message : 'unknown');

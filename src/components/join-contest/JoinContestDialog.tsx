@@ -90,6 +90,7 @@ export default function JoinContestDialog({
   const loadContestsInProgressRef = useRef(false); // Prevents parallel contest-fetch requests
   const joinInProgressRef = useRef(false);  // Prevents double-click on Join button
   const nextClickInProgressRef = useRef(false); // Prevents double-click on Next buttons
+  const sessionRefreshAttemptRef = useRef(0); // Max 1 session refresh attempt per step
 
   // ============ ABORT CONTROLLER (request cancellation on close/back) ============
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -135,6 +136,7 @@ export default function JoinContestDialog({
     joinInProgressRef.current = false;
     nextClickInProgressRef.current = false;
     otpRequestInProgressRef.current = false;
+    sessionRefreshAttemptRef.current = 0;
 
     setStep('matches');
     setSelectedMatchIds(new Set());
@@ -164,11 +166,15 @@ export default function JoinContestDialog({
   // ============ Session Pre-Check ============
 
   /**
-   * Verify the stored session token is still valid BEFORE starting any operation.
-   * This is the SINGLE authenticated-account check required by the spec:
-   *   getStoredFantasyAccount(platform) → validate stored token/session
-   *     → if valid: use existing account, NEVER open OTP login
-   *     → if invalid/expired: show "Session expired — Login required", allow manual OTP
+   * Verify the stored session token is still valid.
+   * Used ONLY for displaying session status on the Matches step banner.
+   * NOT used as a gate before step transitions — step transitions proceed
+   * directly and let the actual API calls (loadPlatformTeams, loadContests,
+   * executeJoin) determine auth status accurately.
+   *
+   * IMPORTANT: This function does NOT set teamsTokenExpired/contestTokenExpired
+   * because those flags control step-specific error UI and should only be set
+   * by the actual API calls for that step.
    */
   const checkSessionValidity = useCallback(async (plat?: string): Promise<boolean> => {
     const p = plat || platform;
@@ -183,8 +189,6 @@ export default function JoinContestDialog({
 
     if (!acc?.authToken) {
       console.log('[JOIN] Token present: NO');
-      console.log('[JOIN] OTP required: YES (no token stored)');
-      console.log('[JOIN] OTP request started: NO (user must initiate)');
       setSessionChecked(true);
       setSessionValid(false);
       return false;
@@ -194,28 +198,28 @@ export default function JoinContestDialog({
     const result = await verifySession(p, acc.authToken);
 
     console.log('[JOIN] Token valid:', result.status === 'valid');
-    console.log('[JOIN] OTP required:', result.status === 'expired' ? 'YES' : 'NO');
+    console.log('[JOIN] Verify result:', result.status);
 
     if (result.status === 'valid') {
       setSessionChecked(true);
       setSessionValid(true);
-      console.log('[JOIN] === SESSION PRE-CHECK COMPLETE: VALID — proceeding with existing token ===');
+      console.log('[JOIN] === SESSION PRE-CHECK COMPLETE: VALID ===');
       return true;
     }
 
     if (result.status === 'expired') {
-      // Token is genuinely expired — show session expired UI but DO NOT auto-trigger OTP
+      // Token is genuinely expired — set session flags but NOT step-specific flags
+      // Step-specific flags (teamsTokenExpired, contestTokenExpired) are set by
+      // the actual API calls (loadPlatformTeams, loadContests) for accuracy.
       setSessionChecked(true);
       setSessionValid(false);
-      setTeamsTokenExpired(true);
-      setContestTokenExpired(true);
-      console.log('[JOIN] === SESSION PRE-CHECK COMPLETE: EXPIRED — user must manually refresh ===');
+      console.log('[JOIN] === SESSION PRE-CHECK COMPLETE: EXPIRED ===');
       return false;
     }
 
-    // 'error' — network/unknown issue. Don't assume expired. Let the operation try with the existing token.
-    // The token MIGHT still be valid — the verify endpoint could be down.
-    console.log('[JOIN] === SESSION PRE-CHECK COMPLETE: UNCERTAIN — proceeding with existing token (verify endpoint error) ===');
+    // 'error' — network/unknown/rate-limit. Don't assume expired.
+    // The token MIGHT still be valid — the verify endpoint could be down or rate-limited.
+    console.log('[JOIN] === SESSION PRE-CHECK COMPLETE: UNCERTAIN — proceeding optimistically ===');
     setSessionChecked(true);
     setSessionValid(true); // Optimistic — let the operation try
     return true;
@@ -339,6 +343,7 @@ export default function JoinContestDialog({
 
     console.log('[JOIN] Session refresh SUCCESS — new token obtained, length:', result.token.length);
     otpRequestInProgressRef.current = false; // Clear guard
+    sessionRefreshAttemptRef.current++; // Count this refresh attempt
 
     // Update the parent's fantasy account state with the new token
     if (onAccountUpdate) {
@@ -366,16 +371,22 @@ export default function JoinContestDialog({
     setSessionChecked(true);
     setSessionValid(true);
 
+    console.log('[JOIN] Session refresh complete — will retry operation for step:', step);
+    console.log('[JOIN] Total refresh attempts:', sessionRefreshAttemptRef.current);
+
     // After a brief delay, auto-retry the failed operation
+    // This is the ONE retry after a successful refresh (requirement #7)
     setTimeout(() => {
       setSessionRefreshState({ active: false, step: 'verifying', message: '' });
       setRefreshOtp('');
       otpRequestInProgressRef.current = false;
 
-      // Retry based on current step — preserve all selections
+      // Retry based on current step — preserve all selections (requirement #10)
       if (step === 'teams') {
+        console.log('[JOIN] Retrying team load after session refresh');
         loadPlatformTeams();
       } else if (step === 'contests') {
+        console.log('[JOIN] Retrying contest load after session refresh');
         loadContests();
       }
     }, 1500);
@@ -519,6 +530,7 @@ export default function JoinContestDialog({
 
   // ============ Contest Loading — with proper error differentiation ============
   // Prevents duplicate/parallel requests. Detects rate-limit. Never auto-OTP.
+  // Auth errors come ONLY from the contest API itself, NOT from verify-session.
   const loadContests = useCallback(async () => {
     // === REQUEST GUARD: Prevent duplicate/parallel contest-fetch ===
     if (loadContestsInProgressRef.current) {
@@ -526,12 +538,18 @@ export default function JoinContestDialog({
       return;
     }
 
-    if (!account?.authToken) return;
+    if (!account?.authToken) {
+      console.warn('[JOIN] Contest fetch BLOCKED — no auth token');
+      setContestTokenExpired(true);
+      return;
+    }
 
     console.log('[JOIN] === CONTEST FETCH START ===');
     console.log('[JOIN] Platform:', platform);
     console.log('[JOIN] Account:', account.mobileNumber?.slice(0, 4) + '****');
+    console.log('[JOIN] Token length:', account.authToken.length);
     console.log('[JOIN] Match IDs:', [...selectedMatchIds]);
+    console.log('[JOIN] Session refresh attempts so far:', sessionRefreshAttemptRef.current);
 
     // Create new AbortController for this request batch
     if (abortControllerRef.current) abortControllerRef.current.abort();
@@ -552,6 +570,14 @@ export default function JoinContestDialog({
     let anyTokenExpired = false;
 
     for (const matchId of selectedMatchIds) {
+      // Check if aborted
+      if (abortControllerRef.current?.signal.aborted) {
+        console.log('[JOIN] Contest fetch aborted');
+        loadContestsInProgressRef.current = false;
+        setLoadingContests(false);
+        return;
+      }
+
       const match = matches.find(m => m.id === matchId);
 
       // Use the match ID as the platform match ID.
@@ -561,15 +587,12 @@ export default function JoinContestDialog({
       const platformMatchId = matchId;
       const numericMatchId = typeof matchId === 'string' ? parseInt(matchId, 10) : matchId;
 
-      console.log('[JOIN] Selected match:', match?.left_team_name, 'vs', match?.right_team_name);
-      console.log('[JOIN] Platform:', platform);
+      console.log('[JOIN] Fetching contests for match:', match?.left_team_name, 'vs', match?.right_team_name);
       console.log('[JOIN] Platform Match ID:', platformMatchId, '(numeric:', numericMatchId, ')');
-      console.log('[JOIN] Account ID:', account.mobileNumber || 'unknown');
-      console.log('[JOIN] Sport Index:', match?.sport_index ?? 0);
 
       // Validate: matchId must be numeric
       if (isNaN(numericMatchId) || numericMatchId <= 0) {
-        console.error('[JOIN] INVALID matchId:', matchId, '— not a valid numeric ID. This should be a platform match ID like 113672, not a display name.');
+        console.error('[JOIN] INVALID matchId:', matchId, '— not a valid numeric ID.');
         errors.push({
           matchId: String(matchId),
           error: `Invalid match ID "${matchId}". Must be a numeric platform match ID.`,
@@ -587,23 +610,27 @@ export default function JoinContestDialog({
         account.my11circleChallenge || undefined,
       );
 
-      console.log('[JOIN] Contest count:', result.contests.length);
-      console.log('[JOIN] Error type:', result.errorType);
+      console.log('[JOIN] Contest API result — Match:', platformMatchId, 'Contests:', result.contests.length, 'ErrorType:', result.errorType, 'Error:', result.error || 'none');
 
       if (result.errorType === 'auth') {
+        // Auth error from the ACTUAL contest API — this is a genuine expired token.
+        // Do NOT auto-trigger OTP. Show SESSION EXPIRED with manual Refresh Session button.
         anyTokenExpired = true;
         errors.push({
           matchId: String(matchId),
-          error: result.error || 'Session expired',
+          error: result.error || 'Session expired. Reconnect your account.',
           errorType: 'auth',
         });
         // Still set empty array for this match
         newMap.set(String(matchId), []);
       } else if (result.errorType && result.errorType !== 'none') {
+        // Non-auth API error — show the ACTUAL error message, don't convert to SESSION EXPIRED.
+        // This satisfies requirement #12: show actual API error.
+        const errorType = result.errorType as ContestErrorState['errorType'];
         errors.push({
           matchId: String(matchId),
           error: result.error || 'Failed to load contests',
-          errorType: result.errorType,
+          errorType,
         });
         newMap.set(String(matchId), []);
       } else {
@@ -618,7 +645,7 @@ export default function JoinContestDialog({
         }
       }
 
-      console.log('[JOIN] Normalized contests for match', platformMatchId, ':', result.contests.length);
+      console.log('[JOIN] Contests for match', platformMatchId, ':', result.contests.length);
     }
 
     // Detect rate-limit in errors
@@ -640,16 +667,20 @@ export default function JoinContestDialog({
     setContestsRateLimited(anyRateLimited && !anyTokenExpired);
     setLoadingContests(false);
 
+    // Calculate total for logging
+    let logTotal = 0;
+    for (const contests of newMap.values()) logTotal += contests.length;
+
     console.log('[JOIN] === CONTEST FETCH END ===');
-    console.log('[JOIN] Total contests loaded:', totalContestCount);
+    console.log('[JOIN] Total contests loaded:', logTotal);
     console.log('[JOIN] Selected contest IDs:', [...selectedContestIds]);
     console.log('[JOIN] Rate limited:', anyRateLimited);
     console.log('[JOIN] Token expired:', anyTokenExpired);
     console.log('[JOIN] Errors:', errors.length);
 
-    // *** CRITICAL FIX: NEVER auto-trigger OTP on token expiry ***
+    // NEVER auto-trigger OTP on token expiry
     if (anyTokenExpired) {
-      console.log('[JOIN] Token expired — showing session expired UI (NOT auto-triggering OTP)');
+      console.log('[JOIN] Token expired — showing SESSION EXPIRED UI on Contests step (NOT auto-triggering OTP)');
     }
     if (anyRateLimited) {
       console.log('[JOIN] Rate limited — NOT retrying. User must click Retry manually.');
@@ -1578,12 +1609,16 @@ export default function JoinContestDialog({
                 if (selectedMatchIds.size > 0 && availablePlatforms.length > 0) {
                   nextClickInProgressRef.current = true;
                   try {
-                    // Pre-check session validity before moving to teams step
-                    const isValid = await checkSessionValidity(platform);
-                    if (isValid) {
-                      setStep('teams');
-                      loadPlatformTeams();
-                    }
+                    // Navigate to teams step directly.
+                    // Do NOT call checkSessionValidity() here — it makes an extra API call
+                    // (verify-session → list-of-teams) that can be rate-limited, causing
+                    // false SESSION EXPIRED. The teams API itself will detect auth errors.
+                    // Flow: Matches → Teams → loadPlatformTeams() → if auth error → show SESSION EXPIRED
+                    console.log('[JOIN] Match step complete — navigating to Teams step');
+                    console.log('[JOIN] Selected match IDs:', [...selectedMatchIds]);
+                    console.log('[JOIN] Platform:', platform);
+                    setStep('teams');
+                    loadPlatformTeams();
                   } finally {
                     nextClickInProgressRef.current = false;
                   }
@@ -1610,12 +1645,17 @@ export default function JoinContestDialog({
                       setSelectedTeamIds(new Set([...selectedTeamIds].filter(id => validTeamIds.includes(id))));
                     }
 
-                    // Pre-check session validity before moving to contests step
-                    const isValid = await checkSessionValidity(platform);
-                    if (isValid) {
-                      setStep('contests');
-                      loadContests();
-                    }
+                    // Navigate to contests step directly.
+                    // Do NOT call checkSessionValidity() here — it makes an extra API call
+                    // that can be rate-limited and produce false SESSION EXPIRED results.
+                    // The contest API itself will detect auth errors accurately.
+                    // Flow: Teams → Contests → loadContests() → if auth error → show SESSION EXPIRED
+                    console.log('[JOIN] Teams step complete — navigating to Contests step');
+                    console.log('[JOIN] Selected match IDs:', [...selectedMatchIds]);
+                    console.log('[JOIN] Selected team IDs:', [...selectedTeamIds]);
+                    console.log('[JOIN] Platform:', platform);
+                    setStep('contests');
+                    loadContests();
                   } finally {
                     nextClickInProgressRef.current = false;
                   }
@@ -1632,11 +1672,15 @@ export default function JoinContestDialog({
                 if (selectedContestIds.size > 0 && !loadingContests) {
                   nextClickInProgressRef.current = true;
                   try {
-                    // Pre-check session validity before joining
-                    const isValid = await checkSessionValidity(platform);
-                    if (isValid) {
-                      executeJoin();
-                    }
+                    // Execute join directly.
+                    // Do NOT call checkSessionValidity() here — the join API itself
+                    // will detect auth errors accurately (401/403/tokenExpired).
+                    // Pre-checking with verify-session causes false SESSION EXPIRED
+                    // when rate-limited and wastes an API call.
+                    console.log('[JOIN] Contest step complete — executing join');
+                    console.log('[JOIN] Selected contest IDs:', [...selectedContestIds]);
+                    console.log('[JOIN] Selected team IDs:', [...selectedTeamIds]);
+                    executeJoin();
                   } finally {
                     nextClickInProgressRef.current = false;
                   }

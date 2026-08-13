@@ -486,7 +486,19 @@ export async function getPlatformContests(
     // API-level failure
     if (data.status === 'fail' || data.status === 'error') {
       const msg = data.message || 'Failed to load contests.';
-      if (msg.toLowerCase().includes('auth') || msg.toLowerCase().includes('token') || msg.toLowerCase().includes('expire') || msg.toLowerCase().includes('session') || msg.toLowerCase().includes('reconnect')) {
+      const msgLower = msg.toLowerCase();
+      // CRITICAL: Only classify as auth error for TRUE auth failures.
+      // Do NOT convert rate-limit errors, 404s, parse errors, etc. to SESSION EXPIRED.
+      // This satisfies requirement #12: show actual API error, don't incorrectly convert.
+      const isTrueAuthError =
+        msgLower.includes('token expired') ||
+        msgLower.includes('tokenexpired') ||
+        msgLower.includes('unauthorized') ||
+        msgLower.includes('re-login') ||
+        msgLower.includes('relogin') ||
+        (msgLower.includes('expire') && (msgLower.includes('token') || msgLower.includes('session')));
+
+      if (isTrueAuthError) {
         return {
           contests: [],
           error: msg,
@@ -494,6 +506,17 @@ export async function getPlatformContests(
           rawResponse: data,
         };
       }
+
+      // Rate-limit — NOT an auth error
+      if (msgLower.includes('rate limit') || msgLower.includes('429') || msgLower.includes('too many')) {
+        return {
+          contests: [],
+          error: msg,
+          errorType: 'api_fail',
+          rawResponse: data,
+        };
+      }
+
       return {
         contests: [],
         error: msg,

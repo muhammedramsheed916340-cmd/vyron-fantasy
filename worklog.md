@@ -220,3 +220,30 @@ Stage Summary:
 - Step validation prevents navigation without valid data
 - Comprehensive debug logs at every stage
 - Build successful with zero errors
+---
+Task ID: 1
+Agent: Main
+Task: Fix Join Contest → Contests step showing false SESSION EXPIRED
+
+Work Log:
+- Analyzed JoinContestDialog.tsx (1700+ lines) to understand the full Join Contest flow
+- Identified root cause: checkSessionValidity() was called before step transitions (matches→teams, teams→contests, contests→join), making an extra API call to verify-session (which calls list-of-teams). When rate-limited by Dream11, this second call fails and the verify-session route incorrectly interprets it as "token expired" → false SESSION EXPIRED
+- Removed checkSessionValidity() pre-check from all 3 step transitions — step transitions now proceed directly and let the actual API calls determine auth status
+- Updated checkSessionValidity() to no longer set teamsTokenExpired/contestTokenExpired (those flags are set by actual API calls only)
+- Fixed verify-session/route.ts: replaced overly broad auth detection (msg.includes('auth'), msg.includes('session'), msg.includes('invalid')) with precise checks (msg.includes('token expired'), msg.includes('unauthorized'), etc.)
+- Fixed list-of-teams/route.ts: same overly aggressive auth detection bug — replaced with precise checks
+- Fixed join-contest-service.ts getPlatformContests: replaced overly broad auth detection with precise checks (requirement #12: show actual API error, don't convert to SESSION EXPIRED)
+- Added sessionRefreshAttemptRef guard for max 1 refresh attempt tracking
+- Added detailed dev logs throughout loadContests() flow
+- Added abort check inside contest fetch loop
+- Build verified successfully
+
+Stage Summary:
+- Root cause: verify-session pre-check making extra API call that gets rate-limited → false SESSION EXPIRED
+- Fix: Removed verify-session pre-check gates, let actual API calls determine auth status
+- Fix: Made auth detection precise across all routes (verify-session, list-of-teams, platform-contests, join-contest-service)
+- Auth errors now only detected for true auth failures (401/403, "token expired", "unauthorized", "re-login")
+- Rate-limit errors (429) no longer treated as auth failures
+- Flow: Match → Teams → loadPlatformTeams() → if auth error → SESSION EXPIRED on Teams step
+- Flow: Teams → Contests → loadContests() → if auth error → SESSION EXPIRED on Contests step (with Refresh Session + Retry)
+- Never auto-triggers OTP
