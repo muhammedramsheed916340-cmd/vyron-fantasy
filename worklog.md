@@ -148,3 +148,40 @@ Stage Summary:
 - Token refresh preserves all wizard state and auto-retries
 - After lineup: team generation falls back to probable players and relaxed constraints
 - All APIs share the same latest token via onAccountUpdate callback
+---
+Task ID: 3
+Agent: Main
+Task: Fix After Lineup Team Generation — No Buffering, No Bench Players, All 20 Teams Valid
+
+Work Log:
+- Investigated full team generation code: tg-api.ts (1910 lines) + page.tsx generation handlers
+- Found ROOT CAUSE #1: No try/catch in setTimeout callbacks — if generateTeams() throws, setGenerating(false) never called → INFINITE SPINNER
+- Found ROOT CAUSE #2: After lineup, fallback includes playing!== -1 (bench/probable players with playing=0), then deduplicateAndValidateTeams() marks them INVALID → 0 valid teams
+- Found ROOT CAUSE #3: Max attempts too high (200 + 500 fallback = blocks UI thread for seconds)
+- Found ROOT CAUSE #4: Quality thresholds too strict for after-lineup (fewer players available)
+
+FIXES APPLIED to tg-api.ts:
+1. Removed bench player fallback in generateTeams() — after lineup, ONLY playing===1 players used
+   - If insufficient Playing XI players, returns 0 teams with INSUFFICIENT_PLAYING_XI strategy
+   - No more contradictory fallback that includes bench then validates them as invalid
+2. Removed bench player fallback in generateExtraTeams() — same fix, returns 0 teams if < 14 Playing XI
+3. Reduced max attempts: main loop 200→80, fallback 500→100 (faster generation, less UI freeze)
+4. Quality threshold lowered 50% for after-lineup mode (fewer players = lower bar)
+5. Quality check attempt limit: 150→40 (accept team faster)
+6. Relaxed credits fallback now explicitly says "playing===1 only, no bench"
+7. getEligiblePlayers() now excludes confirmed OUT players (playing=== -1) even in 'before' mode
+
+FIXES APPLIED to page.tsx:
+1. Added try/catch/finally to handleGenerateTeams setTimeout — setGenerating(false) ALWAYS called
+2. Added try/catch/finally to handleGenerateExtraTeams setTimeout — same fix
+3. Reduced setTimeout delay 800ms→100ms (spinner shows faster, generation starts sooner)
+4. Added INSUFFICIENT_PLAYING_XI specific error messages (e.g., "Only 8 Playing XI players. Need 11+")
+5. Better error messages for after-lineup scenarios
+
+Stage Summary:
+- INFINITE SPINNER FIXED: try/catch/finally ensures setGenerating(false) always called
+- BENCH PLAYER BUG FIXED: After lineup, ONLY Playing XI (playing===1) used — ZERO bench players
+- FASTER GENERATION: 80 max attempts (was 200), 100 fallback (was 500) = ~3x faster
+- LOWER QUALITY THRESHOLD after lineup: 50% of normal (more teams pass quality check)
+- CONFIRMED OUT excluded: playing===-1 always filtered out, even before full lineup
+- Build successful with zero errors

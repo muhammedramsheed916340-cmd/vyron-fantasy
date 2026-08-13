@@ -909,70 +909,81 @@ export default function Home() {
     // Use a unique seed that differs from Extra generation
     const normalSeed = Date.now() + 1
 
-    // Use setTimeout to show loading state
+    // Use setTimeout to show loading state and prevent UI freeze
     setTimeout(() => {
-      const result = generateTeams(
-        matchDetail.left_team_players,
-        matchDetail.right_team_players,
-        selectedCategory,
-        selectedTeamCount,
-        normalSeed,
-        avoidIds,
-        activeCombination,
-        combinationMode,
-      )
-      const rawTeams = result.teams
-      const debug = result.debug
+      try {
+        const result = generateTeams(
+          matchDetail.left_team_players,
+          matchDetail.right_team_players,
+          selectedCategory,
+          selectedTeamCount,
+          normalSeed,
+          avoidIds,
+          activeCombination,
+          combinationMode,
+        )
+        const rawTeams = result.teams
+        const debug = result.debug
 
-      // Deduplicate and validate teams against lineup
-      const dedupResult = deduplicateAndValidateTeams(rawTeams, allPlayers, avoidIds)
+        // Deduplicate and validate teams against lineup
+        const dedupResult = deduplicateAndValidateTeams(rawTeams, allPlayers, avoidIds)
 
-      // Use ONLY valid teams for transfer/join — invalid teams are excluded
-      setGeneratedTeams(dedupResult.valid)
-      setValidTeams(dedupResult.valid)
-      setGenerationDebug({
-        ...debug,
-        generatedTeams: rawTeams.length,
-        duplicateRemoved: dedupResult.duplicateCount,
-        invalidLineupRemoved: dedupResult.invalidLineupCount,
-        validTeams: dedupResult.valid.length,
-      })
+        // Use ONLY valid teams for transfer/join — invalid teams are excluded
+        setGeneratedTeams(dedupResult.valid)
+        setValidTeams(dedupResult.valid)
+        setGenerationDebug({
+          ...debug,
+          generatedTeams: rawTeams.length,
+          duplicateRemoved: dedupResult.duplicateCount,
+          invalidLineupRemoved: dedupResult.invalidLineupCount,
+          validTeams: dedupResult.valid.length,
+        })
 
-      // Build invalid teams map for display
-      const newInvalidTeams = new Map<number, { player: TGPlayer; reason: string }[]>()
-      for (let i = 0; i < dedupResult.invalid.length; i++) {
-        const team = dedupResult.invalid[i]
-        const validation = validateTeamForLineup(team, allPlayers, avoidIds)
-        if (!validation.valid) {
-          newInvalidTeams.set(dedupResult.valid.length + i, validation.invalidPlayers)
+        // Build invalid teams map for display
+        const newInvalidTeams = new Map<number, { player: TGPlayer; reason: string }[]>()
+        for (let i = 0; i < dedupResult.invalid.length; i++) {
+          const team = dedupResult.invalid[i]
+          const validation = validateTeamForLineup(team, allPlayers, avoidIds)
+          if (!validation.valid) {
+            newInvalidTeams.set(dedupResult.valid.length + i, validation.invalidPlayers)
+          }
         }
-      }
-      setInvalidTeams(newInvalidTeams)
+        setInvalidTeams(newInvalidTeams)
 
-      setGenerating(false)
-      if (dedupResult.valid.length === 0) {
-        const allP = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
-        const lineupMode = getLineupMode(allP)
-        const playingCount = allP.filter(p => p.playing === 1).length
-        if (lineupMode === 'after' || playingCount > 0) {
-          toast({ title: `0 valid teams. Lineup has ${playingCount} confirmed players. Try changing combination or removing avoid players.`, variant: 'destructive' })
+        if (dedupResult.valid.length === 0) {
+          const allP = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
+          const lineupMode = getLineupMode(allP)
+          const playingCount = allP.filter(p => p.playing === 1).length
+          if (debug.strategyUsed === 'INSUFFICIENT_PLAYING_XI') {
+            toast({ title: `Only ${playingCount} players in Playing XI. Need at least 11 to generate teams. Lineup may be incomplete — wait for full lineup.`, variant: 'destructive' })
+          } else if (lineupMode === 'after' || playingCount > 0) {
+            toast({ title: `0 valid teams. Playing XI has ${playingCount} confirmed players. Try different combination or remove avoid players.`, variant: 'destructive' })
+          } else {
+            toast({ title: '0 valid teams generated. Not enough valid player combinations. Try different category or combination.', variant: 'destructive' })
+          }
+        } else if (dedupResult.invalidLineupCount > 0 || dedupResult.duplicateCount > 0) {
+          const msgs: string[] = []
+          if (dedupResult.duplicateCount > 0) msgs.push(`${dedupResult.duplicateCount} duplicates removed`)
+          if (dedupResult.invalidLineupCount > 0) msgs.push(`${dedupResult.invalidLineupCount} invalid after lineup check`)
+          toast({ title: `${dedupResult.valid.length} valid teams (${msgs.join(', ')})` })
         } else {
-          toast({ title: '0 valid teams generated. Not enough valid player combinations. Try different category or combination.', variant: 'destructive' })
+          toast({ title: `${dedupResult.valid.length} teams generated successfully!` })
         }
-      } else if (dedupResult.invalidLineupCount > 0 || dedupResult.duplicateCount > 0) {
-        const msgs: string[] = []
-        if (dedupResult.duplicateCount > 0) msgs.push(`${dedupResult.duplicateCount} duplicates removed`)
-        if (dedupResult.invalidLineupCount > 0) msgs.push(`${dedupResult.invalidLineupCount} invalid after lineup check`)
-        toast({ title: `${dedupResult.valid.length} valid teams (${msgs.join(', ')})` })
-      } else {
-        toast({ title: `${dedupResult.valid.length} teams generated successfully!` })
-      }
 
-      // Scroll to teams
-      setTimeout(() => {
-        generatedTeamsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      }, 100)
-    }, 800)
+        // Scroll to teams
+        setTimeout(() => {
+          generatedTeamsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }, 100)
+      } catch (error) {
+        console.error('[TEAM GEN] Generation error:', error)
+        setGeneratedTeams([])
+        setValidTeams([])
+        setInvalidTeams(new Map())
+        toast({ title: 'Team generation failed. Please try again.', variant: 'destructive' })
+      } finally {
+        setGenerating(false)
+      }
+    }, 100)
   }
 
   // Handle Extra Team Generation
@@ -1066,65 +1077,79 @@ export default function Home() {
     const extraSeed = Date.now() + 99999
 
     setTimeout(() => {
-      const result = generateExtraTeams({
-        fixedPlayers: extraFixedPlayers,
-        captainOptions: extraCaptainOptions,
-        viceCaptainOptions: extraViceCaptainOptions,
-        leftPlayers: matchDetail.left_team_players,
-        rightPlayers: matchDetail.right_team_players,
-        category: selectedCategory,
-        count: requestedCount,
-        seed: extraSeed,
-        avoidPlayerIds: avoidIds,
-        combination: activeCombination,
-        combinationMode,
-      })
+      try {
+        const result = generateExtraTeams({
+          fixedPlayers: extraFixedPlayers,
+          captainOptions: extraCaptainOptions,
+          viceCaptainOptions: extraViceCaptainOptions,
+          leftPlayers: matchDetail.left_team_players,
+          rightPlayers: matchDetail.right_team_players,
+          category: selectedCategory,
+          count: requestedCount,
+          seed: extraSeed,
+          avoidPlayerIds: avoidIds,
+          combination: activeCombination,
+          combinationMode,
+        })
 
-      const rawTeams = result.teams
-      const debug = result.debug
+        const rawTeams = result.teams
+        const debug = result.debug
 
-      // Deduplicate and validate teams against lineup
-      const dedupResult = deduplicateAndValidateTeams(rawTeams, allPlayers, avoidIds)
+        // Deduplicate and validate teams against lineup
+        const dedupResult = deduplicateAndValidateTeams(rawTeams, allPlayers, avoidIds)
 
-      // Use ONLY valid teams for transfer/join
-      setGeneratedTeams(dedupResult.valid)
-      setValidTeams(dedupResult.valid)
-      setGenerationDebug({
-        ...debug,
-        generatedTeams: rawTeams.length,
-        duplicateRemoved: dedupResult.duplicateCount,
-        invalidLineupRemoved: dedupResult.invalidLineupCount,
-        validTeams: dedupResult.valid.length,
-      })
+        // Use ONLY valid teams for transfer/join
+        setGeneratedTeams(dedupResult.valid)
+        setValidTeams(dedupResult.valid)
+        setGenerationDebug({
+          ...debug,
+          generatedTeams: rawTeams.length,
+          duplicateRemoved: dedupResult.duplicateCount,
+          invalidLineupRemoved: dedupResult.invalidLineupCount,
+          validTeams: dedupResult.valid.length,
+        })
 
-      // Build invalid teams map for display
-      const newInvalidTeams = new Map<number, { player: TGPlayer; reason: string }[]>()
-      for (let i = 0; i < dedupResult.invalid.length; i++) {
-        const team = dedupResult.invalid[i]
-        const validation = validateTeamForLineup(team, allPlayers, avoidIds)
-        if (!validation.valid) {
-          newInvalidTeams.set(dedupResult.valid.length + i, validation.invalidPlayers)
+        // Build invalid teams map for display
+        const newInvalidTeams = new Map<number, { player: TGPlayer; reason: string }[]>()
+        for (let i = 0; i < dedupResult.invalid.length; i++) {
+          const team = dedupResult.invalid[i]
+          const validation = validateTeamForLineup(team, allPlayers, avoidIds)
+          if (!validation.valid) {
+            newInvalidTeams.set(dedupResult.valid.length + i, validation.invalidPlayers)
+          }
         }
+        setInvalidTeams(newInvalidTeams)
+
+        if (dedupResult.valid.length === 0) {
+          if (debug.strategyUsed === 'INSUFFICIENT_PLAYING_XI') {
+            const allP = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
+            const playingCount = allP.filter(p => p.playing === 1).length
+            toast({ title: `Only ${playingCount} Playing XI players. Need at least 14 for Extra mode. Wait for full lineup.`, variant: 'destructive' })
+          } else {
+            toast({ title: 'Could not generate valid teams with these fixed players. Try different combinations.', variant: 'destructive' })
+          }
+        } else if (dedupResult.valid.length < requestedCount) {
+          const extra: string[] = []
+          if (dedupResult.duplicateCount > 0) extra.push(`${dedupResult.duplicateCount} duplicates removed`)
+          if (dedupResult.invalidLineupCount > 0) extra.push(`${dedupResult.invalidLineupCount} invalid lineup`)
+          toast({ title: `${dedupResult.valid.length} of ${requestedCount} valid extra teams${extra.length > 0 ? ` (${extra.join(', ')})` : ''}`, variant: 'destructive' })
+        } else {
+          toast({ title: `${dedupResult.valid.length} extra teams generated!` })
+        }
+
+        setTimeout(() => {
+          generatedTeamsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }, 100)
+      } catch (error) {
+        console.error('[EXTRA TEAM GEN] Generation error:', error)
+        setGeneratedTeams([])
+        setValidTeams([])
+        setInvalidTeams(new Map())
+        toast({ title: 'Extra team generation failed. Please try again.', variant: 'destructive' })
+      } finally {
+        setGenerating(false)
       }
-      setInvalidTeams(newInvalidTeams)
-
-      setGenerating(false)
-
-      if (dedupResult.valid.length === 0) {
-        toast({ title: 'Could not generate valid teams with these fixed players. Try different combinations.', variant: 'destructive' })
-      } else if (dedupResult.valid.length < requestedCount) {
-        const extra: string[] = []
-        if (dedupResult.duplicateCount > 0) extra.push(`${dedupResult.duplicateCount} duplicates removed`)
-        if (dedupResult.invalidLineupCount > 0) extra.push(`${dedupResult.invalidLineupCount} invalid lineup`)
-        toast({ title: `${dedupResult.valid.length} of ${requestedCount} valid extra teams${extra.length > 0 ? ` (${extra.join(', ')})` : ''}`, variant: 'destructive' })
-      } else {
-        toast({ title: `${dedupResult.valid.length} extra teams generated!` })
-      }
-
-      setTimeout(() => {
-        generatedTeamsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      }, 100)
-    }, 800)
+    }, 100)
   }
 
   // Handle Auto Select for Extra Team Generation

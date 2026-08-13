@@ -95,8 +95,8 @@ export function getLineupMode(players: TGPlayer[]): 'before' | 'after' {
 
 /**
  * Filter players based on lineup mode.
- * BEFORE LINEUP: all players are eligible (no one confirmed OUT yet).
- * AFTER LINEUP: ONLY players with playing === 1 are eligible.
+ * BEFORE LINEUP: all players are eligible EXCEPT confirmed OUT (playing === -1).
+ * AFTER LINEUP: ONLY players with playing === 1 are eligible (Playing XI only, no bench).
  */
 export function getEligiblePlayers(
   allPlayers: TGPlayer[],
@@ -108,12 +108,16 @@ export function getEligiblePlayers(
     // Avoid players are always excluded
     if (avoidPlayerIds.has(p.pl_id)) return false;
 
+    // Confirmed OUT players are always excluded
+    if (p.playing === -1) return false;
+
     if (mode === 'after') {
-      // AFTER LINEUP: ONLY confirmed Playing XI players
+      // AFTER LINEUP: ONLY confirmed Playing XI players (playing === 1)
+      // Bench/probable players (playing === 0) are NOT included
       return p.playing === 1;
     }
 
-    // BEFORE LINEUP: all players eligible
+    // BEFORE LINEUP: all non-OUT players eligible (playing === 0 or 1)
     return true;
   });
 }
@@ -952,24 +956,33 @@ export function generateTeams(
   let ar = allPlayers.filter(p => p.role === PLAYER_ROLES.ALL_ROUNDER);
   let bowl = allPlayers.filter(p => p.role === PLAYER_ROLES.BOWLER);
 
-  // AFTER LINEUP DIAGNOSTIC: Check if we have enough eligible players
+  // AFTER LINEUP: Only use playing===1 (Playing XI) — NEVER include bench players (playing=0)
+  // Previous bug: fallback included playing!== -1 (bench players), then validation
+  // marked them INVALID → 0 valid teams. Now we return 0 teams with clear error instead.
   if (lineupMode === 'after') {
-    console.log(`[TEAM GEN] AFTER LINEUP — Eligible: ${allPlayers.length}, Left: ${eligibleLeft.length}, Right: ${eligibleRight.length}, WK: ${wk.length}, BAT: ${bat.length}, AR: ${ar.length}, BOWL: ${bowl.length}`);
+    console.log(`[TEAM GEN] AFTER LINEUP — Playing XI only: ${allPlayers.length}, Left: ${eligibleLeft.length}, Right: ${eligibleRight.length}, WK: ${wk.length}, BAT: ${bat.length}, AR: ${ar.length}, BOWL: ${bowl.length}`);
     const totalCredits = allPlayers.reduce((s, p) => s + p.credits, 0);
     console.log(`[TEAM GEN] Total eligible credits: ${totalCredits}, Avg: ${(totalCredits / allPlayers.length).toFixed(1)}`);
 
-    // If too few eligible players after lineup, fall back to including probable players
     if (allPlayers.length < 11 || eligibleLeft.length < 1 || eligibleRight.length < 1 ||
         wk.length < MIN_WK || bat.length < MIN_BAT || ar.length < MIN_AR || bowl.length < MIN_BOWL) {
-      console.warn(`[TEAM GEN] Not enough eligible players after lineup. Including probable players (playing=0) as fallback.`);
-      allPlayers = allPlayersRaw.filter(p => !avoidPlayerIds.has(p.pl_id) && p.playing !== -1);
-      eligibleLeft = allPlayers.filter(p => p.team_name === leftTeamName);
-      eligibleRight = allPlayers.filter(p => p.team_name === rightTeamName);
-      wk = allPlayers.filter(p => p.role === PLAYER_ROLES.WICKET_KEEPER);
-      bat = allPlayers.filter(p => p.role === PLAYER_ROLES.BATSMAN);
-      ar = allPlayers.filter(p => p.role === PLAYER_ROLES.ALL_ROUNDER);
-      bowl = allPlayers.filter(p => p.role === PLAYER_ROLES.BOWLER);
-      console.log(`[TEAM GEN] Fallback — Eligible: ${allPlayers.length}, Left: ${eligibleLeft.length}, Right: ${eligibleRight.length}, WK: ${wk.length}, BAT: ${bat.length}, AR: ${ar.length}, BOWL: ${bowl.length}`);
+      console.error(`[TEAM GEN] NOT ENOUGH Playing XI players! Need 11+, got ${allPlayers.length}. WK:${wk.length} BAT:${bat.length} AR:${ar.length} BOWL:${bowl.length}. Returning 0 teams — NO bench players allowed.`);
+      const insufficientDebug: GenerationDebugInfo = {
+        generationMode: 'NORMAL',
+        category,
+        combinationMode: combination ? 'MANUAL' as const : (combinationMode === 'manual' ? 'MANUAL' as const : 'AUTO' as const),
+        requestedTeams: count,
+        generatedTeams: 0,
+        duplicateRemoved: 0,
+        invalidLineupRemoved: 0,
+        validTeams: 0,
+        strategyUsed: 'INSUFFICIENT_PLAYING_XI',
+        lineupMode,
+        eligiblePlayers: allPlayers.length,
+        totalPlayers: allPlayersRaw.length,
+        seed,
+      };
+      return { teams: [], debug: insufficientDebug };
     }
   }
 
@@ -1001,7 +1014,7 @@ export function generateTeams(
     let attempts = 0;
     let team: TGPlayer[] | null = null;
 
-    while (!team && attempts < 200) {
+    while (!team && attempts < 80) {
       attempts++;
       const sr = seededRandom(seed + t * 1000 + attempts);
 
@@ -1129,8 +1142,12 @@ export function generateTeams(
       const qualityScore = scoreTeamQuality(selected, category);
       // Quality threshold: reject bottom 20% of teams
       // H2H needs highest quality, SL moderate, Mega GL allows more variety
-      const qualityThreshold = isH2H ? 80 : isSL ? 60 : 40;
-      if (qualityScore < qualityThreshold && attempts < 150) {
+      // After lineup: lower thresholds since fewer players are available
+      let qualityThreshold = isH2H ? 80 : isSL ? 60 : 40;
+      if (lineupMode === 'after') {
+        qualityThreshold = Math.floor(qualityThreshold * 0.5); // 50% of normal after lineup
+      }
+      if (qualityScore < qualityThreshold && attempts < 40) {
         // Low quality team — retry with different random seed
         continue;
       }
@@ -1196,9 +1213,10 @@ export function generateTeams(
     }
   }
 
-  // AFTER LINEUP FALLBACK: If 0 teams generated, retry with relaxed constraints
+  // AFTER LINEUP: If 0 teams generated, retry ONCE with relaxed credits
+  // BUT NEVER include bench players (playing=0) — only playing===1
   if (teams.length === 0 && lineupMode === 'after') {
-    console.warn(`[TEAM GEN] 0 teams generated after lineup! Retrying with relaxed constraints...`);
+    console.warn(`[TEAM GEN] 0 teams after lineup with strict constraints. Retrying with relaxed credits (max 110)...`);
 
     const RELAXED_MAX_CREDITS = 110;
     const relaxedScore = (p: TGPlayer) => playerScoreForGen(p, category);
@@ -1206,7 +1224,7 @@ export function generateTeams(
       let attempts = 0;
       let team: TGPlayer[] | null = null;
 
-      while (!team && attempts < 500) {
+      while (!team && attempts < 100) {
         attempts++;
         const sr = seededRandom(seed + t * 2000 + attempts + 99999);
 
@@ -1218,11 +1236,11 @@ export function generateTeams(
         arCount = combo.ar;
         bowlCount = combo.bowl;
 
-        // Use smartSelect even in relaxed fallback
-        const selectedWK = smartSelect(wk, wkCount, relaxedScore, sr, 0.60);
-        const selectedBat = smartSelect(bat, batCount, relaxedScore, sr, 0.55);
-        const selectedAR = smartSelect(ar, arCount, relaxedScore, sr, 0.60);
-        const selectedBowl = smartSelect(bowl, bowlCount, relaxedScore, sr, 0.55);
+        // Use smartSelect — ONLY playing===1 players (no bench)
+        const selectedWK = smartSelect(wk, wkCount, relaxedScore, sr, 0.55);
+        const selectedBat = smartSelect(bat, batCount, relaxedScore, sr, 0.50);
+        const selectedAR = smartSelect(ar, arCount, relaxedScore, sr, 0.55);
+        const selectedBowl = smartSelect(bowl, bowlCount, relaxedScore, sr, 0.50);
 
         if (selectedWK.length < wkCount || selectedBat.length < batCount ||
             selectedAR.length < arCount || selectedBowl.length < bowlCount) continue;
@@ -1255,9 +1273,9 @@ export function generateTeams(
     }
 
     if (teams.length > 0) {
-      console.log(`[TEAM GEN] Relaxed constraints generated ${teams.length} teams`);
+      console.log(`[TEAM GEN] Relaxed credits generated ${teams.length} teams (playing===1 only, no bench)`);
     } else {
-      console.error(`[TEAM GEN] Still 0 teams after relaxed constraints. Eligible: ${allPlayers.length}, WK: ${wk.length}, BAT: ${bat.length}, AR: ${ar.length}, BOWL: ${bowl.length}`);
+      console.error(`[TEAM GEN] Still 0 teams after relaxed credits. Playing XI: ${allPlayers.length}, WK: ${wk.length}, BAT: ${bat.length}, AR: ${ar.length}, BOWL: ${bowl.length}. Lineup may be incomplete.`);
     }
   }
 
@@ -1361,10 +1379,12 @@ export function generateExtraTeams(input: ExtraTeamGenInput): GenerationResult {
   const leftTeamName = leftPlayers[0]?.team_name || 'A';
   const rightTeamName = rightPlayers[0]?.team_name || 'B';
 
-  // AFTER LINEUP FALLBACK: If too few eligible players, include probable players
+  // AFTER LINEUP: Only use playing===1 — NEVER include bench players
+  // Previous bug: fallback included playing !== -1 (bench players), then validation
+  // marked them INVALID → 0 valid teams. Now we fail cleanly.
   if (lineupMode === 'after' && allPlayers.length < 14) {
-    console.warn(`[EXTRA TEAM GEN] Only ${allPlayers.length} eligible after lineup, including probable players as fallback.`);
-    allPlayers = allPlayersRaw.filter(p => !avoidPlayerIds.has(p.pl_id) && p.playing !== -1);
+    console.error(`[EXTRA TEAM GEN] Only ${allPlayers.length} Playing XI players after lineup. Need at least 14. Returning 0 teams — NO bench players allowed.`);
+    return { teams: [], debug: makeExtraDebug(0, category, effectiveComboMode, count, lineupMode, allPlayers.length, allPlayersRaw.length, seed, 'INSUFFICIENT_PLAYING_XI') };
   }
 
   // Pool of players excluding the 8 fixed ones (use pl_id for identity)
@@ -1486,7 +1506,7 @@ export function generateExtraTeams(input: ExtraTeamGenInput): GenerationResult {
     let teamC: TGPlayer | null = null;
     let teamVC: TGPlayer | null = null;
 
-    while (!team && attempts < 500) {
+    while (!team && attempts < 100) {
       attempts++;
       totalAttempts++;
       const sr = seededRandom(seed + t * 1000 + attempts);
