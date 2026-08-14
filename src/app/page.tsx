@@ -885,12 +885,11 @@ export default function Home() {
       const data = await res.json()
       if (data.status === 'success' && data.data) {
         setMatchDetail(data.data)
-        console.log('[TEAM GEN] Match detail refreshed — lineup may have updated')
         const allP = [...data.data.left_team_players, ...data.data.right_team_players]
         const playingCount = allP.filter((p: TGPlayer) => p.playing === 1).length
         const outCount = allP.filter((p: TGPlayer) => p.playing === -1).length
-        const mode = getLineupMode(allP)
-        console.log('[TEAM GEN] After refresh — Playing XI:', playingCount, 'OUT:', outCount, 'Lineup mode:', mode)
+        const mode = getLineupMode(allP, data.data.lineup_status ?? 0)
+        console.log('[TEAM GEN] Match detail refreshed — lineup_status:', data.data.lineup_status, 'Playing XI:', playingCount, 'OUT:', outCount, 'Lineup mode:', mode)
         return data.data
       }
     } catch (err) {
@@ -929,19 +928,20 @@ export default function Home() {
 
     const allPlayers = [...detail.left_team_players, ...detail.right_team_players]
     const avoidIds = new Set(normalAvoidPlayers.map(p => p.pl_id))
+    const lineupStatus = detail.lineup_status ?? 0
 
     // Log lineup state with fresh data
-    const lineupMode = getLineupMode(allPlayers)
+    const lineupMode = getLineupMode(allPlayers, lineupStatus)
     const playingCount = allPlayers.filter(p => p.playing === 1).length
     const outCount = allPlayers.filter(p => p.playing === -1).length
-    const eligibleCount = getEligiblePlayers(allPlayers, avoidIds).length
-    console.log('[TEAM GEN] Lineup mode:', lineupMode, 'Playing XI:', playingCount, 'OUT:', outCount, 'Eligible:', eligibleCount)
+    const eligibleCount = getEligiblePlayers(allPlayers, avoidIds, lineupStatus).length
+    console.log('[TEAM GEN] lineup_status:', lineupStatus, 'Lineup mode:', lineupMode, 'Playing XI:', playingCount, 'OUT:', outCount, 'Eligible:', eligibleCount)
 
     // Determine combination to use
     let activeCombination: RoleCombination | null = null
     if (combinationMode === 'manual') {
       // Validate manual combination
-      const eligible = getEligiblePlayers(allPlayers, avoidIds)
+      const eligible = getEligiblePlayers(allPlayers, avoidIds, lineupStatus)
       const validation = validateCombination(manualCombination, eligible, [])
       if (!validation.valid) {
         setCombinationErrors(validation.errors)
@@ -971,12 +971,13 @@ export default function Home() {
           avoidIds,
           activeCombination,
           combinationMode,
+          lineupStatus,
         )
         const rawTeams = result.teams
         const debug = result.debug
 
         // Deduplicate and validate teams against lineup
-        const dedupResult = deduplicateAndValidateTeams(rawTeams, allPlayers, avoidIds)
+        const dedupResult = deduplicateAndValidateTeams(rawTeams, allPlayers, avoidIds, lineupStatus)
 
         // Use ONLY valid teams for transfer/join — invalid teams are excluded
         setGeneratedTeams(dedupResult.valid)
@@ -993,7 +994,7 @@ export default function Home() {
         const newInvalidTeams = new Map<number, { player: TGPlayer; reason: string }[]>()
         for (let i = 0; i < dedupResult.invalid.length; i++) {
           const team = dedupResult.invalid[i]
-          const validation = validateTeamForLineup(team, allPlayers, avoidIds)
+          const validation = validateTeamForLineup(team, allPlayers, avoidIds, lineupStatus)
           if (!validation.valid) {
             newInvalidTeams.set(dedupResult.valid.length + i, validation.invalidPlayers)
           }
@@ -1002,7 +1003,7 @@ export default function Home() {
 
         if (dedupResult.valid.length === 0) {
           const allP = [...detail.left_team_players, ...detail.right_team_players]
-          const lineupMode = getLineupMode(allP)
+          const lineupMode = getLineupMode(allP, lineupStatus)
           const playingCount = allP.filter(p => p.playing === 1).length
           if (debug.strategyUsed === 'INSUFFICIENT_PLAYING_XI') {
             toast({ title: `Only ${playingCount} players in Playing XI. Need at least 11 to generate teams. Lineup may be incomplete — wait for full lineup.`, variant: 'destructive' })
@@ -1120,16 +1121,17 @@ export default function Home() {
     const requestedCount = selectedTeamCount
     const allPlayers = [...detail.left_team_players, ...detail.right_team_players]
     const avoidIds = new Set(extraAvoidPlayers.map(p => p.pl_id))
+    const lineupStatus = detail.lineup_status ?? 0
 
     // Log lineup state with fresh data
-    const lineupMode = getLineupMode(allPlayers)
+    const lineupMode = getLineupMode(allPlayers, lineupStatus)
     const playingCount = allPlayers.filter(p => p.playing === 1).length
-    console.log('[EXTRA TEAM GEN] Lineup mode:', lineupMode, 'Playing XI:', playingCount, 'Eligible:', getEligiblePlayers(allPlayers, avoidIds).length)
+    console.log('[EXTRA TEAM GEN] lineup_status:', lineupStatus, 'Lineup mode:', lineupMode, 'Playing XI:', playingCount, 'Eligible:', getEligiblePlayers(allPlayers, avoidIds, lineupStatus).length)
 
     // Determine combination to use for extra generation
     let activeCombination: RoleCombination | null = null
     if (combinationMode === 'manual') {
-      const eligible = getEligiblePlayers(allPlayers, avoidIds)
+      const eligible = getEligiblePlayers(allPlayers, avoidIds, lineupStatus)
       const validation = validateCombination(manualCombination, eligible, extraFixedPlayers)
       if (!validation.valid) {
         setCombinationErrors(validation.errors)
@@ -1158,13 +1160,14 @@ export default function Home() {
           avoidPlayerIds: avoidIds,
           combination: activeCombination,
           combinationMode,
+          lineupStatus,
         })
 
         const rawTeams = result.teams
         const debug = result.debug
 
         // Deduplicate and validate teams against lineup
-        const dedupResult = deduplicateAndValidateTeams(rawTeams, allPlayers, avoidIds)
+        const dedupResult = deduplicateAndValidateTeams(rawTeams, allPlayers, avoidIds, lineupStatus)
 
         // Use ONLY valid teams for transfer/join
         setGeneratedTeams(dedupResult.valid)
@@ -1181,7 +1184,7 @@ export default function Home() {
         const newInvalidTeams = new Map<number, { player: TGPlayer; reason: string }[]>()
         for (let i = 0; i < dedupResult.invalid.length; i++) {
           const team = dedupResult.invalid[i]
-          const validation = validateTeamForLineup(team, allPlayers, avoidIds)
+          const validation = validateTeamForLineup(team, allPlayers, avoidIds, lineupStatus)
           if (!validation.valid) {
             newInvalidTeams.set(dedupResult.valid.length + i, validation.invalidPlayers)
           }
@@ -1379,7 +1382,8 @@ export default function Home() {
     if (!matchDetail) return
 
     const allPlayers = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
-    const lineupMode = getLineupMode(allPlayers)
+    const lineupStatus = matchDetail.lineup_status ?? 0
+    const lineupMode = getLineupMode(allPlayers, lineupStatus)
 
     if (lineupMode === 'after' && genMode === 'extra') {
       // AFTER LINEUP: Revalidate FIX, C, VC selections
@@ -1387,7 +1391,7 @@ export default function Home() {
 
       // Check fixed players
       for (const fp of extraFixedPlayers) {
-        const check = isPlayerEligible(fp, allPlayers, new Set(extraAvoidPlayers.map(p => p.pl_id)))
+        const check = isPlayerEligible(fp, allPlayers, new Set(extraAvoidPlayers.map(p => p.pl_id)), lineupStatus)
         if (!check.eligible) {
           needsRevalidation = true
           break
@@ -1397,7 +1401,7 @@ export default function Home() {
       // Check captain options
       if (!needsRevalidation) {
         for (const c of extraCaptainOptions) {
-          const check = isPlayerEligible(c, allPlayers, new Set(extraAvoidPlayers.map(p => p.pl_id)))
+          const check = isPlayerEligible(c, allPlayers, new Set(extraAvoidPlayers.map(p => p.pl_id)), lineupStatus)
           if (!check.eligible) {
             needsRevalidation = true
             break
@@ -1408,7 +1412,7 @@ export default function Home() {
       // Check VC options
       if (!needsRevalidation) {
         for (const vc of extraViceCaptainOptions) {
-          const check = isPlayerEligible(vc, allPlayers, new Set(extraAvoidPlayers.map(p => p.pl_id)))
+          const check = isPlayerEligible(vc, allPlayers, new Set(extraAvoidPlayers.map(p => p.pl_id)), lineupStatus)
           if (!check.eligible) {
             needsRevalidation = true
             break
@@ -1443,13 +1447,13 @@ export default function Home() {
           ...extraAvoidPlayers.map(p => p.pl_id),
         ])
         // Re-deduplicate and validate
-        const dedupResult = deduplicateAndValidateTeams(generatedTeams, allPlayers, avoidIds)
+        const dedupResult = deduplicateAndValidateTeams(generatedTeams, allPlayers, avoidIds, lineupStatus)
         setGeneratedTeams(dedupResult.valid)
         setValidTeams(dedupResult.valid)
         const newInvalidTeams = new Map<number, { player: TGPlayer; reason: string }[]>()
         for (let i = 0; i < dedupResult.invalid.length; i++) {
           const team = dedupResult.invalid[i]
-          const validation = validateTeamForLineup(team, allPlayers, avoidIds)
+          const validation = validateTeamForLineup(team, allPlayers, avoidIds, lineupStatus)
           if (!validation.valid) {
             newInvalidTeams.set(dedupResult.valid.length + i, validation.invalidPlayers)
           }
@@ -1703,10 +1707,11 @@ export default function Home() {
         ...normalAvoidPlayers.map(p => p.pl_id),
         ...extraAvoidPlayers.map(p => p.pl_id),
       ])
+      const lineupStatus = matchDetail.lineup_status ?? 0
       const invalidTeamIndices: number[] = []
       for (let i = 0; i < teamsToProcess; i++) {
         const team = validTeams[i]
-        const validation = validateTeamForLineup(team, allPlayers, avoidIds)
+        const validation = validateTeamForLineup(team, allPlayers, avoidIds, lineupStatus)
         if (!validation.valid) {
           invalidTeamIndices.push(i)
         }
@@ -2544,7 +2549,8 @@ export default function Home() {
                 {matchDetail ? (
                   (() => {
                     const allPlayers = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
-                    const lineupMode = getLineupMode(allPlayers)
+                    const lineupStatus = matchDetail.lineup_status ?? 0
+                    const lineupMode = getLineupMode(allPlayers, lineupStatus)
                     const isAfterLineup = lineupMode === 'after'
                     const playingCount = allPlayers.filter(p => p.playing === 1).length
                     const totalCount = allPlayers.length
@@ -2926,7 +2932,7 @@ export default function Home() {
                                 }}
                                 className={`relative rounded-lg border-2 p-1.5 text-left transition-all min-h-[56px] ${
                                   player
-                                    ? (matchDetail && !isPlayerEligible(player, [...matchDetail.left_team_players, ...matchDetail.right_team_players], new Set(extraAvoidPlayers.map(p => p.pl_id))).eligible)
+                                    ? (matchDetail && !isPlayerEligible(player, [...matchDetail.left_team_players, ...matchDetail.right_team_players], new Set(extraAvoidPlayers.map(p => p.pl_id)), matchDetail.lineup_status ?? 0).eligible)
                                       ? 'border-red-500 bg-red-50'
                                       : 'border-[#6C63FF] bg-[#6C63FF]/5'
                                     : 'border-dashed border-gray-300 bg-white hover:border-[#6C63FF]/40'
@@ -2937,7 +2943,7 @@ export default function Home() {
                                     <img src={player.image} alt={player.name} className="w-5 h-5 rounded-full object-cover bg-gray-100 flex-shrink-0" />
                                     <div className="min-w-0">
                                       <p className="text-[9px] font-semibold truncate leading-tight">{player.name}</p>
-                                      {matchDetail && !isPlayerEligible(player, [...matchDetail.left_team_players, ...matchDetail.right_team_players], new Set(extraAvoidPlayers.map(p => p.pl_id))).eligible ? (
+                                      {matchDetail && !isPlayerEligible(player, [...matchDetail.left_team_players, ...matchDetail.right_team_players], new Set(extraAvoidPlayers.map(p => p.pl_id)), matchDetail.lineup_status ?? 0).eligible ? (
                                         <p className="text-[7px] font-bold text-red-500 leading-tight">OUT</p>
                                       ) : (
                                         <p className={`text-[8px] px-0.5 rounded leading-tight ${roleColor(player.role)}`}>{getRoleShort(player.role)}</p>
@@ -3227,8 +3233,8 @@ export default function Home() {
                         {matchDetail && (
                           <div className="flex items-center justify-between">
                             <span className="text-gray-600">Lineup</span>
-                            <span className={getLineupMode([...matchDetail.left_team_players, ...matchDetail.right_team_players]) === 'after' ? 'text-green-600 font-semibold' : 'text-amber-600 font-semibold'}>
-                              {getLineupMode([...matchDetail.left_team_players, ...matchDetail.right_team_players]) === 'after' ? 'AFTER LINEUP' : 'BEFORE LINEUP'}
+                            <span className={getLineupMode([...matchDetail.left_team_players, ...matchDetail.right_team_players], matchDetail.lineup_status ?? 0) === 'after' ? 'text-green-600 font-semibold' : 'text-amber-600 font-semibold'}>
+                              {getLineupMode([...matchDetail.left_team_players, ...matchDetail.right_team_players], matchDetail.lineup_status ?? 0) === 'after' ? 'AFTER LINEUP' : 'BEFORE LINEUP'}
                             </span>
                           </div>
                         )}
@@ -4081,7 +4087,7 @@ export default function Home() {
                             : false
                     // Lineup eligibility check
                     const allPlayers = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
-                    const eligibility = isPlayerEligible(player, allPlayers, new Set(extraAvoidPlayers.map(p => p.pl_id)))
+                    const eligibility = isPlayerEligible(player, allPlayers, new Set(extraAvoidPlayers.map(p => p.pl_id)), matchDetail.lineup_status ?? 0)
                     const isIneligible = !eligibility.eligible
                     const isDisabled = isUsed || isIneligible
 
@@ -4176,7 +4182,7 @@ export default function Home() {
                             : false
                     // Lineup eligibility check
                     const allPlayers = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
-                    const eligibility = isPlayerEligible(player, allPlayers, new Set(extraAvoidPlayers.map(p => p.pl_id)))
+                    const eligibility = isPlayerEligible(player, allPlayers, new Set(extraAvoidPlayers.map(p => p.pl_id)), matchDetail.lineup_status ?? 0)
                     const isIneligible = !eligibility.eligible
                     const isDisabled = isUsed || isIneligible
 

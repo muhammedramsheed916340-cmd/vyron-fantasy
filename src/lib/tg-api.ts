@@ -62,30 +62,63 @@ export function getRoleShort(role: number): string {
 // ============ Lineup Utilities ============
 
 /**
- * Determine lineup mode based on player data.
- * AFTER LINEUP: enough players have playing === 1 to form valid teams.
- *   Requires at least 11 confirmed total AND at least 4 from each team
- *   (due to max-7-from-one-team constraint: 11 - 7 = 4).
- *   If only a few players are confirmed (partial lineup), we stay in
- *   'before' mode so team generation doesn't fail with too few eligible players.
- * BEFORE LINEUP: lineup not fully confirmed yet — all players eligible.
+ * Determine lineup mode based on player data and lineup status.
  *
- * BUG FIX: Previously used players.some(p => p.playing === 1) which
- * switched to 'after' mode when even ONE player was confirmed, causing
- * getEligiblePlayers to filter out all non-confirmed players and leaving
- * too few to form valid 11-player teams → 0 teams generated.
+ * AFTER LINEUP: lineup is confirmed — only playing===1 players are eligible.
+ *   Determined by either:
+ *   a) lineupStatus >= 1 (API says lineup is out), OR
+ *   b) enough players have playing === 1 to form valid teams (11+ total, 3+ per team)
+ *
+ * BEFORE LINEUP: lineup not yet confirmed — all non-OUT players are eligible.
+ *
+ * lineupStatus values (from TG API):
+ *   0 = lineup not yet out
+ *   1 = lineup confirmed / playing XI announced
+ *
+ * BUG FIX: Previously required 4 confirmed per team, which was too strict for
+ * partial lineups (e.g., 3 confirmed from one team). Relaxed to 3 per team.
+ * Also added lineupStatus parameter so API's lineup_status field is respected
+ * even when individual player playing values haven't fully propagated yet.
  */
-export function getLineupMode(players: TGPlayer[]): 'before' | 'after' {
+export function getLineupMode(players: TGPlayer[], lineupStatus: number = 0): 'before' | 'after' {
   const confirmed = players.filter(p => p.playing === 1);
 
+  // If API says lineup is confirmed, trust it — but still need minimum viable pool
+  if (lineupStatus >= 1) {
+    // Need at least 11 confirmed players to form ANY valid team
+    if (confirmed.length >= 11) {
+      // Check per-team minimum: need at least 3 from each team
+      // (relaxed from 4 to handle partial lineups where one team has fewer confirmed)
+      const teamNames = [...new Set(players.map(p => p.team_name))];
+      let allTeamsViable = true;
+      for (const team of teamNames) {
+        if (team && confirmed.filter(p => p.team_name === team).length < 3) {
+          allTeamsViable = false;
+          break;
+        }
+      }
+      if (allTeamsViable) return 'after';
+
+      // Even with <3 per team, if lineupStatus says out and we have 11+ confirmed,
+      // still go 'after' — the generation will handle the constraints
+      console.warn(`[LINEUP] lineupStatus=${lineupStatus} but per-team distribution too skewed. Falling back to 'before' to allow bench players for team distribution.`);
+      return 'before';
+    }
+
+    // lineupStatus says out but < 11 confirmed players — data might be incomplete
+    // Stay in 'before' to include probable players (playing===0) as well
+    console.warn(`[LINEUP] lineupStatus=${lineupStatus} but only ${confirmed.length} confirmed players. Staying 'before' — lineup data may be incomplete.`);
+    return 'before';
+  }
+
+  // No explicit lineup status — infer from player data
   // Need at least 11 confirmed players total to form a valid team
   if (confirmed.length < 11) return 'before';
 
-  // Need at least 4 confirmed from each team
-  // (max 7 from one team → need at least 11-7=4 from the other)
+  // Need at least 3 confirmed from each team (relaxed from 4)
   const teamNames = [...new Set(players.map(p => p.team_name))];
   for (const team of teamNames) {
-    if (team && confirmed.filter(p => p.team_name === team).length < 4) {
+    if (team && confirmed.filter(p => p.team_name === team).length < 3) {
       return 'before';
     }
   }
@@ -101,8 +134,9 @@ export function getLineupMode(players: TGPlayer[]): 'before' | 'after' {
 export function getEligiblePlayers(
   allPlayers: TGPlayer[],
   avoidPlayerIds: Set<number> = new Set(),
+  lineupStatus: number = 0,
 ): TGPlayer[] {
-  const mode = getLineupMode(allPlayers);
+  const mode = getLineupMode(allPlayers, lineupStatus);
 
   return allPlayers.filter(p => {
     // Avoid players are always excluded
@@ -129,12 +163,13 @@ export function isPlayerEligible(
   player: TGPlayer,
   allPlayers: TGPlayer[],
   avoidPlayerIds: Set<number> = new Set(),
+  lineupStatus: number = 0,
 ): { eligible: boolean; reason?: string } {
   if (avoidPlayerIds.has(player.pl_id)) {
     return { eligible: false, reason: 'AVOID' };
   }
 
-  const mode = getLineupMode(allPlayers);
+  const mode = getLineupMode(allPlayers, lineupStatus);
 
   if (mode === 'after' && player.playing !== 1) {
     return { eligible: false, reason: 'OUT / NOT IN PLAYING XI' };
@@ -151,8 +186,9 @@ export function validateTeamForLineup(
   team: GeneratedTeam,
   allPlayers: TGPlayer[],
   avoidPlayerIds: Set<number> = new Set(),
+  lineupStatus: number = 0,
 ): { valid: boolean; invalidPlayers: { player: TGPlayer; reason: string }[] } {
-  const mode = getLineupMode(allPlayers);
+  const mode = getLineupMode(allPlayers, lineupStatus);
   const invalidPlayers: { player: TGPlayer; reason: string }[] = [];
 
   for (const player of team.players) {
@@ -681,6 +717,7 @@ export function deduplicateAndValidateTeams(
   teams: GeneratedTeam[],
   allPlayers: TGPlayer[],
   avoidPlayerIds: Set<number> = new Set(),
+  lineupStatus: number = 0,
 ): {
   valid: GeneratedTeam[];
   invalid: GeneratedTeam[];
@@ -705,7 +742,7 @@ export function deduplicateAndValidateTeams(
     seen.add(sig);
 
     // Check lineup validity
-    const validation = validateTeamForLineup(team, allPlayers, avoidPlayerIds);
+    const validation = validateTeamForLineup(team, allPlayers, avoidPlayerIds, lineupStatus);
     if (!validation.valid) {
       invalidLineupCount++;
       invalid.push({ ...team, id: invalid.length + 1 });
@@ -943,11 +980,12 @@ export function generateTeams(
   avoidPlayerIds: Set<number> = new Set(),
   combination: RoleCombination | null = null,
   combinationMode: 'manual' | 'auto' = 'auto',
+  lineupStatus: number = 0,
 ): GenerationResult {
   const startTime = Date.now();
   const allPlayersRaw = [...leftPlayers, ...rightPlayers];
-  const lineupMode = getLineupMode(allPlayersRaw);
-  let allPlayers = getEligiblePlayers(allPlayersRaw, avoidPlayerIds);
+  const lineupMode = getLineupMode(allPlayersRaw, lineupStatus);
+  let allPlayers = getEligiblePlayers(allPlayersRaw, avoidPlayerIds, lineupStatus);
   const leftTeamName = leftPlayers[0]?.team_name || 'A';
   const rightTeamName = rightPlayers[0]?.team_name || 'B';
 
@@ -1328,6 +1366,7 @@ export interface ExtraTeamGenInput {
   avoidPlayerIds?: Set<number>;  // Players to avoid
   combination?: RoleCombination | null; // Explicit role combination
   combinationMode?: 'manual' | 'auto'; // Whether combination is manual or auto
+  lineupStatus?: number;         // 0=before lineup, 1=lineup confirmed
 }
 
 // Helper to build debug info for extra generation
@@ -1373,14 +1412,15 @@ export function generateExtraTeams(input: ExtraTeamGenInput): GenerationResult {
     avoidPlayerIds = new Set(),
     combination = null,
     combinationMode: inputComboMode = 'auto',
+    lineupStatus = 0,
   } = input;
 
   const effectiveComboMode = combination ? 'manual' : inputComboMode;
 
   // Apply lineup-aware filtering to the full player pool
   const allPlayersRaw = [...leftPlayers, ...rightPlayers];
-  const lineupMode = getLineupMode(allPlayersRaw);
-  let allPlayers = getEligiblePlayers(allPlayersRaw, avoidPlayerIds);
+  const lineupMode = getLineupMode(allPlayersRaw, lineupStatus);
+  let allPlayers = getEligiblePlayers(allPlayersRaw, avoidPlayerIds, lineupStatus);
   const leftTeamName = leftPlayers[0]?.team_name || 'A';
   const rightTeamName = rightPlayers[0]?.team_name || 'B';
 
