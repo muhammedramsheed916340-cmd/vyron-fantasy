@@ -674,6 +674,27 @@ export default function Home() {
   const [userLicense, setUserLicense] = useState<{ valid: boolean; license?: { key: string; type: string; status: string; expiresAt: string | null; assignedTo: string | null } } | null>(null)
 
   const generatedTeamsRef = useRef<HTMLDivElement>(null)
+
+  // ============ REFS FOR STALE STATE PROTECTION ============
+  // These refs always hold the latest value, even inside async callbacks / setTimeout closures.
+  // This prevents stale closure bugs where async code reads outdated React state.
+  const matchDetailRef = useRef<MatchDetail | null>(null)
+  const selectedCategoryRef = useRef<string | null>(null)
+  const selectedTeamCountRef = useRef<number>(20)
+  const selectedMatchRef = useRef<Match | null>(null)
+  const normalAvoidPlayersRef = useRef<TGPlayer[]>([])
+  const combinationModeRef = useRef<CombinationMode>('auto')
+  const manualCombinationRef = useRef<RoleCombination>({ wk: 1, bat: 4, ar: 2, bowl: 4 })
+
+  // Keep refs in sync with state (runs every render, O(1) — negligible cost)
+  matchDetailRef.current = matchDetail
+  selectedCategoryRef.current = selectedCategory
+  selectedTeamCountRef.current = selectedTeamCount
+  selectedMatchRef.current = selectedMatch
+  normalAvoidPlayersRef.current = normalAvoidPlayers
+  combinationModeRef.current = combinationMode
+  manualCombinationRef.current = manualCombination
+
   const { toast } = useToast()
 
   // Invalidate generated teams when generation context changes
@@ -849,6 +870,7 @@ export default function Home() {
     setGeneratedTeams([])
     setShowPlayerList(false)
     setMatchDetail(null)
+    matchDetailRef.current = null  // Keep ref in sync immediately
     setMatchDetailLoading(true)
     setGenMode('normal')
     setExtraSubMode('manual')
@@ -863,6 +885,7 @@ export default function Home() {
       const data = await res.json()
       if (data.status === 'success') {
         setMatchDetail(data.data)
+        matchDetailRef.current = data.data  // Keep ref in sync immediately
       } else {
         toast({ title: 'Failed to load match details', variant: 'destructive' })
       }
@@ -878,24 +901,39 @@ export default function Home() {
   // This is critical for after-lineup team generation: the matchDetail loaded when
   // the dialog opened may be stale (players still have playing===0). Before generating
   // teams, we MUST refresh to get the latest playing field values.
+  //
+  // STALE STATE FIX: Uses selectedMatchRef.current instead of the selectedMatch
+  // closure value, and returns matchDetailRef.current (not the stale matchDetail)
+  // on fallback. This ensures we always use the latest values even inside async code.
   const refreshMatchDetail = async (): Promise<MatchDetail | null> => {
-    if (!selectedMatch) return null
+    const currentMatch = selectedMatchRef.current
+    if (!currentMatch) {
+      console.warn('[TEAM GEN] refreshMatchDetail: no selectedMatch — cannot refresh')
+      return null
+    }
     try {
-      const res = await fetch(`/api/match-detail?matchId=${selectedMatch.id}&_t=${Date.now()}`)
+      console.log('[TEAM GEN] Refreshing match detail for matchId:', currentMatch.id)
+      const res = await fetch(`/api/match-detail?matchId=${currentMatch.id}&_t=${Date.now()}`)
       const data = await res.json()
       if (data.status === 'success' && data.data) {
         setMatchDetail(data.data)
+        // Also update the ref immediately (don't wait for re-render)
+        matchDetailRef.current = data.data
         const allP = [...data.data.left_team_players, ...data.data.right_team_players]
         const playingCount = allP.filter((p: TGPlayer) => p.playing === 1).length
         const outCount = allP.filter((p: TGPlayer) => p.playing === -1).length
         const mode = getLineupMode(allP, data.data.lineup_status ?? 0)
         console.log('[TEAM GEN] Match detail refreshed — lineup_status:', data.data.lineup_status, 'Playing XI:', playingCount, 'OUT:', outCount, 'Lineup mode:', mode)
         return data.data
+      } else {
+        console.error('[TEAM GEN] refreshMatchDetail: API returned non-success:', data.status, data.message)
       }
     } catch (err) {
       console.error('[TEAM GEN] Failed to refresh match detail:', err)
     }
-    return matchDetail // fallback to current
+    // Fallback: use the LATEST matchDetail from ref (not the stale closure value)
+    console.warn('[TEAM GEN] refreshMatchDetail: using fallback from ref, lineup_status:', matchDetailRef.current?.lineup_status)
+    return matchDetailRef.current
   }
 
   // Handle team generation
@@ -903,8 +941,24 @@ export default function Home() {
   // lineup/Playing XI data. The matchDetail from when the dialog opened may be stale.
   // Without this, after-lineup generation uses old playing===0 values and produces
   // invalid teams or 0 teams.
+  //
+  // STALE STATE FIX (v2): Uses refs for all state reads inside the generation path
+  // to prevent stale closure bugs. The setTimeout is removed — generation runs
+  // directly after the async refresh, with all data captured as local variables.
   const handleGenerateTeams = async () => {
-    if (!matchDetail || !selectedCategory) return
+    // Guard: use refs to get latest values (not stale closure)
+    const currentMatchDetail = matchDetailRef.current
+    const currentCategory = selectedCategoryRef.current
+    const currentTeamCount = selectedTeamCountRef.current
+    const currentAvoidPlayers = normalAvoidPlayersRef.current
+    const currentCombinationMode = combinationModeRef.current
+    const currentManualCombination = manualCombinationRef.current
+
+    if (!currentMatchDetail || !currentCategory) {
+      console.error('[TEAM GEN] Guard check failed — matchDetail:', !!currentMatchDetail, 'selectedCategory:', currentCategory)
+      toast({ title: 'Match data not loaded. Please close and reopen the match.', variant: 'destructive' })
+      return
+    }
 
     setGenerating(true)
     setGeneratedTeams([])
@@ -912,135 +966,161 @@ export default function Home() {
     setValidTeams([])
     setGenerationDebug(null)
 
-    // === REFRESH MATCH DETAIL TO GET LATEST LINEUP DATA ===
-    // This is the key fix: before generating, re-fetch the match detail
-    // so we have the latest Playing XI / lineup data.
-    console.log('[TEAM GEN] === PRE-GENERATION LINEUP REFRESH ===')
-    const freshDetail = await refreshMatchDetail()
-    if (!freshDetail) {
-      console.error('[TEAM GEN] Failed to refresh match detail — using current data')
-    }
-    const detail = freshDetail || matchDetail
-    if (!detail) {
-      setGenerating(false)
-      return
-    }
-
-    const allPlayers = [...detail.left_team_players, ...detail.right_team_players]
-    const avoidIds = new Set(normalAvoidPlayers.map(p => p.pl_id))
-    const lineupStatus = detail.lineup_status ?? 0
-
-    // Log lineup state with fresh data
-    const lineupMode = getLineupMode(allPlayers, lineupStatus)
-    const playingCount = allPlayers.filter(p => p.playing === 1).length
-    const outCount = allPlayers.filter(p => p.playing === -1).length
-    const eligibleCount = getEligiblePlayers(allPlayers, avoidIds, lineupStatus).length
-    console.log('[TEAM GEN] lineup_status:', lineupStatus, 'Lineup mode:', lineupMode, 'Playing XI:', playingCount, 'OUT:', outCount, 'Eligible:', eligibleCount)
-
-    // Determine combination to use
-    let activeCombination: RoleCombination | null = null
-    if (combinationMode === 'manual') {
-      // Validate manual combination
-      const eligible = getEligiblePlayers(allPlayers, avoidIds, lineupStatus)
-      const validation = validateCombination(manualCombination, eligible, [])
-      if (!validation.valid) {
-        setCombinationErrors(validation.errors)
-        toast({ title: `Invalid combination: ${validation.errors[0]}`, variant: 'destructive' })
+    try {
+      // === REFRESH MATCH DETAIL TO GET LATEST LINEUP DATA ===
+      // This is the key fix: before generating, re-fetch the match detail
+      // so we have the latest Playing XI / lineup data.
+      console.log('[TEAM GEN] === PRE-GENERATION LINEUP REFRESH ===')
+      const freshDetail = await refreshMatchDetail()
+      if (!freshDetail) {
+        console.error('[TEAM GEN] Failed to refresh match detail — using current ref data')
+      }
+      // Use fresh data if available, otherwise fall back to ref (latest state)
+      const detail = freshDetail || matchDetailRef.current
+      if (!detail) {
+        console.error('[TEAM GEN] No match detail available after refresh — aborting')
+        toast({ title: 'Could not load match data. Please try again.', variant: 'destructive' })
         setGenerating(false)
         return
       }
-      setCombinationErrors([])
-      activeCombination = manualCombination
-    } else {
-      // Auto combination - will be determined per-team inside generateTeams via rotation
-      activeCombination = null
-    }
 
-    // Use a unique seed that differs from Extra generation
-    const normalSeed = Date.now() + 1
+      // Capture ALL data as local variables from the fresh detail
+      // (NOT from React state which could be stale)
+      const freshLeftPlayers = detail.left_team_players
+      const freshRightPlayers = detail.right_team_players
+      const allPlayers = [...freshLeftPlayers, ...freshRightPlayers]
+      const avoidIds = new Set(currentAvoidPlayers.map(p => p.pl_id))
+      const lineupStatus = detail.lineup_status ?? 0
 
-    // Use setTimeout to show loading state and prevent UI freeze
-    setTimeout(() => {
-      try {
-        const result = generateTeams(
-          detail.left_team_players,
-          detail.right_team_players,
-          selectedCategory,
-          selectedTeamCount,
-          normalSeed,
-          avoidIds,
-          activeCombination,
-          combinationMode,
-          lineupStatus,
-        )
-        const rawTeams = result.teams
-        const debug = result.debug
+      // Re-read latest category/teamCount from refs (may have changed during await)
+      const category = selectedCategoryRef.current || currentCategory
+      const teamCount = selectedTeamCountRef.current
+      const combMode = combinationModeRef.current
+      const manualComb = manualCombinationRef.current
 
-        // Deduplicate and validate teams against lineup
-        const dedupResult = deduplicateAndValidateTeams(rawTeams, allPlayers, avoidIds, lineupStatus)
+      // Log lineup state with fresh data
+      const lineupMode = getLineupMode(allPlayers, lineupStatus)
+      const playingCount = allPlayers.filter(p => p.playing === 1).length
+      const outCount = allPlayers.filter(p => p.playing === -1).length
+      const eligibleCount = getEligiblePlayers(allPlayers, avoidIds, lineupStatus).length
+      console.log('[TEAM GEN] Fresh data — lineup_status:', lineupStatus, 'Lineup mode:', lineupMode, 'Playing XI:', playingCount, 'OUT:', outCount, 'Eligible:', eligibleCount, 'Category:', category, 'TeamCount:', teamCount)
 
-        // Use ONLY valid teams for transfer/join — invalid teams are excluded
-        setGeneratedTeams(dedupResult.valid)
-        setValidTeams(dedupResult.valid)
-        setGenerationDebug({
-          ...debug,
-          generatedTeams: rawTeams.length,
-          duplicateRemoved: dedupResult.duplicateCount,
-          invalidLineupRemoved: dedupResult.invalidLineupCount,
-          validTeams: dedupResult.valid.length,
-        })
-
-        // Build invalid teams map for display
-        const newInvalidTeams = new Map<number, { player: TGPlayer; reason: string }[]>()
-        for (let i = 0; i < dedupResult.invalid.length; i++) {
-          const team = dedupResult.invalid[i]
-          const validation = validateTeamForLineup(team, allPlayers, avoidIds, lineupStatus)
-          if (!validation.valid) {
-            newInvalidTeams.set(dedupResult.valid.length + i, validation.invalidPlayers)
-          }
+      // Determine combination to use
+      let activeCombination: RoleCombination | null = null
+      if (combMode === 'manual') {
+        // Validate manual combination
+        const eligible = getEligiblePlayers(allPlayers, avoidIds, lineupStatus)
+        const validation = validateCombination(manualComb, eligible, [])
+        if (!validation.valid) {
+          setCombinationErrors(validation.errors)
+          toast({ title: `Invalid combination: ${validation.errors[0]}`, variant: 'destructive' })
+          setGenerating(false)
+          return
         }
-        setInvalidTeams(newInvalidTeams)
-
-        if (dedupResult.valid.length === 0) {
-          const allP = [...detail.left_team_players, ...detail.right_team_players]
-          const lineupMode = getLineupMode(allP, lineupStatus)
-          const playingCount = allP.filter(p => p.playing === 1).length
-          if (debug.strategyUsed === 'INSUFFICIENT_PLAYING_XI') {
-            toast({ title: `Only ${playingCount} players in Playing XI. Need at least 11 to generate teams. Lineup may be incomplete — wait for full lineup.`, variant: 'destructive' })
-          } else if (lineupMode === 'after' || playingCount > 0) {
-            toast({ title: `0 valid teams. Playing XI has ${playingCount} confirmed players. Try different combination or remove avoid players.`, variant: 'destructive' })
-          } else {
-            toast({ title: '0 valid teams generated. Not enough valid player combinations. Try different category or combination.', variant: 'destructive' })
-          }
-        } else if (dedupResult.invalidLineupCount > 0 || dedupResult.duplicateCount > 0) {
-          const msgs: string[] = []
-          if (dedupResult.duplicateCount > 0) msgs.push(`${dedupResult.duplicateCount} duplicates removed`)
-          if (dedupResult.invalidLineupCount > 0) msgs.push(`${dedupResult.invalidLineupCount} invalid after lineup check`)
-          toast({ title: `${dedupResult.valid.length} valid teams (${msgs.join(', ')})` })
-        } else {
-          toast({ title: `${dedupResult.valid.length} teams generated successfully!` })
-        }
-
-        // Scroll to teams
-        setTimeout(() => {
-          generatedTeamsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-        }, 100)
-      } catch (error) {
-        console.error('[TEAM GEN] Generation error:', error)
-        setGeneratedTeams([])
-        setValidTeams([])
-        setInvalidTeams(new Map())
-        toast({ title: 'Team generation failed. Please try again.', variant: 'destructive' })
-      } finally {
-        setGenerating(false)
+        setCombinationErrors([])
+        activeCombination = manualComb
+      } else {
+        // Auto combination - will be determined per-team inside generateTeams via rotation
+        activeCombination = null
       }
-    }, 100)
+
+      // Use a unique seed that differs from Extra generation
+      const normalSeed = Date.now() + 1
+
+      // === RUN GENERATION DIRECTLY (no setTimeout) ===
+      // The setTimeout was a source of stale closure bugs. Since we've already
+      // captured all needed data as local variables, we can run directly.
+      // The loading spinner is already showing (setGenerating(true) above).
+      console.log('[TEAM GEN] Starting generation with', allPlayers.length, 'total players,', eligibleCount, 'eligible')
+
+      const result = generateTeams(
+        freshLeftPlayers,
+        freshRightPlayers,
+        category,
+        teamCount,
+        normalSeed,
+        avoidIds,
+        activeCombination,
+        combMode,
+        lineupStatus,
+      )
+      const rawTeams = result.teams
+      const debug = result.debug
+
+      console.log('[TEAM GEN] Generation complete — raw teams:', rawTeams.length, 'strategy:', debug.strategyUsed, 'lineupMode:', debug.lineupMode)
+
+      // Deduplicate and validate teams against lineup
+      const dedupResult = deduplicateAndValidateTeams(rawTeams, allPlayers, avoidIds, lineupStatus)
+
+      // Use ONLY valid teams for transfer/join — invalid teams are excluded
+      setGeneratedTeams(dedupResult.valid)
+      setValidTeams(dedupResult.valid)
+      setGenerationDebug({
+        ...debug,
+        generatedTeams: rawTeams.length,
+        duplicateRemoved: dedupResult.duplicateCount,
+        invalidLineupRemoved: dedupResult.invalidLineupCount,
+        validTeams: dedupResult.valid.length,
+      })
+
+      // Build invalid teams map for display
+      const newInvalidTeams = new Map<number, { player: TGPlayer; reason: string }[]>()
+      for (let i = 0; i < dedupResult.invalid.length; i++) {
+        const team = dedupResult.invalid[i]
+        const validation = validateTeamForLineup(team, allPlayers, avoidIds, lineupStatus)
+        if (!validation.valid) {
+          newInvalidTeams.set(dedupResult.valid.length + i, validation.invalidPlayers)
+        }
+      }
+      setInvalidTeams(newInvalidTeams)
+
+      if (dedupResult.valid.length === 0) {
+        const allP = [...freshLeftPlayers, ...freshRightPlayers]
+        const lm = getLineupMode(allP, lineupStatus)
+        const pc = allP.filter(p => p.playing === 1).length
+        if (debug.strategyUsed === 'INSUFFICIENT_PLAYING_XI') {
+          toast({ title: `Only ${pc} players in Playing XI. Need at least 11 to generate teams. Lineup may be incomplete — wait for full lineup.`, variant: 'destructive' })
+        } else if (lm === 'after' || pc > 0) {
+          toast({ title: `0 valid teams. Playing XI has ${pc} confirmed players. Try different combination or remove avoid players.`, variant: 'destructive' })
+        } else {
+          toast({ title: '0 valid teams generated. Not enough valid player combinations. Try different category or combination.', variant: 'destructive' })
+        }
+      } else if (dedupResult.invalidLineupCount > 0 || dedupResult.duplicateCount > 0) {
+        const msgs: string[] = []
+        if (dedupResult.duplicateCount > 0) msgs.push(`${dedupResult.duplicateCount} duplicates removed`)
+        if (dedupResult.invalidLineupCount > 0) msgs.push(`${dedupResult.invalidLineupCount} invalid after lineup check`)
+        toast({ title: `${dedupResult.valid.length} valid teams (${msgs.join(', ')})` })
+      } else {
+        toast({ title: `${dedupResult.valid.length} teams generated successfully!` })
+      }
+
+      // Scroll to teams
+      setTimeout(() => {
+        generatedTeamsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }, 100)
+    } catch (error) {
+      console.error('[TEAM GEN] Generation error:', error)
+      setGeneratedTeams([])
+      setValidTeams([])
+      setInvalidTeams(new Map())
+      toast({ title: 'Team generation failed. Please try again.', variant: 'destructive' })
+    } finally {
+      setGenerating(false)
+    }
   }
 
   // Handle Extra Team Generation
-  // Same fix: refresh matchDetail before generating to get latest lineup data.
+  // Same stale state fix: uses refs, no setTimeout, refresh before generate.
   const handleGenerateExtraTeams = async () => {
-    if (!matchDetail || !selectedCategory) return
+    // Guard: use refs to get latest values
+    const currentMatchDetail = matchDetailRef.current
+    const currentCategory = selectedCategoryRef.current
+
+    if (!currentMatchDetail || !currentCategory) {
+      console.error('[EXTRA TEAM GEN] Guard check failed — matchDetail:', !!currentMatchDetail, 'selectedCategory:', currentCategory)
+      toast({ title: 'Match data not loaded. Please close and reopen the match.', variant: 'destructive' })
+      return
+    }
 
     // Validation: exactly 8 fixed players
     if (extraFixedPlayers.length !== 8) {
@@ -1073,164 +1153,176 @@ export default function Home() {
     setValidTeams([])
     setGenerationDebug(null)
 
-    // === REFRESH MATCH DETAIL TO GET LATEST LINEUP DATA ===
-    console.log('[EXTRA TEAM GEN] === PRE-GENERATION LINEUP REFRESH ===')
-    const freshDetail = await refreshMatchDetail()
-    if (!freshDetail) {
-      console.error('[EXTRA TEAM GEN] Failed to refresh match detail — using current data')
-    }
-    const detail = freshDetail || matchDetail
-    if (!detail) {
-      setGenerating(false)
-      return
-    }
-
-    // Validate team distribution of fixed players (using fresh detail)
-    const leftTeamName = detail.left_team_name
-    const rightTeamName = detail.right_team_name
-    const fixedLeft = extraFixedPlayers.filter(p => p.team_name === leftTeamName).length
-    const fixedRight = extraFixedPlayers.filter(p => p.team_name === rightTeamName).length
-    if (fixedLeft > 7 || fixedRight > 7) {
-      toast({ title: 'Fixed players exceed max 7 from one team', variant: 'destructive' })
-      setGenerating(false)
-      return
-    }
-    if (fixedLeft === 0 || fixedRight === 0) {
-      toast({ title: 'Fixed players must include at least 1 from each team', variant: 'destructive' })
-      setGenerating(false)
-      return
-    }
-
-    // Validate at least one C/VC combo has both players in fixed+pool
-    const allPlayerIds = new Set([
-      ...detail.left_team_players.map(p => p.pl_id),
-      ...detail.right_team_players.map(p => p.pl_id),
-    ])
-    const hasValidCombo = extraCaptainOptions.some(c =>
-      allPlayerIds.has(c.pl_id) && extraViceCaptainOptions.some(vc =>
-        vc.pl_id !== c.pl_id && allPlayerIds.has(vc.pl_id)
-      )
-    )
-    if (!hasValidCombo) {
-      toast({ title: 'No valid Captain/Vice Captain combination found', variant: 'destructive' })
-      setGenerating(false)
-      return
-    }
-
-    // Capture the requested count for validation after generation
-    const requestedCount = selectedTeamCount
-    const allPlayers = [...detail.left_team_players, ...detail.right_team_players]
-    const avoidIds = new Set(extraAvoidPlayers.map(p => p.pl_id))
-    const lineupStatus = detail.lineup_status ?? 0
-
-    // Log lineup state with fresh data
-    const lineupMode = getLineupMode(allPlayers, lineupStatus)
-    const playingCount = allPlayers.filter(p => p.playing === 1).length
-    console.log('[EXTRA TEAM GEN] lineup_status:', lineupStatus, 'Lineup mode:', lineupMode, 'Playing XI:', playingCount, 'Eligible:', getEligiblePlayers(allPlayers, avoidIds, lineupStatus).length)
-
-    // Determine combination to use for extra generation
-    let activeCombination: RoleCombination | null = null
-    if (combinationMode === 'manual') {
-      const eligible = getEligiblePlayers(allPlayers, avoidIds, lineupStatus)
-      const validation = validateCombination(manualCombination, eligible, extraFixedPlayers)
-      if (!validation.valid) {
-        setCombinationErrors(validation.errors)
-        toast({ title: `Invalid combination: ${validation.errors[0]}`, variant: 'destructive' })
+    try {
+      // === REFRESH MATCH DETAIL TO GET LATEST LINEUP DATA ===
+      console.log('[EXTRA TEAM GEN] === PRE-GENERATION LINEUP REFRESH ===')
+      const freshDetail = await refreshMatchDetail()
+      if (!freshDetail) {
+        console.error('[EXTRA TEAM GEN] Failed to refresh match detail — using current ref data')
+      }
+      const detail = freshDetail || matchDetailRef.current
+      if (!detail) {
+        console.error('[EXTRA TEAM GEN] No match detail available after refresh — aborting')
+        toast({ title: 'Could not load match data. Please try again.', variant: 'destructive' })
         setGenerating(false)
         return
       }
-      setCombinationErrors([])
-      activeCombination = manualCombination
-    }
 
-    // Extra generation uses a different seed from Normal to ensure different teams
-    const extraSeed = Date.now() + 99999
-
-    setTimeout(() => {
-      try {
-        const result = generateExtraTeams({
-          fixedPlayers: extraFixedPlayers,
-          captainOptions: extraCaptainOptions,
-          viceCaptainOptions: extraViceCaptainOptions,
-          leftPlayers: detail.left_team_players,
-          rightPlayers: detail.right_team_players,
-          category: selectedCategory,
-          count: requestedCount,
-          seed: extraSeed,
-          avoidPlayerIds: avoidIds,
-          combination: activeCombination,
-          combinationMode,
-          lineupStatus,
-        })
-
-        const rawTeams = result.teams
-        const debug = result.debug
-
-        // Deduplicate and validate teams against lineup
-        const dedupResult = deduplicateAndValidateTeams(rawTeams, allPlayers, avoidIds, lineupStatus)
-
-        // Use ONLY valid teams for transfer/join
-        setGeneratedTeams(dedupResult.valid)
-        setValidTeams(dedupResult.valid)
-        setGenerationDebug({
-          ...debug,
-          generatedTeams: rawTeams.length,
-          duplicateRemoved: dedupResult.duplicateCount,
-          invalidLineupRemoved: dedupResult.invalidLineupCount,
-          validTeams: dedupResult.valid.length,
-        })
-
-        // Build invalid teams map for display
-        const newInvalidTeams = new Map<number, { player: TGPlayer; reason: string }[]>()
-        for (let i = 0; i < dedupResult.invalid.length; i++) {
-          const team = dedupResult.invalid[i]
-          const validation = validateTeamForLineup(team, allPlayers, avoidIds, lineupStatus)
-          if (!validation.valid) {
-            newInvalidTeams.set(dedupResult.valid.length + i, validation.invalidPlayers)
-          }
-        }
-        setInvalidTeams(newInvalidTeams)
-
-        if (dedupResult.valid.length === 0) {
-          if (debug.strategyUsed === 'INSUFFICIENT_PLAYING_XI') {
-            const allP = [...detail.left_team_players, ...detail.right_team_players]
-            const playingCount = allP.filter(p => p.playing === 1).length
-            toast({ title: `Only ${playingCount} Playing XI players. Need at least 14 for Extra mode. Wait for full lineup.`, variant: 'destructive' })
-          } else {
-            toast({ title: 'Could not generate valid teams with these fixed players. Try different combinations.', variant: 'destructive' })
-          }
-        } else if (dedupResult.valid.length < requestedCount) {
-          const extra: string[] = []
-          if (dedupResult.duplicateCount > 0) extra.push(`${dedupResult.duplicateCount} duplicates removed`)
-          if (dedupResult.invalidLineupCount > 0) extra.push(`${dedupResult.invalidLineupCount} invalid lineup`)
-          toast({ title: `${dedupResult.valid.length} of ${requestedCount} valid extra teams${extra.length > 0 ? ` (${extra.join(', ')})` : ''}`, variant: 'destructive' })
-        } else {
-          toast({ title: `${dedupResult.valid.length} extra teams generated!` })
-        }
-
-        setTimeout(() => {
-          generatedTeamsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-        }, 100)
-      } catch (error) {
-        console.error('[EXTRA TEAM GEN] Generation error:', error)
-        setGeneratedTeams([])
-        setValidTeams([])
-        setInvalidTeams(new Map())
-        toast({ title: 'Extra team generation failed. Please try again.', variant: 'destructive' })
-      } finally {
+      // Validate team distribution of fixed players (using fresh detail)
+      const leftTeamName = detail.left_team_name
+      const rightTeamName = detail.right_team_name
+      const fixedLeft = extraFixedPlayers.filter(p => p.team_name === leftTeamName).length
+      const fixedRight = extraFixedPlayers.filter(p => p.team_name === rightTeamName).length
+      if (fixedLeft > 7 || fixedRight > 7) {
+        toast({ title: 'Fixed players exceed max 7 from one team', variant: 'destructive' })
         setGenerating(false)
+        return
       }
-    }, 100)
+      if (fixedLeft === 0 || fixedRight === 0) {
+        toast({ title: 'Fixed players must include at least 1 from each team', variant: 'destructive' })
+        setGenerating(false)
+        return
+      }
+
+      // Validate at least one C/VC combo has both players in fixed+pool
+      const allPlayerIds = new Set([
+        ...detail.left_team_players.map(p => p.pl_id),
+        ...detail.right_team_players.map(p => p.pl_id),
+      ])
+      const hasValidCombo = extraCaptainOptions.some(c =>
+        allPlayerIds.has(c.pl_id) && extraViceCaptainOptions.some(vc =>
+          vc.pl_id !== c.pl_id && allPlayerIds.has(vc.pl_id)
+        )
+      )
+      if (!hasValidCombo) {
+        toast({ title: 'No valid Captain/Vice Captain combination found', variant: 'destructive' })
+        setGenerating(false)
+        return
+      }
+
+      // Capture data from fresh detail and latest refs
+      const freshLeftPlayers = detail.left_team_players
+      const freshRightPlayers = detail.right_team_players
+      const requestedCount = selectedTeamCountRef.current
+      const allPlayers = [...freshLeftPlayers, ...freshRightPlayers]
+      const avoidIds = new Set(extraAvoidPlayers.map(p => p.pl_id))
+      const lineupStatus = detail.lineup_status ?? 0
+      const category = selectedCategoryRef.current || currentCategory
+      const combMode = combinationModeRef.current
+      const manualComb = manualCombinationRef.current
+
+      // Log lineup state with fresh data
+      const lineupMode = getLineupMode(allPlayers, lineupStatus)
+      const playingCount = allPlayers.filter(p => p.playing === 1).length
+      console.log('[EXTRA TEAM GEN] Fresh data — lineup_status:', lineupStatus, 'Lineup mode:', lineupMode, 'Playing XI:', playingCount, 'Eligible:', getEligiblePlayers(allPlayers, avoidIds, lineupStatus).length)
+
+      // Determine combination to use for extra generation
+      let activeCombination: RoleCombination | null = null
+      if (combMode === 'manual') {
+        const eligible = getEligiblePlayers(allPlayers, avoidIds, lineupStatus)
+        const validation = validateCombination(manualComb, eligible, extraFixedPlayers)
+        if (!validation.valid) {
+          setCombinationErrors(validation.errors)
+          toast({ title: `Invalid combination: ${validation.errors[0]}`, variant: 'destructive' })
+          setGenerating(false)
+          return
+        }
+        setCombinationErrors([])
+        activeCombination = manualComb
+      }
+
+      // Extra generation uses a different seed from Normal to ensure different teams
+      const extraSeed = Date.now() + 99999
+
+      // === RUN GENERATION DIRECTLY (no setTimeout) ===
+      console.log('[EXTRA TEAM GEN] Starting generation with', allPlayers.length, 'total players')
+
+      const result = generateExtraTeams({
+        fixedPlayers: extraFixedPlayers,
+        captainOptions: extraCaptainOptions,
+        viceCaptainOptions: extraViceCaptainOptions,
+        leftPlayers: freshLeftPlayers,
+        rightPlayers: freshRightPlayers,
+        category,
+        count: requestedCount,
+        seed: extraSeed,
+        avoidPlayerIds: avoidIds,
+        combination: activeCombination,
+        combinationMode: combMode,
+        lineupStatus,
+      })
+
+      const rawTeams = result.teams
+      const debug = result.debug
+
+      console.log('[EXTRA TEAM GEN] Generation complete — raw teams:', rawTeams.length, 'strategy:', debug.strategyUsed)
+
+      // Deduplicate and validate teams against lineup
+      const dedupResult = deduplicateAndValidateTeams(rawTeams, allPlayers, avoidIds, lineupStatus)
+
+      // Use ONLY valid teams for transfer/join
+      setGeneratedTeams(dedupResult.valid)
+      setValidTeams(dedupResult.valid)
+      setGenerationDebug({
+        ...debug,
+        generatedTeams: rawTeams.length,
+        duplicateRemoved: dedupResult.duplicateCount,
+        invalidLineupRemoved: dedupResult.invalidLineupCount,
+        validTeams: dedupResult.valid.length,
+      })
+
+      // Build invalid teams map for display
+      const newInvalidTeams = new Map<number, { player: TGPlayer; reason: string }[]>()
+      for (let i = 0; i < dedupResult.invalid.length; i++) {
+        const team = dedupResult.invalid[i]
+        const validation = validateTeamForLineup(team, allPlayers, avoidIds, lineupStatus)
+        if (!validation.valid) {
+          newInvalidTeams.set(dedupResult.valid.length + i, validation.invalidPlayers)
+        }
+      }
+      setInvalidTeams(newInvalidTeams)
+
+      if (dedupResult.valid.length === 0) {
+        if (debug.strategyUsed === 'INSUFFICIENT_PLAYING_XI') {
+          const allP = [...freshLeftPlayers, ...freshRightPlayers]
+          const playingCount = allP.filter(p => p.playing === 1).length
+          toast({ title: `Only ${playingCount} Playing XI players. Need at least 14 for Extra mode. Wait for full lineup.`, variant: 'destructive' })
+        } else {
+          toast({ title: 'Could not generate valid teams with these fixed players. Try different combinations.', variant: 'destructive' })
+        }
+      } else if (dedupResult.valid.length < requestedCount) {
+        const extra: string[] = []
+        if (dedupResult.duplicateCount > 0) extra.push(`${dedupResult.duplicateCount} duplicates removed`)
+        if (dedupResult.invalidLineupCount > 0) extra.push(`${dedupResult.invalidLineupCount} invalid lineup`)
+        toast({ title: `${dedupResult.valid.length} of ${requestedCount} valid extra teams${extra.length > 0 ? ` (${extra.join(', ')})` : ''}`, variant: 'destructive' })
+      } else {
+        toast({ title: `${dedupResult.valid.length} extra teams generated!` })
+      }
+
+      setTimeout(() => {
+        generatedTeamsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }, 100)
+    } catch (error) {
+      console.error('[EXTRA TEAM GEN] Generation error:', error)
+      setGeneratedTeams([])
+      setValidTeams([])
+      setInvalidTeams(new Map())
+      toast({ title: 'Extra team generation failed. Please try again.', variant: 'destructive' })
+    } finally {
+      setGenerating(false)
+    }
   }
 
   // Handle Auto Select for Extra Team Generation
+  // STALE STATE FIX: Use matchDetailRef to get latest data
   const handleAutoSelectExtra = useCallback(() => {
-    if (!matchDetail) return
+    const currentDetail = matchDetailRef.current
+    if (!currentDetail) return
 
     const avoidIds = new Set(extraAvoidPlayers.map(p => p.pl_id))
     const result = autoSelectExtraPlayers(
-      matchDetail.left_team_players,
-      matchDetail.right_team_players,
+      currentDetail.left_team_players,
+      currentDetail.right_team_players,
       avoidIds,
     )
 
@@ -1246,8 +1338,9 @@ export default function Home() {
     if (!removed) return
     const newList = extraFixedPlayers.filter((_, i) => i !== slotIndex)
 
-    if (extraSubMode === 'auto' && matchDetail) {
-      const allPlayers = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
+    const currentDetail = matchDetailRef.current
+    if (extraSubMode === 'auto' && currentDetail) {
+      const allPlayers = [...currentDetail.left_team_players, ...currentDetail.right_team_players]
       const avoidIds = new Set(extraAvoidPlayers.map(p => p.pl_id))
       const currentIds = new Set(newList.map(p => p.pl_id))
       const eligible = allPlayers.filter(p =>
@@ -1271,8 +1364,9 @@ export default function Home() {
     if (!removed) return
     const newList = extraCaptainOptions.filter((_, i) => i !== slotIndex)
 
-    if (extraSubMode === 'auto' && matchDetail) {
-      const allPlayers = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
+    const currentDetail = matchDetailRef.current
+    if (extraSubMode === 'auto' && currentDetail) {
+      const allPlayers = [...currentDetail.left_team_players, ...currentDetail.right_team_players]
       const avoidIds = new Set(extraAvoidPlayers.map(p => p.pl_id))
       const currentIds = new Set(newList.map(p => p.pl_id))
       const eligible = allPlayers.filter(p =>
@@ -1296,8 +1390,9 @@ export default function Home() {
     if (!removed) return
     const newList = extraViceCaptainOptions.filter((_, i) => i !== slotIndex)
 
-    if (extraSubMode === 'auto' && matchDetail) {
-      const allPlayers = [...matchDetail.left_team_players, ...matchDetail.right_team_players]
+    const currentDetail = matchDetailRef.current
+    if (extraSubMode === 'auto' && currentDetail) {
+      const allPlayers = [...currentDetail.left_team_players, ...currentDetail.right_team_players]
       const avoidIds = new Set(extraAvoidPlayers.map(p => p.pl_id))
       const currentIds = new Set(newList.map(p => p.pl_id))
       const eligible = allPlayers.filter(p =>
@@ -2505,14 +2600,14 @@ export default function Home() {
       </Sheet>
 
       {/* ============ MATCH DETAIL DIALOG (Full Team Generation) ============ */}
-      <Dialog open={selectedMatch !== null} onOpenChange={(open) => { if (!open) { setSelectedMatch(null); setMatchDetail(null); setGeneratedTeams([]) } }}>
+      <Dialog open={selectedMatch !== null} onOpenChange={(open) => { if (!open) { setSelectedMatch(null); setMatchDetail(null); matchDetailRef.current = null; setGeneratedTeams([]) } }}>
         <DialogContent className="max-w-[96vw] max-h-[90vh] overflow-y-auto p-0 rounded-xl">
           <DialogTitle className="sr-only">Match Detail - VYRON</DialogTitle>
           {selectedMatch && (
             <div className="p-4">
               {/* Close button */}
               <button
-                onClick={() => { setSelectedMatch(null); setMatchDetail(null); setGeneratedTeams([]) }}
+                onClick={() => { setSelectedMatch(null); setMatchDetail(null); matchDetailRef.current = null; setGeneratedTeams([]) }}
                 className="absolute top-3 right-3 p-1.5 hover:bg-gray-100 rounded-md z-10"
               >
                 <X className="w-4 h-4" />

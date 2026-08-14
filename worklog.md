@@ -273,3 +273,35 @@ Stage Summary:
 - Flow: Generate clicked → refreshMatchDetail() → get latest Playing XI → generateTeams() with fresh data
 - ISR cache bypassed when _t param present (noCache=true → cache: 'no-store')
 - No other flows changed: login, join contest, transfer, UI all preserved
+
+---
+Task ID: 6
+Agent: Main Agent
+Task: Fix after-lineup team generation — stale state / race condition causing 0 teams
+
+Work Log:
+- Read and analyzed full handleGenerateTeams flow in page.tsx (lines 906-1038)
+- Read and analyzed refreshMatchDetail function (lines 881-899)
+- Read and analyzed generateTeams in tg-api.ts (lines 974-1351)
+- Read and analyzed getLineupMode, getEligiblePlayers, validateTeamForLineup, deduplicateAndValidateTeams
+- Identified root cause: stale React state in async callbacks (setTimeout closures captured outdated matchDetail, selectedCategory, etc.)
+- Identified secondary issue: silent return on guard check with no user feedback
+- Identified tertiary issue: refreshMatchDetail fallback returned stale closure matchDetail
+
+Fixes Applied:
+1. Added 7 useRef declarations for critical state (matchDetail, selectedCategory, selectedTeamCount, selectedMatch, normalAvoidPlayers, combinationMode, manualCombination)
+2. Synced refs every render: ref.current = stateValue
+3. Fixed refreshMatchDetail: uses selectedMatchRef.current instead of stale selectedMatch, returns matchDetailRef.current instead of stale matchDetail on fallback, updates ref immediately on successful fetch
+4. Fixed handleGenerateTeams: removed setTimeout wrapper (major stale closure source), uses refs for all state reads, added error toast on guard failure, added comprehensive logging, all data captured as local variables before generation
+5. Fixed handleGenerateExtraTeams: same pattern — removed setTimeout, uses refs, local variable capture
+6. Fixed handleAutoSelectExtra: uses matchDetailRef.current
+7. Fixed handleExtraRemoveFix, handleExtraRemoveC, handleExtraRemoveVC: use matchDetailRef.current
+8. Fixed handleOpenMatch: updates matchDetailRef.current immediately on setMatchDetail calls
+9. Fixed dialog close handlers: update matchDetailRef.current = null on close
+
+Stage Summary:
+- Root cause: setTimeout closures captured stale React state values, causing generation to use outdated lineup/player data
+- Fix strategy: useRef-based stale state protection + eliminate setTimeout + local variable capture
+- All 6 TypeScript compilation checks pass
+- Build succeeds with no new errors
+- No changes to: Login/OTP, Join Contest, Payment, License, Transfer, Admin, DB schema, API endpoints, UI design, Manual generation logic, Auto generation logic, Before-lineup flow, Lineup UI, Team selection rules
