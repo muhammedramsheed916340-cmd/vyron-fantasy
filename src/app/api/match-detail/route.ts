@@ -5,6 +5,9 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const matchId = searchParams.get('matchId');
+    // If _t timestamp is present, the client wants fresh data (bypass ISR cache)
+    // This is used before team generation to get the latest lineup/Playing XI data.
+    const noCache = searchParams.has('_t');
 
     if (!matchId) {
       return NextResponse.json(
@@ -13,7 +16,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const matchDetail = await fetchMatchDetail(matchId);
+    const matchDetail = await fetchMatchDetail(matchId, noCache);
 
     if (!matchDetail) {
       return NextResponse.json(

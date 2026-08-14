@@ -247,3 +247,29 @@ Stage Summary:
 - Flow: Match → Teams → loadPlatformTeams() → if auth error → SESSION EXPIRED on Teams step
 - Flow: Teams → Contests → loadContests() → if auth error → SESSION EXPIRED on Contests step (with Refresh Session + Retry)
 - Never auto-triggers OTP
+---
+Task ID: 2
+Agent: Main
+Task: Fix after-lineup team generation — stale matchDetail causes 0 teams or invalid teams
+
+Work Log:
+- Traced the complete after-lineup team generation flow
+- Identified root cause: matchDetail is fetched ONCE in handleOpenMatch and never refreshed
+- When lineup comes out on server after dialog is opened, client still has stale player data (playing===0)
+- handleGenerateTeams used matchDetail from closure which had stale playing values
+- ISR cache (revalidate: 30) also returned stale data on re-fetch within 30s
+- Added refreshMatchDetail() function that re-fetches match detail with cache bypass
+- Modified handleGenerateTeams to always refresh matchDetail before generating teams
+- Modified handleGenerateExtraTeams with same fix
+- Modified fetchMatchDetail to accept noCache param (cache: 'no-store' when true)
+- Modified match-detail API route to pass noCache when _t query param is present
+- refreshMatchDetail uses _t=Date.now() to signal fresh data needed
+- Added detailed logging for lineup state after refresh (Playing XI count, OUT count, mode)
+- Build verified successfully
+
+Stage Summary:
+- Root cause: matchDetail never refreshed after opening, stale playing===0 values
+- Fix: Pre-generation lineup refresh — always re-fetch matchDetail with cache bypass before generating
+- Flow: Generate clicked → refreshMatchDetail() → get latest Playing XI → generateTeams() with fresh data
+- ISR cache bypassed when _t param present (noCache=true → cache: 'no-store')
+- No other flows changed: login, join contest, transfer, UI all preserved

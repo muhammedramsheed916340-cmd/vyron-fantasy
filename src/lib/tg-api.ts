@@ -540,11 +540,16 @@ export async function fetchMatches(sport: string = 'cricket'): Promise<TGMatch[]
   }
 }
 
-export async function fetchMatchDetail(matchId: string | number): Promise<TGMatchDetail | null> {
+export async function fetchMatchDetail(matchId: string | number, noCache: boolean = false): Promise<TGMatchDetail | null> {
   try {
-    const response = await fetch(`${TG_API_BASE}/fantasy/match/${matchId}`, {
-      next: { revalidate: 30 },
-    });
+    // When noCache is true, bypass ISR cache to get the latest lineup data.
+    // This is critical for after-lineup team generation — the cached response
+    // may have stale playing===0 values even after lineup is confirmed.
+    const fetchOptions: RequestInit = noCache
+      ? { cache: 'no-store' }   // Bypass all caches — get fresh data from TG API
+      : { next: { revalidate: 30 } }; // Normal: cache for 30 seconds
+
+    const response = await fetch(`${TG_API_BASE}/fantasy/match/${matchId}`, fetchOptions);
 
     if (!response.ok) {
       throw new Error(`Failed to fetch match detail: ${response.status}`);
